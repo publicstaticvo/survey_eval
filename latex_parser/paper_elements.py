@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from dataclasses import dataclass, field
 
 
@@ -199,7 +199,7 @@ class LatexPaper:
     author: Optional[str] = None
     abstract: Optional[LatexAbstract] = None
     sections: List[LatexSection] = field(default_factory=list)
-    all_citations: List[str] = field(default_factory=list)
+    all_citation_keys: List[str] = field(default_factory=list)
     bibliography: dict = field(default_factory=dict)  # Maps citation keys to bibliography entries
     
     def add_section(self, section: LatexSection):
@@ -216,8 +216,8 @@ class LatexPaper:
         
         result['sections'] = [s.to_dict() for s in self.sections]
         
-        if self.all_citations:
-            result['citations'] = self.all_citations
+        if self.all_citation_keys:
+            result['citations'] = self.all_citation_keys
         
         return result
     
@@ -228,6 +228,9 @@ class LatexPaper:
         for p in self.sections:
             sentences.extend(p.get_sentences())
         return sentences
+    
+    def map_citations_to_sentence(self) -> Dict[str, any]:
+        pass
     
     def __str__(self):
         sentence_id = 0

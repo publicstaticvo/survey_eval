@@ -14,6 +14,7 @@ from sklearn.decomposition import PCA
 from collections import Counter
 import tarfile
 import zipfile
+import gzip, shutil
 
 class ArxivCrawlerEngine:
     def __init__(self, api_key: str = ""):
@@ -45,23 +46,17 @@ class ArxivCrawlerEngine:
         # Create save_path if not provided
         if format == 'pdf':
             save_path = os.path.join(save_path, f"{arxiv_id}.pdf")
+            url = f"https://arxiv.org/pdf/{arxiv_id}.pdf" 
+        elif format == "tex":
+            save_path = os.path.join(save_path, f"{arxiv_id}.tar.gz")    
+            url = f"https://arxiv.org/src/{arxiv_id}"         
         else:
-            save_path = os.path.join(save_path, f"{arxiv_id}.tar.gz")
+            print(f"Error: Invalid format '{format}'. Use 'pdf' or 'tex'.")
+            return False
 
         retry = 3
-        while retry > 0:
-        
-            try:
-                if format == 'pdf':
-                    # PDF download URL
-                    url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"              
-                elif format == 'tex':
-                    # TeX source download URL
-                    url = f"https://arxiv.org/e-print/{arxiv_id}"                
-                else:
-                    print(f"Error: Invalid format '{format}'. Use 'pdf' or 'tex'.")
-                    return False
-                
+        while retry > 0:        
+            try:                
                 # Download the file
                 response = self.session.get(url, timeout=60, stream=True)
                 response.raise_for_status()
@@ -92,7 +87,7 @@ class ArxivCrawlerEngine:
         retry = 3
         while retry > 0:
             try:
-                time.sleep(4 ** (3 - retry))
+                time.sleep(3 ** (3 - retry))
                 # Try with arXiv ID first if available
                 url = f"https://api.semanticscholar.org/graph/v1/paper/ARXIV:{arxiv_id}"
                 params = {'fields': 'title,citationCount,year,authors'}
@@ -117,7 +112,7 @@ class ArxivCrawlerEngine:
             while retry > 0:
                 print(f"Error fetching citations for '{arxiv_id}' by arxiv_id, Falling back to title.")
                 try:
-                    time.sleep(4 ** (3 - retry))
+                    time.sleep(3 ** (3 - retry))
                     search_url = "https://api.semanticscholar.org/graph/v1/paper/search"
                     params = {
                         'query': title,
@@ -197,6 +192,7 @@ class ArxivCrawlerEngine:
             while retry > 0:
             
                 try:
+                    time.sleep(3 ** (3 - retry))
                     print(f"Crawling: {url}")
                     response = self.session.get(url, timeout=30)
                     response.raise_for_status()
@@ -240,8 +236,8 @@ class ArxivCrawlerEngine:
                     break
                     
                 except requests.RequestException as e:
-                    print(f"Error crawling {url}: {e}, Retry: {retry} ")
                     retry -= 1
+                    print(f"Error crawling {url}: {e}, Retry: {retry} ")
 
             else: 
                 download_complete = True
@@ -285,7 +281,7 @@ class ArxivCrawlerEngine:
             return papers
         elif len(papers) <= 2 * n_papers:
             print(f"Total papers ({len(papers)}) neer requested ({n_papers}), returning paper with most cited")
-            papers = sorted(papers, lambda x: x['cited'], reverse=True)[:n_papers]
+            papers = sorted(papers, key=lambda x: x['cited'], reverse=True)[:n_papers]
             return papers
         
         print(f"\n{'='*80}")
@@ -312,7 +308,7 @@ class ArxivCrawlerEngine:
             print(f"  Error in vectorization: {e}")
             print("  Falling back to simpler approach...")
             # Fallback: just sort by citations
-            sorted_papers = sorted(papers, key=lambda x: x.get('citations', 0), reverse=True)
+            sorted_papers = sorted(papers, key=lambda x: x['cited'], reverse=True)
             return sorted_papers[:n_papers]
         
         # Step 2: Cluster papers for diversity
@@ -374,16 +370,16 @@ class ArxivCrawlerEngine:
             
             if selected_from_cluster:
                 print(f"  Cluster {cluster_id}: Selected {len(selected_from_cluster)} papers "
-                      f"(top citations: {selected_from_cluster[0].get('citations', 0)})")
+                      f"(top citations: {selected_from_cluster[0].get('cited', 0)})")
         
         # Step 4: Final ranking by combined score
         print(f"\nStep 4: Final ranking by combined score...")
         
         # Normalize citation counts to 0-1 range
-        max_citations = max([p.get('citations', 0) for p in selected_papers]) or 1
+        max_citations = max([p.get('cited', 0) for p in selected_papers]) or 1
         
         for paper in selected_papers:
-            citation_score = paper.get('citations', 0) / max_citations
+            citation_score = paper.get('cited', 0) / max_citations
             diversity_score = 1.0  # Already selected for diversity via clustering
             paper['combined_score'] = (citation_weight * citation_score + 
                                       (1 - citation_weight) * diversity_score)
@@ -392,8 +388,8 @@ class ArxivCrawlerEngine:
         selected_papers_sorted = sorted(selected_papers, key=lambda x: x['combined_score'], reverse=True)
         
         print(f"\nSelected {len(selected_papers_sorted)} papers!")
-        print(f"  Citation range: {min([p.get('citations', 0) for p in selected_papers_sorted])} - "
-              f"{max([p.get('citations', 0) for p in selected_papers_sorted])}")
+        print(f"  Citation range: {min([p.get('cited', 0) for p in selected_papers_sorted])} - "
+              f"{max([p.get('cited', 0) for p in selected_papers_sorted])}")
         
         return selected_papers_sorted
     
@@ -514,35 +510,43 @@ def get_survey_citations(engine: ArxivCrawlerEngine, papers: Dict[str, Dict[str,
 def cluster_and_download_papers(
         engine: ArxivCrawlerEngine,
         subjects_to_crawl: str = ["cs", "econ", "eess", "math", "phy", "q-bio", "q-fin", "stat"],
-        path: str = "P:\\AI4S\\survey_eval\\crawled_papers\\",
+        path: str = "P:\\AI4S\\survey_eval\\crawled_papers",
         num_paper_download: int = 100
     ):
     for s in subjects_to_crawl:
-        with open(f"{path}\\{s}\\papersf.json", "r+", encoding='utf-8') as f:
+        with open(f"{path}\\{s}\\papers.json", "r+", encoding='utf-8') as f:
             papers = json.load(f)
         
         # Filter most-cited summaries
         selected_papers = engine.select_representative_papers(papers, num_paper_download)
         for paper in selected_papers:
             save_path = os.path.join(path, s)
-            engine.download_paper(paper['arxiv_id'], save_path=save_path)
-            status = engine.download_paper(paper['arxiv_id'], "tex", save_path=save_path)
+            if paper['arxiv_url'].startswith("https://"): 
+                paper['arxiv_url'] = paper['arxiv_url'][-10:]
+            if os.path.exists(os.path.join(save_path, paper['arxiv_url'])): continue
+            engine.download_paper(paper['arxiv_url'], save_path=save_path)
+            status = engine.download_paper(paper['arxiv_url'], "tex", save_path=save_path)
             if status:
                 # unzip paper
-                path_to_unzip = os.path.join(save_path, f"{paper['arxiv_id']}.tar.gz")
-                path_target = os.path.join(save_path, f"{paper['arxiv_id']}")
+                path_to_unzip = os.path.join(save_path, f"{paper['arxiv_url']}.tar.gz")
+                path_target = os.path.join(save_path, f"{paper['arxiv_url']}")
                 try:
                     os.makedirs(path_target, exist_ok=True)
                     with tarfile.open(path_to_unzip, "r:gz") as f:
                         f.extractall(path_target)
-                    os.remove(path_to_unzip)
                 except:
                     try:
                         with zipfile.ZipFile(path_to_unzip, 'r') as f:
                             f.extractall(path_target)
-                        os.remove(path_to_unzip)
                     except:
-                        print(f"fail to unzip {paper['arxiv_id']}")
+                        try:
+                            main_tex = os.path.join(path_target, "main.tex")
+                            with gzip.open(path_to_unzip, 'rb') as fin, open(main_tex, "wb") as fout:
+                                shutil.copyfileobj(fin, fout)
+                        except:
+                            print(f"fail to unzip {paper['arxiv_url']}")
+                finally:
+                    os.remove(path_to_unzip)
 
 
 def argparse_args():
@@ -563,13 +567,12 @@ if __name__ == "__main__":
     # with open("survey2025.json", "r+", encoding='utf-8') as f:
     #     survey_papers = json.load(f)
     # get_survey_citations(crawler, survey_papers)
-    subjects = ['econ', 'q-bio', 'q-fin', 'stat', 'eess']
-    survey_2024 = download_title_and_save(crawler, subjects, list(range(1, 13)), 2024, "survey2024.json")
-    for s in subjects:
-        with open(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papersf.json", "r+", encoding='utf-8') as f:
-            papers = json.load(f)
-        papers.extend(survey_2024[s])
-        with open(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papers.json", "w+", encoding='utf-8') as f:
-            json.dumps(papers, f)
-    # cluster_and_download_papers(crawler)
-    # crawler.download_paper("2503.24377", "tex", "test")
+    # subjects = ['econ', 'q-bio', 'q-fin', 'stat', 'eess']
+    # survey_2024 = download_title_and_save(crawler, subjects, list(range(1, 13)), 2024, "survey2024.json")
+    # for s in subjects:
+    #     with open(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papersf.json", "r+", encoding='utf-8') as f:
+    #         papers = json.load(f)
+    #     papers.extend(survey_2024[s])
+    #     with open(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papers.json", "w+", encoding='utf-8') as f:
+    #         json.dump(papers, f)
+    cluster_and_download_papers(crawler, ['cs'])
