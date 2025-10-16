@@ -134,13 +134,10 @@ def _parse_compiled_entry(content: str) -> Dict[str, Any]:
             elif node.macroname == "endentry":
                 current_key = None
             elif node.macroname == "verb":
-                try:
-                    if node.nodeargd.verbatim_text.endswith("\\entry"):
-                        current_key = get_text_for_node(i + 1)
-                        citations[current_key] = {"paper_type": get_text_for_node(i + 2)}
-                        i += 3
-                except Exception as e:
-                    print(f"Exception: {e}")
+                if node.nodeargd and node.nodeargd.verbatim_text.endswith("\\entry"):
+                    current_key = get_text_for_node(i + 1)
+                    citations[current_key] = {"paper_type": get_text_for_node(i + 2)}
+                    i += 3
         i += 1
         
     return citations
@@ -167,3 +164,4 @@ def parse_bbl_file(filepath: str) -> Dict[str, Any]:
         return _parse_standard_bibitem(content)
     elif "\\entry" in content:
         return _parse_compiled_entry(content)
+    return {}

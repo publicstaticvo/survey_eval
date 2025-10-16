@@ -15,25 +15,27 @@ class LatexSentence:
         }
     
     def __repr__(self):
-        cite_str = f" [{', '.join(self.citations)}]" if self.citations else ""
-        return f"Sentence({self.text[:50]}...{cite_str})"
+        return self.text
     
 
 @dataclass
 class LatexEnvironment:
     """Represents a Latex environment block (theorem, remark, tikzpicture, etc.)"""
     environment_name: str
-    content: str  # Raw Latex content
+    text: str  # Raw Latex content
+    citations: List[str] = field(default_factory=list)
     
     def to_dict(self):
         return {
             'type': 'latex_environment',
             'environment': self.environment_name,
-            'content': self.content
+            'content': self.text,
+            'citations': self.citations
         }
     
     def __repr__(self):
-        return f"\\begin{{{self.environment_name}}}\n{self.content}\n\\end{{{self.environment_name}}}\n"
+        return self.text
+        # return f"\\begin{{{self.environment_name}}}\n{self.text}\n\\end{{{self.environment_name}}}\n"
 
 
 def debug_sentences(sentences: List[Union[LatexSentence, LatexEnvironment]], start_id: int = 0):
@@ -68,6 +70,29 @@ class LatexParagraph:
     def get_sentences(self) -> List[LatexSentence]:
         """Return all sentences in this paragraph"""
         return self.sentences
+    
+    def _get_next_sentence_until_citation(self, current_idx: int, sentence_number: int):
+        current_sentence = self.sentences[current_idx]
+        assert isinstance(current_sentence, LatexSentence)
+        if len(current_sentence.citations) >= 2: return []
+        next_sentences = []
+        for i in range(current_idx + 1, current_idx + sentence_number + 1):
+            if i >= len(self.sentences): return next_sentences
+            sentence = self.sentences[i]
+            if isinstance(sentence, LatexSentence) and sentence.citations: return next_sentences
+            next_sentences.append(sentence.text)
+        return next_sentences
+    
+    def get_citation_info(self):
+        sentences = []
+        for i, sentence in self.sentences:
+            if isinstance(sentence, LatexSentence):
+                sentences.append({
+                    "text": sentence.text, 
+                    "citation": sentence.citations, 
+                    "serial": self._get_next_sentence_until_citation(i, 3)
+                })
+        return sentences
     
     def __repr__(self):
         repr_string, _ = debug_sentences(self.sentences)
@@ -171,33 +196,11 @@ class LatexSection:
 
 
 @dataclass
-class LatexAbstract:
-    """Represents the abstract"""
-    paragraphs: List[LatexParagraph] = field(default_factory=list)
-    
-    def add_paragraph(self, paragraph: LatexParagraph):
-        self.paragraphs.append(paragraph)
-    
-    def to_dict(self):
-        return {'paragraphs': [p.to_dict() for p in self.paragraphs]}
-    
-    def get_sentences(self) -> List[LatexSentence]:
-        """Return all sentences in this subsection"""
-        sentences = []
-        for p in self.paragraphs:
-            sentences.extend(p.get_sentences())
-        return sentences
-    
-    def __repr__(self):
-        return f"Abstract({len(self.paragraphs)} paragraphs)"
-
-
-@dataclass
 class LatexPaper:
     """Represents the entire academic paper"""
     title: Optional[str] = None
     author: Optional[str] = None
-    abstract: Optional[LatexAbstract] = None
+    abstract: Optional[LatexSubSubSection] = None
     sections: List[LatexSection] = field(default_factory=list)
     all_citation_keys: List[str] = field(default_factory=list)
     bibliography: dict = field(default_factory=dict)  # Maps citation keys to bibliography entries
@@ -230,7 +233,41 @@ class LatexPaper:
         return sentences
     
     def map_citations_to_sentence(self) -> Dict[str, any]:
-        pass
+        all_citation_info = []
+        # abstract
+        if self.abstract:
+            for i, paragraph in enumerate(self.abstract.paragraphs):
+                citation_info = paragraph.get_citation_info()
+                for x in citation_info: x['section_id'] = f"0-{i + 1}"
+                all_citation_info.extend(citation_info)
+
+        for i, section in enumerate(self.sections):
+            subsection_start_idx = -1
+            for j, subsection in enumerate(section.children):
+                if isinstance(subsection, LatexParagraph):
+                    assert subsection_start_idx == -1
+                    citation_info = subsection.get_citation_info()
+                    for x in citation_info: x['section_id'] = f"{i + 1}-{j + 1}"
+                    all_citation_info.extend(citation_info)
+                else:
+                    if subsection_start_idx == -1: subsection_start_idx = j
+                    subsubsection_start_idx = -1
+                    for k, subsubsection in enumerate(subsection.children):
+                        if isinstance(subsubsection, LatexParagraph):
+                            assert subsubsection_start_idx == -1
+                            citation_info = subsubsection.get_citation_info()
+                            chapter_str = f"{i + 1}.{j - subsection_start_idx + 1}-{k + 1}"
+                            for x in citation_info: x['section_id'] = chapter_str
+                            all_citation_info.extend(citation_info)
+                        else:
+                            if subsubsection_start_idx == -1: subsubsection_start_idx = k
+                            for l, paragraph in enumerate(subsubsection.children):
+                                citation_info = paragraph.get_citation_info()
+                                chapter_str = f"{i + 1}.{j - subsection_start_idx + 1}.{k - subsubsection_start_idx + 1}-{l + 1}"
+                                for x in citation_info: x['section_id'] = chapter_str
+                                all_citation_info.extend(citation_info)
+        return all_citation_info
+
     
     def __str__(self):
         sentence_id = 0

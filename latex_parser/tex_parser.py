@@ -20,7 +20,7 @@ class LatexPaperParser:
     def __init__(self, latex_content: str, base_path='.'):
         self.base_path = base_path
         self.latex_content = self._process_input_commands(latex_content)
-        self.walker = LatexWalker(latex_content)
+        self.walker = LatexWalker(self.latex_content)
         # keep_inline_math=True, keep_display_math=True,
         self.converter = LatexNodes2Text(math_mode="verbatim")
         self.section_levels = {
@@ -64,9 +64,16 @@ class LatexPaperParser:
             # Add .tex extension if not present
             if "." not in filename:
                 filename += '.tex'
+
+            if "/" in filename:
+                filename = filename.split("/")
+            elif "\\" in filename:
+                filename = filename.split("\\")
+            else:
+                filename = [filename]
             
             # Construct full path
-            filepath = os.path.join(self.base_path, filename)
+            filepath = os.path.join(self.base_path, *filename)
             
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
@@ -115,13 +122,15 @@ class LatexPaperParser:
             
             elif isinstance(node, LatexEnvironmentNode):
                 if node.environmentname == 'abstract':
-                    paper.abstract = self._parse_abstract(node.nodelist)
+                    paper.abstract = LatexSubSubSection(name="Abstract")
+                    self._create_paragraphs_from_nodes(node.nodelist, paper.abstract)
 
                 elif node.environmentname == 'document':
                     has_document = True
-                    paper.sections, abstract = self._parse_sections(node.nodelist)
-                    if abstract is not None:
-                        paper.abstract = abstract
+                    paper.sections, title, author, abstract = self._parse_sections(node.nodelist)
+                    if title is not None: paper.title = title
+                    if author is not None: paper.author = author
+                    if abstract is not None: paper.abstract = abstract
 
         if not has_document: return
         
@@ -149,63 +158,61 @@ class LatexPaperParser:
         """
         return self.bibliography_entries.get(citation_key)
     
-    def _parse_abstract(self, nodes) -> LatexAbstract:
-        """Parse abstract nodes into Abstract object"""
-        abstract = LatexAbstract()
-        
-        # Parse text with citations into sentences
-        sentences = self._parse_content_with_environments(nodes)
-        
-        # Split sentences into paragraphs (by double newline in original)
-        # For simplicity, we'll put all sentences in one paragraph
-        # unless we detect explicit paragraph breaks
-        paragraphs = self._group_contents_into_paragraphs(sentences)
-        
-        for para_sentences in paragraphs:
-            paragraph = LatexParagraph()
-            for sentence in para_sentences:
-                paragraph.add_sentence(sentence)
-            abstract.add_paragraph(paragraph)
-        
-        return abstract
-    
     def _parse_sections(self, nodes) -> List[LatexSection]:
         """Parse nodes into Section objects"""
-        sections = []
+        title, author, sections = None, None, []
         abstract = None
         i = 0
         
         while i < len(nodes):
             node = nodes[i]
-            
-            if isinstance(node, LatexMacroNode) and node.macroname == 'section':
-                section_name = self._extract_title(node)
-                section = LatexSection(name=section_name)
+            if isinstance(node, LatexMacroNode):            
+                if node.macroname == 'section':
+                    section_name = self._extract_title(node)
+                    section = LatexSection(name=section_name)
+                    
+                    # Collect content until next section
+                    j = i + 1
+                    section_content = []
+                    while j < len(nodes):
+                        next_node = nodes[j]
+                        if isinstance(next_node, LatexMacroNode) and next_node.macroname == 'section':
+                            break
+                        section_content.append(next_node)
+                        j += 1
+                    
+                    # Parse section content
+                    self._parse_section_content(section_content, section)
+                    sections.append(section)
+                    i = j
+
+                else:
+                    i += 1
+                    if node.macroname == 'title' and node.nodeargd and node.nodeargd.argnlist:
+                        for arg in node.nodeargd.argnlist:
+                            if arg is not None:
+                                title = self.converter.nodelist_to_text([arg]).strip()
                 
-                # Collect content until next section
-                j = i + 1
-                section_content = []
-                while j < len(nodes):
-                    next_node = nodes[j]
-                    if isinstance(next_node, LatexMacroNode) and next_node.macroname == 'section':
-                        break
-                    section_content.append(next_node)
-                    j += 1
-                
-                # Parse section content
-                self._parse_section_content(section_content, section)
-                sections.append(section)
-                i = j
+                    elif node.macroname == 'author' and node.nodeargd and node.nodeargd.argnlist:
+                        for arg in node.nodeargd.argnlist:
+                            if arg is not None:
+                                author = self.converter.nodelist_to_text([arg]).strip()
+
             else:
                 i += 1
                 if isinstance(node, LatexEnvironmentNode): 
                     if node.environmentname == "abstract":
-                        abstract = self._parse_abstract(node.nodelist)
+                        abstract = LatexSubSubSection(name="Abstract")
+                        self._create_paragraphs_from_nodes(node.nodelist, abstract)
                     elif node.environmentname in self.spacing_environments:
-                        sections_in_environment = self._parse_sections(node.nodelist)
+                        output = self._parse_sections(node.nodelist)
+                        sections_in_environment, title_back, author_back, abstract_back = output
+                        if title is not None: title = title_back
+                        if author is not None: author = author_back
+                        if abstract is not None: abstract = abstract_back
                         sections.extend(sections_in_environment)
         
-        return sections, abstract
+        return sections, title, author, abstract
     
     def _parse_section_content(self, nodes, parent_section: LatexSection):
         """Parse content of a section (subsections and paragraphs)"""
@@ -218,9 +225,7 @@ class LatexPaperParser:
             if isinstance(node, LatexMacroNode) and node.macroname == 'subsection':
                 # Save accumulated text as paragraphs
                 if current_text_nodes:
-                    paragraphs = self._create_paragraphs_from_nodes(current_text_nodes)
-                    for paragraph in paragraphs:
-                        parent_section.add_child(paragraph)
+                    self._create_paragraphs_from_nodes(current_text_nodes, parent_section)
                     current_text_nodes = []
                 
                 # Parse subsection
@@ -247,9 +252,7 @@ class LatexPaperParser:
         
         # Add remaining text
         if current_text_nodes:
-            paragraphs = self._create_paragraphs_from_nodes(current_text_nodes)
-            for paragraph in paragraphs:
-                parent_section.add_child(paragraph)
+            self._create_paragraphs_from_nodes(current_text_nodes, parent_section)
     
     def _parse_subsection_content(self, nodes, parent_subsection: LatexSubSection):
         """Parse content of a subsection (subsubsections and paragraphs)"""
@@ -262,14 +265,11 @@ class LatexPaperParser:
             if isinstance(node, LatexMacroNode) and node.macroname == 'subsubsection':
                 # Save accumulated text as paragraphs
                 if current_text_nodes:
-                    paragraphs = self._create_paragraphs_from_nodes(current_text_nodes)
-                    for paragraph in paragraphs:
-                        parent_subsection.add_child(paragraph)
+                    self._create_paragraphs_from_nodes(current_text_nodes, parent_subsection)
                     current_text_nodes = []
                 
                 # Parse subsubsection
                 subsubsection_name = self._extract_title(node)
-                subsubsection = LatexSubSubSection(name=subsubsection_name)
                 
                 # Collect subsubsection content
                 j = i + 1
@@ -282,70 +282,21 @@ class LatexPaperParser:
                     j += 1
                 
                 # Parse subsubsection content (paragraphs)
-                self._parse_subsubsection_content(subsubsection_content, subsubsection)
+                # self._parse_subsubsection_content(subsubsection_content, subsubsection)
+                subsubsection = LatexSubSubSection(name=subsubsection_name)
+                self._create_paragraphs_from_nodes(subsubsection_content, subsubsection)
                 parent_subsection.add_child(subsubsection)
                 i = j
             else:
                 current_text_nodes.append(node)
                 i += 1
-        
-        # Add remaining text
-        if current_text_nodes:
-            paragraphs = self._create_paragraphs_from_nodes(current_text_nodes)
-            for para in paragraphs:
-                parent_subsection.add_child(para)
     
-    def _parse_subsubsection_content(self, nodes, parent_subsubsection: LatexSubSubSection):
-        """Parse content of a subsubsection (named paragraphs)"""
-        i = 0
-        current_text_nodes = []
-        
-        while i < len(nodes):
-            node = nodes[i]
-            
-            if isinstance(node, LatexMacroNode) and node.macroname == 'paragraph':
-                # Save accumulated text as unnamed paragraphs
-                if current_text_nodes:
-                    paragraphs = self._create_paragraphs_from_nodes(current_text_nodes)
-                    for para in paragraphs:
-                        parent_subsubsection.add_child(para)
-                    current_text_nodes = []
-                
-                # Parse named paragraph
-                paragraph_name = self._extract_title(node)
-                
-                # Collect paragraph content
-                j = i + 1
-                paragraph_content = []
-                while j < len(nodes):
-                    next_node = nodes[j]
-                    if isinstance(next_node, LatexMacroNode) and next_node.macroname == 'paragraph':
-                        break
-                    paragraph_content.append(next_node)
-                    j += 1
-                
-                # Create named paragraph
-                content_items = self._parse_content_with_environments(paragraph_content)
-                if content_items:
-                    paragraph = LatexParagraph(name=paragraph_name)
-                    for item in content_items: paragraph.add_sentence(item)
-                    parent_subsubsection.add_child(paragraph)
-                
-                i = j
-            else:
-                current_text_nodes.append(node)
-                i += 1
-        
-        # Add remaining text
-        if current_text_nodes:
-            paragraphs = self._create_paragraphs_from_nodes(current_text_nodes)
-            for paragraph in paragraphs:
-                parent_subsubsection.add_child(paragraph)
-    
-    def _create_paragraphs_from_nodes(self, nodes) -> List[LatexParagraph]:
+    def _create_paragraphs_from_nodes(self, nodes, parent) -> List[LatexParagraph]:
         """Create paragraph objects from text nodes, splitting by \n\n"""
         sentences = self._parse_content_with_environments(nodes)
-        paragraphs = self._group_contents_into_paragraphs(sentences)        
+        paragraphs = self._group_contents_into_paragraphs(sentences)   
+        for paragraph in paragraphs:
+            parent.add_child(paragraph)     
         return paragraphs
     
     def _parse_content_with_environments(self, nodes) -> List[Union[LatexSentence, LatexEnvironment]]:
@@ -358,16 +309,17 @@ class LatexPaperParser:
         Returns:
             list: List of Sentence and LatexEnvironment objects
         """
-        content_items = []
+        content_items, accumulated_nodes = [], []
         
         # First pass: identify and extract preserved environments
-        while i < len(nodes):
-            node = nodes[i]
-            
+        for node in nodes:            
             if isinstance(node, LatexEnvironmentNode):
                 # Check if this environment should be preserved
                 # if node.environmentname in self.preserved_environments:
                     # Process accumulated text nodes first
+
+                if node.environmentname == "thebibliography": continue
+                
                 if accumulated_nodes:
                     sentences = self._parse_text_with_citations_and_breaks(accumulated_nodes)
                     content_items.extend(sentences)
@@ -375,12 +327,15 @@ class LatexPaperParser:
                 
                 # Add the environment as-is
                 env_content = self._extract_raw_environment(node)
-                latex_env = LatexEnvironment(environment_name=node.environmentname, content=env_content)
+                env_citations = self._extract_citations_from_environment(node)
+                latex_env = LatexEnvironment(
+                    environment_name=node.environmentname, 
+                    text=env_content,
+                    citations=env_citations
+                )
                 content_items.append(latex_env)
             else:
                 accumulated_nodes.append(node)
-            
-            i += 1
         
         # Process any remaining accumulated nodes
         if accumulated_nodes:
@@ -388,6 +343,49 @@ class LatexPaperParser:
             content_items.extend(sentences)
         
         return content_items
+    
+    def _extract_citations_from_environment(self, env_node: LatexEnvironmentNode) -> List[str]:
+        """
+        Extract all citation keys from an environment node
+        
+        Args:
+            env_node: LatexEnvironmentNode to extract citations from
+            
+        Returns:
+            list: List of citation keys found in the environment
+        """
+        citations = set()
+        
+        def find_citations_recursive(nodes):
+            if nodes is None:
+                return
+            
+            for node in nodes:
+                if isinstance(node, LatexMacroNode):
+                    if node.macroname in ['cite', 'citep', 'citet', 'citealt', 'citeyearpar',
+                                          'citealp', 'citeauthor', 'citeyear', 'citetext']:
+                        citations.update(self._extract_citation_keys(node))
+                    
+                    # Also check in macro arguments
+                    if node.nodeargd and node.nodeargd.argnlist:
+                        for arg in node.nodeargd.argnlist:
+                            if hasattr(arg, 'nodelist'):
+                                find_citations_recursive(arg.nodelist)
+                
+                elif isinstance(node, LatexEnvironmentNode):
+                    find_citations_recursive(node.nodelist)
+        
+        # Search in the environment's nodelist
+        find_citations_recursive(env_node.nodelist)
+        
+        # Also check environment arguments (for cases like \begin{lemma}[Title \cite{key}])
+        if hasattr(env_node, 'nodeargd') and env_node.nodeargd:
+            if hasattr(env_node.nodeargd, 'argnlist') and env_node.nodeargd.argnlist:
+                for arg in env_node.nodeargd.argnlist:
+                    if hasattr(arg, 'nodelist'):
+                        find_citations_recursive(arg.nodelist)
+        
+        return sorted(list(citations))
     
     def _extract_raw_environment(self, env_node: LatexEnvironmentNode) -> str:
         """
@@ -427,6 +425,7 @@ class LatexPaperParser:
         full_text = ""
         citation_positions = []
         paragraph_break_positions = []
+        segments[0]['text'] = segments[0]['text'].lstrip()
         
         for segment in segments:
             start_pos = len(full_text)
@@ -440,7 +439,7 @@ class LatexPaperParser:
                 paragraph_break_positions.append(end_pos)
         
         # Split into sentences
-        sentence_texts = self._split_into_sentences(full_text)
+        sentence_texts = self._split_into_sentences(full_text)        
         
         # Assign citations to sentences and detect paragraph breaks
         sentences = []
@@ -462,7 +461,7 @@ class LatexPaperParser:
                 if cite not in unique_citations:
                     unique_citations.append(cite)
             
-            sentence = LatexSentence(text=sentence_text, citations=unique_citations)
+            sentence = LatexSentence(text=sentence_text.strip(), citations=unique_citations)
             sentences.append(sentence)
             
             # Check if there's a paragraph break after this sentence
@@ -491,7 +490,7 @@ class LatexPaperParser:
         for node in nodes:
             if isinstance(node, LatexCharsNode):
                 # Check for paragraph breaks (multiple newlines)
-                text = node.chars
+                text = node.chars.strip()
                 if '\n\n' in text or '\n\n\n' in text:
                     # Split by paragraph breaks
                     parts = re.split(r'\n\n+', text)
@@ -499,8 +498,8 @@ class LatexPaperParser:
                         part = part.strip()
                         if part:
                             segments.append({'text': part, 'citations': [], 'paragraph_break': False})
-                        if i < len(parts) - 1:  # Not the last part
-                            segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
+                            if i < len(parts) - 1:  # Not the last part
+                                segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
                 else:
                     segments.append({'text': text, 'citations': [], 'paragraph_break': False})
             
@@ -558,23 +557,19 @@ class LatexPaperParser:
                     paragraphs.append(current_paragraph)
                     current_paragraph = LatexParagraph()
                 
-            elif isinstance(item, LatexSentence):
+            elif isinstance(item, LatexSentence) or isinstance(item, LatexEnvironment):
                 current_paragraph.add_sentence(item)
                 
             elif isinstance(item, LatexEnvironment):
-                # Environments typically cause paragraph breaks
                 if current_paragraph.sentences:
                     paragraphs.append(current_paragraph)
-                    current_paragraph = LatexParagraph()
-                
+                    current_paragraph = LatexParagraph()                
                 current_paragraph.add_sentence(item)
-                
-                # Start new paragraph after environment
                 paragraphs.append(current_paragraph)
                 current_paragraph = LatexParagraph()
         
         # Add final paragraph if not empty
-        if current_paragraph.content:
+        if current_paragraph.sentences:
             paragraphs.append(current_paragraph)
         
         return paragraphs if paragraphs else []
@@ -682,7 +677,7 @@ class LatexPaperParser:
                 sentence = sentences[i]
                 i += 1
             
-            sentence = sentence.replace('<PERIOD>', '. ').strip()
+            sentence = sentence.replace('<PERIOD>', '. ')
             if sentence:
                 result.append(sentence)
         
@@ -691,35 +686,10 @@ class LatexPaperParser:
     def _extract_title(self, node):
         """Extract title from a section/subsection macro node"""
         if node.nodeargd and node.nodeargd.argnlist:
-            for arg in node.nodeargd.argnlist:
+            for arg in reversed(node.nodeargd.argnlist):
                 if arg is not None:
                     return self.converter.nodelist_to_text([arg]).strip()
         return "Untitled"
-    
-    def _get_metadata(self):
-        """Extract metadata from document"""
-        metadata = {}
-        nodelist, _, _ = self.walker.get_latex_nodes()
-        
-        for node in nodelist:
-            if isinstance(node, LatexMacroNode):
-                if node.macroname == 'title' and node.nodeargd and node.nodeargd.argnlist:
-                    for arg in node.nodeargd.argnlist:
-                        if arg is not None:
-                            metadata['title'] = self.converter.nodelist_to_text([arg]).strip()
-                            break
-                
-                elif node.macroname == 'author' and node.nodeargd and node.nodeargd.argnlist:
-                    for arg in node.nodeargd.argnlist:
-                        if arg is not None:
-                            metadata['author'] = self.converter.nodelist_to_text([arg]).strip()
-                            break
-            
-            elif isinstance(node, LatexEnvironmentNode):
-                if node.environmentname == 'abstract':
-                    metadata['abstract_nodes'] = node.nodelist
-        
-        return metadata
     
     def _extract_all_citation_keys(self):
         """Extract all unique citations"""
