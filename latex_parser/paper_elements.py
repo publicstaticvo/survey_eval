@@ -72,20 +72,27 @@ class LatexParagraph:
         return self.sentences
     
     def _get_next_sentence_until_citation(self, current_idx: int, sentence_number: int):
+        graph_environments = {'tikzpicture', 'figure', 'table', 'tabular'}    
         current_sentence = self.sentences[current_idx]
         assert isinstance(current_sentence, LatexSentence)
         if len(current_sentence.citations) >= 2: return []
         next_sentences = []
-        for i in range(current_idx + 1, current_idx + sentence_number + 1):
+        i = current_idx + 1
+        while i <= current_idx + sentence_number + 1:
             if i >= len(self.sentences): return next_sentences
             sentence = self.sentences[i]
             if isinstance(sentence, LatexSentence) and sentence.citations: return next_sentences
-            next_sentences.append(sentence.text)
+            # 假如是图表类的environment就跳过，否则接上。
+            if isinstance(sentence, LatexEnvironment) and sentence.environment_name in graph_environments:
+                sentence_number += 1
+            else: 
+                next_sentences.append(sentence.text)
+            i += 1
         return next_sentences
     
     def get_citation_info(self):
         sentences = []
-        for i, sentence in self.sentences:
+        for i, sentence in enumerate(self.sentences):
             if isinstance(sentence, LatexSentence):
                 sentences.append({
                     "text": sentence.text, 

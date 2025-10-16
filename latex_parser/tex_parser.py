@@ -40,6 +40,7 @@ class LatexPaperParser:
             'eqnarray', 'eqnarray*', 'displaymath',
             'tabular', 'verbatim', 'lstlisting',
         }        
+        self.graph_environments = {'tikzpicture', 'figure', 'table', 'tabular'}
         self.spacing_environments = {'doublespace', 'singlespace'}        
         # Store bibliography entries
         self.bibliography_entries = {}
@@ -557,16 +558,16 @@ class LatexPaperParser:
                     paragraphs.append(current_paragraph)
                     current_paragraph = LatexParagraph()
                 
-            elif isinstance(item, LatexSentence) or isinstance(item, LatexEnvironment):
-                current_paragraph.add_sentence(item)
-                
-            elif isinstance(item, LatexEnvironment):
+            elif isinstance(item, LatexEnvironment) and item.environment_name in self.graph_environments:
                 if current_paragraph.sentences:
                     paragraphs.append(current_paragraph)
-                    current_paragraph = LatexParagraph()                
+                    current_paragraph = LatexParagraph()
                 current_paragraph.add_sentence(item)
                 paragraphs.append(current_paragraph)
                 current_paragraph = LatexParagraph()
+                
+            elif isinstance(item, LatexSentence) or isinstance(item, LatexEnvironment):
+                current_paragraph.add_sentence(item)
         
         # Add final paragraph if not empty
         if current_paragraph.sentences:
