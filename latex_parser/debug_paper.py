@@ -84,11 +84,15 @@ def debug_paper():
 
 
 def debug_citation():
-    with open("P:\\AI4S\\survey_paper\\mat\\arXiv-2408.12171v1\\main.tex", encoding='utf-8') as f:
+    with open("P:\\AI4S\\survey_eval\\crawled_papers\\cs\\2209.00796\\main.tex", encoding='utf-8') as f:
         content = f.read()
-    parser = LatexPaperParser(content, "P:\\AI4S\\survey_paper\\mat\\arXiv-2408.12171v1")
+    parser = LatexPaperParser(content, "P:\\AI4S\\survey_eval\\crawled_papers\\cs\\2209.00796")
     paper = parser.parse()
     all_citations = paper.map_citations_to_sentence()
     print(len(all_citations))
     for i in range(10):
         print(all_citations[i])
+
+
+if __name__ == "__main__":
+    debug_citation()

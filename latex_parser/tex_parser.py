@@ -7,11 +7,79 @@ import os
 import re
 import json
 import glob
-from typing import List
+from typing import List, Any
 from pylatexenc.latex2text import LatexNodes2Text
 from pylatexenc.latexwalker import LatexWalker, LatexEnvironmentNode, LatexMacroNode, LatexCharsNode
 from paper_elements import *
+from constants import *
 from bib_parser import parse_bbl_file, parse_bib_file
+from utils import detect_encoding
+
+
+def process_input_commands(latex_content, base_path):
+    """
+    Process \input{filename} commands by replacing them with file contents
+    
+    Args:
+        latex_content: Latex content string
+        
+    Returns:
+        str: Latex content with all \input commands resolved
+    """
+    # Pattern to match \input{filename} or \input{filename.tex}
+    # Handles optional spaces and both with/without .tex extension
+    pattern = re.compile(r'^\\input\s*\{([^}]+)\}', re.MULTILINE)
+    
+    def replace_input(match):
+        filename = match.group(1).strip()
+        
+        # Add .tex extension if not present
+        if filename.startswith("\"") and filename.endswith("\""):
+            filename = filename[1:-1]
+
+        if all(x not in filename for x in ['.tex', '.bbl']):
+            filename += '.tex'
+
+        if "/" in filename:
+            filename = filename.split("/")
+        elif "\\" in filename:
+            filename = filename.split("\\")
+        else:
+            filename = [filename]
+        
+        # Construct full path
+        filepath = os.path.join(base_path, *filename)
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+            
+            # Recursively process \input commands in the included file
+            return process_input_commands(file_content, base_path)
+        
+        except FileNotFoundError:
+            print(f"Warning: Could not find file '{filepath}' for \\input command")
+            return f"% File not found: {filename}"
+        
+        except UnicodeDecodeError:
+            try:
+                file_content, _ = detect_encoding(filepath)
+            except Exception as e:
+                print(f"Warning: Error reading file '{filepath}': {e}")
+                return f"% Error reading file: {filename}"
+        
+        except Exception as e:
+            print(f"Warning: Error reading file '{filepath}': {e}")
+            return f"% Error reading file: {filename}"
+    
+    # Replace all \input commands
+    processed_content = re.sub(pattern, replace_input, latex_content)
+
+    # Remove \href commands that would cause bugs
+    processed_content = re.sub(r"\\href\s*\{[^\}]*\}\s*\{([^\}]*)\}", r"\1", processed_content)
+    processed_content = re.sub(r"\\href\s*\{([^\}]*)\}", "", processed_content)
+    
+    return processed_content
 
 
 class LatexPaperParser:
@@ -19,9 +87,8 @@ class LatexPaperParser:
     
     def __init__(self, latex_content: str, base_path='.'):
         self.base_path = base_path
-        self.latex_content = self._process_input_commands(latex_content)
+        self.latex_content = latex_content
         self.walker = LatexWalker(self.latex_content)
-        # keep_inline_math=True, keep_display_math=True,
         self.converter = LatexNodes2Text(math_mode="verbatim")
         self.section_levels = {
             'section': 1,
@@ -30,71 +97,9 @@ class LatexPaperParser:
             'paragraph': 4,
             'subparagraph': 5
         }
-        # Environments that should be kept as-is (not split into sentences)
-        self.preserved_environments = {
-            'theorem', 'lemma', 'corollary', 'proposition', 'definition',
-            'remark', 'note', 'example', 'proof',
-            'tikzpicture', 'figure', 'table', 'algorithm',
-            'equation', 'equation*', 'align', 'align*', 
-            'gather', 'gather*', 'multline', 'multline*',
-            'eqnarray', 'eqnarray*', 'displaymath',
-            'tabular', 'verbatim', 'lstlisting',
-        }        
-        self.graph_environments = {'tikzpicture', 'figure', 'table', 'tabular'}
-        self.spacing_environments = {'doublespace', 'singlespace'}        
         # Store bibliography entries
+        self.bib_files = []
         self.bibliography_entries = {}
-
-    def _process_input_commands(self, latex_content):
-        """
-        Process \input{filename} commands by replacing them with file contents
-        
-        Args:
-            latex_content: Latex content string
-            
-        Returns:
-            str: Latex content with all \input commands resolved
-        """
-        # Pattern to match \input{filename} or \input{filename.tex}
-        # Handles optional spaces and both with/without .tex extension
-        pattern = re.compile(r'\\input\s*\{([^}]+)\}')
-        
-        def replace_input(match):
-            filename = match.group(1).strip()
-            
-            # Add .tex extension if not present
-            if "." not in filename:
-                filename += '.tex'
-
-            if "/" in filename:
-                filename = filename.split("/")
-            elif "\\" in filename:
-                filename = filename.split("\\")
-            else:
-                filename = [filename]
-            
-            # Construct full path
-            filepath = os.path.join(self.base_path, *filename)
-            
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    file_content = f.read()
-                
-                # Recursively process \input commands in the included file
-                return self._process_input_commands(file_content)
-            
-            except FileNotFoundError:
-                print(f"Warning: Could not find file '{filepath}' for \\input command")
-                return f"% File not found: {filename}"
-            
-            except Exception as e:
-                print(f"Warning: Error reading file '{filepath}': {e}")
-                return f"% Error reading file: {filename}"
-        
-        # Replace all \input commands
-        processed_content = re.sub(pattern, replace_input, latex_content)
-        
-        return processed_content
    
     def parse(self) -> Optional[LatexPaper]:
         """
@@ -140,7 +145,9 @@ class LatexPaperParser:
         for f in glob.glob(os.path.join(self.base_path, "*.bbl")):
             bib = parse_bbl_file(f)
             self.bibliography_entries.update(bib)
-        for f in glob.glob(os.path.join(self.base_path, "*.bib")):
+        if not self.bib_files: self.bib_files = glob.glob(os.path.join(self.base_path, "*.bib"))
+        for f in self.bib_files:
+            if "anthology" in f: continue
             bib = parse_bib_file(f)
             self.bibliography_entries.update(bib)
         paper.bibliography = self.bibliography_entries
@@ -205,7 +212,7 @@ class LatexPaperParser:
                     if node.environmentname == "abstract":
                         abstract = LatexSubSubSection(name="Abstract")
                         self._create_paragraphs_from_nodes(node.nodelist, abstract)
-                    elif node.environmentname in self.spacing_environments:
+                    else:  # if node.environmentname in SPACING_ENVIRONMENTS
                         output = self._parse_sections(node.nodelist)
                         sections_in_environment, title_back, author_back, abstract_back = output
                         if title is not None: title = title_back
@@ -247,8 +254,18 @@ class LatexPaperParser:
                 self._parse_subsection_content(subsection_content, subsection)
                 parent_section.add_child(subsection)
                 i = j
-            else:
-                current_text_nodes.append(node)
+            else:                
+                if not (isinstance(node, LatexMacroNode) and node.macroname in DELETE_MACROS):
+                    current_text_nodes.append(node)
+                if isinstance(node, LatexMacroNode) and node.macroname == "bibliography":
+                    if node.nodeargd and node.nodeargd.argnlist:
+                        for arg in node.nodeargd.argnlist:
+                            if arg is not None:
+                                bib_file = self.converter.nodelist_to_text([arg]).strip()
+                                if not bib_file.endswith(".bib"): bib_file = f"{bib_file}.bib"
+                                bib_path = os.path.join(self.base_path, bib_file)
+                                if os.path.exists(bib_path): self.bib_files.append(bib_path)
+                                break
                 i += 1
         
         # Add remaining text
@@ -289,7 +306,8 @@ class LatexPaperParser:
                 parent_subsection.add_child(subsubsection)
                 i = j
             else:
-                current_text_nodes.append(node)
+                if not (isinstance(node, LatexMacroNode) and node.macroname == 'label'):
+                    current_text_nodes.append(node)
                 i += 1
     
     def _create_paragraphs_from_nodes(self, nodes, parent) -> List[LatexParagraph]:
@@ -316,7 +334,7 @@ class LatexPaperParser:
         for node in nodes:            
             if isinstance(node, LatexEnvironmentNode):
                 # Check if this environment should be preserved
-                # if node.environmentname in self.preserved_environments:
+                # if node.environmentname in PRESERVED_ENVIRONMENTS:
                     # Process accumulated text nodes first
 
                 if node.environmentname == "thebibliography": continue
@@ -336,7 +354,8 @@ class LatexPaperParser:
                 )
                 content_items.append(latex_env)
             else:
-                accumulated_nodes.append(node)
+                if not (isinstance(node, LatexMacroNode) and node.macroname == 'label'):
+                    accumulated_nodes.append(node)
         
         # Process any remaining accumulated nodes
         if accumulated_nodes:
@@ -508,11 +527,12 @@ class LatexPaperParser:
                 if node.macroname in ['cite', 'citep', 'citet', 'citealt', "citeyearpar",
                                       'citealp', 'citeauthor', 'citeyear', 'citetext']:
                     citations = self._extract_citation_keys(node)
-                    segments.append({'text': '', 'citations': citations, 'paragraph_break': False})
+                    citation_text = f'\\cite{{{",".join(citations)}}}'
+                    segments.append({'text': citation_text, 'citations': citations, 'paragraph_break': False})
                 elif node.macroname == 'par':
                     # Explicit paragraph break command
                     segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
-                else:
+                elif node.macroname not in DELETE_MACROS:
                     try:
                         text = self.converter.nodelist_to_text([node])
                         segments.append({'text': text, 'citations': [], 'paragraph_break': False})
@@ -522,7 +542,7 @@ class LatexPaperParser:
                                 if hasattr(arg, 'nodelist'):
                                     segments.extend(self._extract_text_segments_with_breaks(arg.nodelist))
             
-            elif isinstance(node, LatexEnvironmentNode) and node.environmentname not in self.preserved_environments:
+            elif isinstance(node, LatexEnvironmentNode) and node.environmentname not in PRESERVED_ENVIRONMENTS:
                 # Skip preserved environments - they should not be split
                 segments.extend(self._extract_text_segments_with_breaks(arg.nodelist))
             else:
@@ -558,7 +578,7 @@ class LatexPaperParser:
                     paragraphs.append(current_paragraph)
                     current_paragraph = LatexParagraph()
                 
-            elif isinstance(item, LatexEnvironment) and item.environment_name in self.graph_environments:
+            elif isinstance(item, LatexEnvironment) and item.environment_name in GRAPH_ENVIRONMENTS:
                 if current_paragraph.sentences:
                     paragraphs.append(current_paragraph)
                     current_paragraph = LatexParagraph()
@@ -717,3 +737,60 @@ class LatexPaperParser:
         
         find_citations(nodelist)
         return sorted(list(citations))
+
+
+def construct_citation_info(paper: LatexPaper, parser: LatexPaperParser) -> List[Dict[str, Any]]:
+
+    def get_citation_info_in_paragraph(paragraph: LatexParagraph):
+        sentences = []
+        for i, sentence in enumerate(paragraph.sentences):
+            if sentence.citations:
+                citation_key_value = {}
+                for citation in sentence.citations:
+                    citation_value = parser.get_bibliography_entry(citation)
+                    if citation_value: citation_key_value[citation] = citation_value
+                    else: 
+                        citation_key_value = {}
+                        break
+                if citation_key_value:
+                    sentences.append({
+                        "text": sentence.text, 
+                        "citation": citation_key_value, 
+                        "serial": " ".join(paragraph.get_next_sentence_until_citation(i, 3))
+                    })
+        return sentences
+    
+    all_citation_info = []
+    # abstract
+    if paper.abstract:
+        for i, paragraph in enumerate(paper.abstract.children):
+            citation_info = get_citation_info_in_paragraph(paragraph)
+            for x in citation_info: x['section_id'] = f"0-{i + 1}"
+            all_citation_info.extend(citation_info)
+
+    for i, section in enumerate(paper.sections):
+        subsection_start_idx = -1
+        for j, subsection in enumerate(section.children):
+            if isinstance(subsection, LatexParagraph):
+                assert subsection_start_idx == -1
+                citation_info = get_citation_info_in_paragraph(subsection)
+                for x in citation_info: x['section_id'] = f"{i + 1}-{j + 1}"
+                all_citation_info.extend(citation_info)
+            else:
+                if subsection_start_idx == -1: subsection_start_idx = j
+                subsubsection_start_idx = -1
+                for k, subsubsection in enumerate(subsection.children):
+                    if isinstance(subsubsection, LatexParagraph):
+                        assert subsubsection_start_idx == -1
+                        citation_info = get_citation_info_in_paragraph(subsubsection)
+                        chapter_str = f"{i + 1}.{j - subsection_start_idx + 1}-{k + 1}"
+                        for x in citation_info: x['section_id'] = chapter_str
+                        all_citation_info.extend(citation_info)
+                    else:
+                        if subsubsection_start_idx == -1: subsubsection_start_idx = k
+                        for l, paragraph in enumerate(subsubsection.children):
+                            citation_info = get_citation_info_in_paragraph(paragraph)
+                            chapter_str = f"{i + 1}.{j - subsection_start_idx + 1}.{k - subsubsection_start_idx + 1}-{l + 1}"
+                            for x in citation_info: x['section_id'] = chapter_str
+                            all_citation_info.extend(citation_info)
+    return all_citation_info

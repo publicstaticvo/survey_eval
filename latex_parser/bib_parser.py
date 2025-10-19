@@ -16,6 +16,7 @@ from pylatexenc.latex2text import LatexNodes2Text
 from pylatexenc.latexwalker import (
     LatexWalker, LatexEnvironmentNode, LatexMacroNode, LatexCharsNode, LatexGroupNode
 )
+from utils import detect_encoding
 
 
 def parse_bib_file(filepath: str) -> Dict[str, Any]:
@@ -28,8 +29,13 @@ def parse_bib_file(filepath: str) -> Dict[str, Any]:
     Returns:
         List of dictionaries containing citation information
     """
-    with open(filepath, 'r', encoding='utf-8') as f:
-        bib_database = bibtexparser.load(f)
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            bib_database = bibtexparser.load(f)
+    except:
+        _, encoding = detect_encoding(filepath)
+        with open(filepath, 'r', encoding=encoding) as f:
+            bib_database = bibtexparser.load(f)
     
     citations = {}
     for entry in bib_database.entries:
@@ -42,6 +48,10 @@ def parse_bib_file(filepath: str) -> Dict[str, Any]:
 
 def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
     """Parse standard \\bibitem format."""
+    # Remove \href commands that would cause bugs
+    content = re.sub(r"\\href\s*\{[^\}]*\}\s*\{([^\}]*)\}", r"\1", content)
+    content = re.sub(r"\\href\s*\{([^\}]*)\}", "", content)
+    
     nodes, _, _ = LatexWalker(content).get_latex_nodes()
     converter = LatexNodes2Text(math_mode="verbatim")
 
@@ -55,7 +65,7 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
                     return target_node
                 
     def get_ref_content(nodes):
-        content = converter.nodelist_to_text(current_value).strip()
+        content = converter.nodelist_to_text(nodes).strip()
         if any(isinstance(node, LatexMacroNode) and node.macroname == "newblock" for node in nodes):
             content_split = content.split("\n")
             if len(content_split) > 2:
@@ -76,7 +86,7 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
         for node in bib_node.nodelist:
             if isinstance(node, LatexMacroNode) and node.macroname == "bibitem":
                 if current_key:
-                    cite_content =get_ref_content(current_value)
+                    cite_content = get_ref_content(current_value)
                     all_bib[current_key] = cite_content
                 current_key = None
                 if node.nodeargd and node.nodeargd.argnlist:
@@ -155,9 +165,11 @@ def parse_bbl_file(filepath: str) -> Dict[str, Any]:
         List of dictionaries containing citation information
     """
     
-    if os.path.isfile(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
+    if os.path.isfile(filepath):        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
+        except:
+            content, _ = detect_encoding(filepath)
     else: content = filepath
 
     if "\\bibitem" in content:

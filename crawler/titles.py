@@ -12,9 +12,49 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from collections import Counter
-import tarfile
-import zipfile
-import gzip, shutil
+import tarfile, zipfile, gzip, shutil
+
+categories = {
+    "cs": [
+        "cs.AI", "cs.AR", "cs.CC", "cs.CE", "cs.CG", "cs.CL", "cs.CR", "cs.CV", "cs.CY", 
+        "cs.DB", "cs.DC", "cs.DL", "cs.DM", "cs.DS", "cs.ET", "cs.FL", "cs.GL", "cs.GR", 
+        "cs.GT", "cs.HC", "cs.IR", "cs.IT", "cs.LG", "cs.LO", "cs.MA", "cs.MM", "cs.MS", 
+        "cs.NA", "cs.NE", "cs.NI", "cs.OH", "cs.OS", "cs.PF", "cs.PL", "cs.RO", "cs.SC", 
+        "cs.SD", "cs.SE", "cs.SI", "cs.SY"
+    ], 
+    "eess": ["eess.AS", "eess.IV", "eess.SP", "eess.SY"],
+    "econ": ["econ.EM", "econ.GN", "econ.TH"],
+    "math": [
+        "math.AC", "math.AG", "math.AP", "math.AT", "math.CA", "math.CO", "math.CT", 
+        "math.CV", "math.DG", "math.DS", "math.FA", "math.GM", "math.GN", "math.GR", 
+        "math.GT", "math.HO", "math.IT", "math.KT", "math.LO", "math.MG", "math.MP", 
+        "math.NA", "math.NT", "math.OA", "math.OC", "math.PR", "math.QA", "math.RA", 
+        "math.RT", "math.SG", "math.SP", "math.ST"
+    ],
+    "physics": [
+        "astro-ph.CO", "astro-ph.EP", "astro-ph.GA", "astro-ph.HE", "astro-ph.IM", 
+        "astro-ph.SR", "cond-mat.dis-nn", "cond-mat.mes-hall", "cond-mat.mtrl-sci", 
+        "cond-mat.other", "cond-mat.quant-gas", "cond-mat.soft", "cond-mat.stat-mech", 
+        "cond-mat.str-el", "cond-mat.supr-con", "gr-qc", "hep-ex", "hep-lat", "hep-ph", 
+        "hep-th", "math-ph", "nlin.AO", "nlin.CD", "nlin.CG", "nlin.PS", "nlin.SI", 
+        "nucl-ex", "nucl-th", "physics.acc-ph", "physics.ao-ph", "physics.app-ph", 
+        "physics.atm-clus", "physics.atom-ph", "physics.bio-ph", "physics.chem-ph", 
+        "physics.class-ph", "physics.comp-ph", "physics.data-an", "physics.ed-ph", 
+        "physics.flu-dyn", "physics.gen-ph", "physics.geo-ph", "physics.hist-ph", 
+        "physics.ins-det", "physics.med-ph", "physics.optics", "physics.pop-ph", 
+        "physics.soc-ph", "physics.space-ph", "quant-ph"
+    ],
+    "q-bio": [
+        "q-bio.GN", "q-bio.MN", "q-bio.NC", "q-bio.OT", "q-bio.PE", "q-bio.QM", 
+        "q-bio.SC", "q-bio.TO"
+    ],
+    "q-fin": [
+        "q-fin.CP", "q-fin.EC", "q-fin.GN", "q-fin.MF", "q-fin.PM", "q-fin.PR", 
+        "q-fin.RM", "q-fin.ST", "q-fin.TR"
+    ],
+    "stat": ["stat.AP", "stat.CO", "stat.ME", "stat.ML", "stat.OT", "stat.TH"]
+}
+
 
 class ArxivCrawlerEngine:
     def __init__(self, api_key: str = ""):
@@ -68,7 +108,7 @@ class ArxivCrawlerEngine:
                             f.write(chunk)
                 
                 file_size = os.path.getsize(save_path) / (1024 * 1024)  # Size in MB
-                print(f"Successfully downloaded {arxiv_id}.{format} to: {save_path} ({file_size:.2f} MB)")
+                print(f"Successfully downloaded {arxiv_id}.{format} to: {save_path} ({file_size:.2f} MB)", end=" ")
                 return True
                 
             except requests.RequestException as e:
@@ -226,7 +266,7 @@ class ArxivCrawlerEngine:
                             
                             papers.append({
                                 'title': title,
-                                'arxiv_url': paper_id,  # arxiv_url,
+                                'arxiv_url': paper_id,
                                 'category': category,
                                 'date': f"{year}-{month:02d}"
                             })
@@ -400,6 +440,89 @@ class ArxivCrawlerEngine:
         
         print(f"\nResults saved to {filename}")
 
+    def full_process(
+            self, 
+            subjects_to_crawl: List[str] = ["cs", "econ", "eess", "math", "phy", "q-bio", "q-fin", "stat"],
+            months: List[int] = list(range(1, 11)),
+            year: int = 2025,
+            save_fn: str = "survey2025.json",
+            get_citation_details: bool = False,
+            project_download_base_path: bool = "P:\\AI4S\\survey_eval\\crawled_papers",
+            num_paper_to_download: int = -1
+        ):
+        print("Starting arXiv Survey Papers Crawler")
+        print(f"Categories: {subjects_to_crawl}")
+        print(f"Months: {months}")
+        print("=" * 80)
+        
+        # Crawl all papers
+        final_results = {s: [] for s in subjects_to_crawl}
+        for subject in subjects_to_crawl:
+            for category in categories[subject]:
+                for month in months:
+                    # Phase 1: Crawl All Papers
+                    papers = self.crawl_month(category, year, month)
+                    print(f"\nTotal papers crawled for {subject}: {len(papers)}")
+                    # Phase 2: Filter Survey Papers
+                    survey_papers = self.filter_survey_papers(papers)
+                    print(f"Survey/Summary papers found: {len(survey_papers)}")
+                    # Phase 3: Get Cited By Number
+                    if get_citation_details:
+                        survey_papers_with_cited = []
+                        for paper in survey_papers:
+                            citation_details = self.get_citations_semantic_scholar(paper['arxiv_url'], paper['title'])
+                            if citation_details['citations'] >= 0:
+                                paper['cited'] = citation_details['citations']
+                                survey_papers_with_cited.append(paper)
+                        print(f"Survey/Summary papers cited info found: {len(survey_papers_with_cited)}")
+                        # Save
+                        final_results[subject].extend(survey_papers_with_cited)
+                    else:
+                        final_results[subject].extend(survey_papers)
+        
+        # Display results
+        print("\n" + "=" * 80)
+        final_results_count = {k: len(v) for k, v in final_results.items()}
+        print(f"Total summary papers: {final_results_count}")
+        self.save_to_file(final_results, save_fn)
+        print("Starting download arxiv projects")
+        print("=" * 80)
+
+        for s in subjects_to_crawl:            
+            # Filter most-cited summaries
+            if num_paper_to_download > 0:
+                selected_papers = self.select_representative_papers(final_results[s], num_paper_to_download)
+            else:
+                selected_papers = final_results[s]
+            for i, paper in enumerate(selected_papers):
+                save_path = os.path.join(project_download_base_path, s)
+                if os.path.exists(os.path.join(save_path, paper['arxiv_url'])): continue
+                # self.download_paper(paper['arxiv_url'], save_path=save_path)
+                status = self.download_paper(paper['arxiv_url'], "tex", save_path=save_path)
+                if status:
+                    # unzip paper
+                    print(f"{i + 1}/{len(selected_papers)}")
+                    path_to_unzip = os.path.join(save_path, f"{paper['arxiv_url']}.tar.gz")
+                    path_target = os.path.join(save_path, f"{paper['arxiv_url']}")
+                    try:
+                        os.makedirs(path_target, exist_ok=True)
+                        with tarfile.open(path_to_unzip, "r:gz") as f:
+                            f.extractall(path_target)
+                    except:
+                        try:
+                            with zipfile.ZipFile(path_to_unzip, 'r') as f:
+                                f.extractall(path_target)
+                        except:
+                            try:
+                                main_tex = os.path.join(path_target, "main.tex")
+                                with gzip.open(path_to_unzip, 'rb') as fin, open(main_tex, "wb") as fout:
+                                    shutil.copyfileobj(fin, fout)
+                            except:
+                                # Is PDF file
+                                print(f"fail to unzip {paper['arxiv_url']}")
+                    finally:
+                        os.remove(path_to_unzip)
+
 
 def download_title_and_save(
         engine: ArxivCrawlerEngine, 
@@ -408,48 +531,6 @@ def download_title_and_save(
         year: int = 2025,
         save_fn: str = "survey2025.json"
     ):
-    # Define categories
-    categories = {
-        "cs": [
-            "cs.AI", "cs.AR", "cs.CC", "cs.CE", "cs.CG", "cs.CL", "cs.CR", "cs.CV", "cs.CY", 
-            "cs.DB", "cs.DC", "cs.DL", "cs.DM", "cs.DS", "cs.ET", "cs.FL", "cs.GL", "cs.GR", 
-            "cs.GT", "cs.HC", "cs.IR", "cs.IT", "cs.LG", "cs.LO", "cs.MA", "cs.MM", "cs.MS", 
-            "cs.NA", "cs.NE", "cs.NI", "cs.OH", "cs.OS", "cs.PF", "cs.PL", "cs.RO", "cs.SC", 
-            "cs.SD", "cs.SE", "cs.SI", "cs.SY"
-        ], 
-        "eess": ["eess.AS", "eess.IV", "eess.SP", "eess.SY"],
-        "econ": ["econ.EM", "econ.GN", "econ.TH"],
-        "math": [
-            "math.AC", "math.AG", "math.AP", "math.AT", "math.CA", "math.CO", "math.CT", 
-            "math.CV", "math.DG", "math.DS", "math.FA", "math.GM", "math.GN", "math.GR", 
-            "math.GT", "math.HO", "math.IT", "math.KT", "math.LO", "math.MG", "math.MP", 
-            "math.NA", "math.NT", "math.OA", "math.OC", "math.PR", "math.QA", "math.RA", 
-            "math.RT", "math.SG", "math.SP", "math.ST"
-        ],
-        "physics": [
-            "astro-ph.CO", "astro-ph.EP", "astro-ph.GA", "astro-ph.HE", "astro-ph.IM", 
-            "astro-ph.SR", "cond-mat.dis-nn", "cond-mat.mes-hall", "cond-mat.mtrl-sci", 
-            "cond-mat.other", "cond-mat.quant-gas", "cond-mat.soft", "cond-mat.stat-mech", 
-            "cond-mat.str-el", "cond-mat.supr-con", "gr-qc", "hep-ex", "hep-lat", "hep-ph", 
-            "hep-th", "math-ph", "nlin.AO", "nlin.CD", "nlin.CG", "nlin.PS", "nlin.SI", 
-            "nucl-ex", "nucl-th", "physics.acc-ph", "physics.ao-ph", "physics.app-ph", 
-            "physics.atm-clus", "physics.atom-ph", "physics.bio-ph", "physics.chem-ph", 
-            "physics.class-ph", "physics.comp-ph", "physics.data-an", "physics.ed-ph", 
-            "physics.flu-dyn", "physics.gen-ph", "physics.geo-ph", "physics.hist-ph", 
-            "physics.ins-det", "physics.med-ph", "physics.optics", "physics.pop-ph", 
-            "physics.soc-ph", "physics.space-ph", "quant-ph"
-        ],
-        "q-bio": [
-            "q-bio.GN", "q-bio.MN", "q-bio.NC", "q-bio.OT", "q-bio.PE", "q-bio.QM", 
-            "q-bio.SC", "q-bio.TO"
-        ],
-        "q-fin": [
-            "q-fin.CP", "q-fin.EC", "q-fin.GN", "q-fin.MF", "q-fin.PM", "q-fin.PR", 
-            "q-fin.RM", "q-fin.ST", "q-fin.TR"
-        ],
-        "stat": ["stat.AP", "stat.CO", "stat.ME", "stat.ML", "stat.OT", "stat.TH"]
-    }
-    
     print("Starting arXiv Survey Papers Crawler")
     print(f"Categories: {subjects_to_crawl}")
     print(f"Months: {months}")
@@ -563,16 +644,4 @@ if __name__ == "__main__":
     # ["cs", "econ", "eess", "math", "phy", "q-bio", "q-fin", "stat"]
     # api_key=sk-6t2r2UAqWiwrk6hm7d499e1bFfE14399A3D7C947137891Eb
     crawler = ArxivCrawlerEngine()
-    # download_title_and_save(crawler)
-    # with open("survey2025.json", "r+", encoding='utf-8') as f:
-    #     survey_papers = json.load(f)
-    # get_survey_citations(crawler, survey_papers)
-    # subjects = ['econ', 'q-bio', 'q-fin', 'stat', 'eess']
-    # survey_2024 = download_title_and_save(crawler, subjects, list(range(1, 13)), 2024, "survey2024.json")
-    # for s in subjects:
-    #     with open(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papersf.json", "r+", encoding='utf-8') as f:
-    #         papers = json.load(f)
-    #     papers.extend(survey_2024[s])
-    #     with open(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papers.json", "w+", encoding='utf-8') as f:
-    #         json.dump(papers, f)
-    cluster_and_download_papers(crawler, ['cs'])
+    crawler.full_process(['cs'])
