@@ -6,54 +6,14 @@ import tqdm
 import json
 import re
 import os
+import tarfile, zipfile, gzip, shutil
 from typing import List, Dict, Optional, Union
 from urllib.parse import urljoin, quote
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from collections import Counter
-import tarfile, zipfile, gzip, shutil
-
-categories = {
-    "cs": [
-        "cs.AI", "cs.AR", "cs.CC", "cs.CE", "cs.CG", "cs.CL", "cs.CR", "cs.CV", "cs.CY", 
-        "cs.DB", "cs.DC", "cs.DL", "cs.DM", "cs.DS", "cs.ET", "cs.FL", "cs.GL", "cs.GR", 
-        "cs.GT", "cs.HC", "cs.IR", "cs.IT", "cs.LG", "cs.LO", "cs.MA", "cs.MM", "cs.MS", 
-        "cs.NA", "cs.NE", "cs.NI", "cs.OH", "cs.OS", "cs.PF", "cs.PL", "cs.RO", "cs.SC", 
-        "cs.SD", "cs.SE", "cs.SI", "cs.SY"
-    ], 
-    "eess": ["eess.AS", "eess.IV", "eess.SP", "eess.SY"],
-    "econ": ["econ.EM", "econ.GN", "econ.TH"],
-    "math": [
-        "math.AC", "math.AG", "math.AP", "math.AT", "math.CA", "math.CO", "math.CT", 
-        "math.CV", "math.DG", "math.DS", "math.FA", "math.GM", "math.GN", "math.GR", 
-        "math.GT", "math.HO", "math.IT", "math.KT", "math.LO", "math.MG", "math.MP", 
-        "math.NA", "math.NT", "math.OA", "math.OC", "math.PR", "math.QA", "math.RA", 
-        "math.RT", "math.SG", "math.SP", "math.ST"
-    ],
-    "physics": [
-        "astro-ph.CO", "astro-ph.EP", "astro-ph.GA", "astro-ph.HE", "astro-ph.IM", 
-        "astro-ph.SR", "cond-mat.dis-nn", "cond-mat.mes-hall", "cond-mat.mtrl-sci", 
-        "cond-mat.other", "cond-mat.quant-gas", "cond-mat.soft", "cond-mat.stat-mech", 
-        "cond-mat.str-el", "cond-mat.supr-con", "gr-qc", "hep-ex", "hep-lat", "hep-ph", 
-        "hep-th", "math-ph", "nlin.AO", "nlin.CD", "nlin.CG", "nlin.PS", "nlin.SI", 
-        "nucl-ex", "nucl-th", "physics.acc-ph", "physics.ao-ph", "physics.app-ph", 
-        "physics.atm-clus", "physics.atom-ph", "physics.bio-ph", "physics.chem-ph", 
-        "physics.class-ph", "physics.comp-ph", "physics.data-an", "physics.ed-ph", 
-        "physics.flu-dyn", "physics.gen-ph", "physics.geo-ph", "physics.hist-ph", 
-        "physics.ins-det", "physics.med-ph", "physics.optics", "physics.pop-ph", 
-        "physics.soc-ph", "physics.space-ph", "quant-ph"
-    ],
-    "q-bio": [
-        "q-bio.GN", "q-bio.MN", "q-bio.NC", "q-bio.OT", "q-bio.PE", "q-bio.QM", 
-        "q-bio.SC", "q-bio.TO"
-    ],
-    "q-fin": [
-        "q-fin.CP", "q-fin.EC", "q-fin.GN", "q-fin.MF", "q-fin.PM", "q-fin.PR", 
-        "q-fin.RM", "q-fin.ST", "q-fin.TR"
-    ],
-    "stat": ["stat.AP", "stat.CO", "stat.ME", "stat.ML", "stat.OT", "stat.TH"]
-}
+from constants import *
 
 
 class ArxivCrawlerEngine:
@@ -458,7 +418,7 @@ class ArxivCrawlerEngine:
         # Crawl all papers
         final_results = {s: [] for s in subjects_to_crawl}
         for subject in subjects_to_crawl:
-            for category in categories[subject]:
+            for category in CATEGORIES[subject]:
                 for month in months:
                     # Phase 1: Crawl All Papers
                     papers = self.crawl_month(category, year, month)
@@ -539,7 +499,7 @@ def download_title_and_save(
     # Crawl all papers
     final_results = {s: [] for s in subjects_to_crawl}
     for subject in subjects_to_crawl:
-        for category in categories[subject]:
+        for category in CATEGORIES[subject]:
             for month in months:
                 # Phase 1: Crawl All Papers
                 papers = engine.crawl_month(category, year, month)
@@ -566,12 +526,12 @@ def download_title_and_save(
     return final_results
 
 
-def get_survey_citations(engine: ArxivCrawlerEngine, papers: Dict[str, Dict[str, str]]):
+def get_citations(engine: ArxivCrawlerEngine, path: str, papers: Dict[str, Dict[str, str]]):
     papers_with_citation = {s: [] for s in papers}
     count = 0
 
     for s in papers:
-        if os.path.exists(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}"): continue
+        if os.path.exists(os.path.join(path, s)): continue
         for x in tqdm.tqdm(papers[s], desc=f"Fetching category {s}"):
             assert x['arxiv_url'].startswith("https://arxiv.org/abs/")
             arxiv_id = x['arxiv_url'][-10:]
@@ -581,11 +541,10 @@ def get_survey_citations(engine: ArxivCrawlerEngine, papers: Dict[str, Dict[str,
                 papers_with_citation[s].append(x)
                 count += 1
         print(f"Fetch category {s} finished. Get {len(papers_with_citation[s])}/{len(papers[s])} citation information.")
-        os.makedirs(f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}", exist_ok=True)
-        engine.save_to_file(papers_with_citation[s], f"P:\\AI4S\\survey_eval\\crawled_papers\\{s}\\papers.json")
+        os.makedirs(os.path.join(path, s), exist_ok=True)
+        engine.save_to_file(papers_with_citation[s], os.path.join(path, s, "papers.json"))
     
     print(f"Get {count} citation results")
-    engine.save_to_file(papers_with_citation, "survey2025_.json")
 
 
 def cluster_and_download_papers(
