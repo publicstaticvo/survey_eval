@@ -1,18 +1,11 @@
-import requests
-from bs4 import BeautifulSoup
-import argparse
+import os
+import re
+import json
 import time
 import tqdm
-import json
-import re
-import os
-import tarfile, zipfile, gzip, shutil
+import requests
+from bs4 import BeautifulSoup
 from typing import List, Dict, Optional, Union
-from urllib.parse import urljoin, quote
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from collections import Counter
 from constants import *
 
 
@@ -267,7 +260,5 @@ def get_citations(engine: ArxivCrawlerEngine, path: str, papers: Dict[str, Dict[
 
 
 if __name__ == "__main__":    
-    # ["cs", "econ", "eess", "math", "phy", "q-bio", "q-fin", "stat"]
-    # api_key=sk-6t2r2UAqWiwrk6hm7d499e1bFfE14399A3D7C947137891Eb
     crawler = ArxivCrawlerEngine()
     download_title_and_save(crawler, ['cs'])

@@ -1,3 +1,6 @@
+import json
+
+
 CATEGORIES = {
     "cs": [
         "cs.AI", "cs.AR", "cs.CC", "cs.CE", "cs.CG", "cs.CL", "cs.CR", "cs.CV", "cs.CY", 
@@ -38,3 +41,52 @@ CATEGORIES = {
     ],
     "stat": ["stat.AP", "stat.CO", "stat.ME", "stat.ML", "stat.OT", "stat.TH"]
 }
+
+GET_TITLE_FROM_LATEX_PROMPT = """You are an AI assistant specialized in processing academic literature information. Your task is to extract specific bibliographic information from text content parsed from Latex.
+
+Please analyze the provided LaTeX source code and extract the following information:
+- Title of the paper/publication
+- Source (journal name, conference name, or publication venue)
+- URL/link to the paper (if available)
+- ArXiv ID (if available)
+
+Instructions:
+1. Carefully examine the text content for bibliographic entries, citation commands, or any metadata sections
+2. Identify and extract the requested information fields
+3. If any field cannot be found in the source code, return null for that field
+4. Return the results in JSON format
+
+Output format:
+{{
+  "title": "extracted title or null",
+  "source": "journal/conference name or null", 
+  "url": "link to paper or null",
+  "arxiv_id": "arXiv identifier or null"
+}}
+
+LaTeX source code to analyze:
+{content}
+
+Please provide your extraction results in the specified JSON format."""
+
+
+def load_local(fn):
+    with open(fn, "r+", encoding="utf-8") as f:
+        d = [json.loads(line.strip()) for line in f if line.strip()]
+    return d
+
+
+def print_json(d, fn):
+    with open(fn, "w+", encoding="utf-8") as f:
+        for x in d:
+            f.write(json.dumps(x, ensure_ascii=False) + "\n")
+
+
+def yield_local(fn):
+    with open(fn, "r+", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                try:
+                    yield json.loads(line)
+                except:
+                    pass
