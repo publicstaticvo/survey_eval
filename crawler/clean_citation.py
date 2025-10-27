@@ -5,6 +5,7 @@ import time
 import tqdm
 import arxiv
 import random
+import logging
 import requests
 
 from constants import *
@@ -15,6 +16,9 @@ from typing import Optional, Dict, List, Tuple
 
 arxiv_pattern = re.compile(r"(?<![0-9])[0-9]{4}\.[0-9]{4,5}(?![0-9])")
 json_pattern = re.compile(r"\{.+?\}", re.DOTALL)
+logging.basicConfig(filename="../logs/clean.log", level=logging.INFO)
+arxiv_logger = logging.getLogger('arxiv')
+arxiv_logger.setLevel(logging.WARNING)
 
 
 def yield_local(fn):
@@ -63,19 +67,18 @@ class PaperDownloader:
         self.error_titles = []
         self.times_429 = 0
         
-    def search_arxiv(self, title: str, max_results: int = 3, retry: int = 3) -> Optional[Dict]:
+    def search_arxiv(self, title: str, max_results: int = 3, retry: int = 5) -> Optional[str]:
         """搜索arXiv论文"""
-        max_retry = retry
-        while retry > 0:
-            try:
-                client = arxiv.Client()
-                search = arxiv.Search(query=f'ti:"{title}"', max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
-                results = list(client.results(search))
-                return results[0].entry_id.split("/")[-1] if results else None
-            except Exception as e:
-                print(f"Arxiv Error: {e}, Retry: {retry}")
-                time.sleep(3 ** (max_retry - retry))
-                retry -= 1
+        try:
+            client = arxiv.Client(num_retries=retry)
+            search = arxiv.Search(query=title, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
+            for result in client.results(search):
+                if result: 
+                    text = result.entry_id.split("/")[-1]
+                    if "v" in text: text = text[:text.index("v")]
+                    return text
+        except:
+            return
     
     def search_semantic_scholar(self, title: str, max_results: int = 3, retry: int = 5) -> Optional[Dict]:
         """使用Semantic Scholar API搜索"""
@@ -84,8 +87,8 @@ class PaperDownloader:
                 time.sleep(0.5)
                 url = "https://api.semanticscholar.org/graph/v1/paper/search"
                 params = {'query': title, 'limit': max_results, 'fields': 'paperId,title,openAccessPdf,url,citationCount'}
-                with self.session.with_api_key(self.api_key[self.times_429 % len(self.api_key)]) as temp_session:                
-                    response = temp_session.get(url, params=params, timeout=60)
+                # with self.session.with_api_key(self.api_key[self.times_429 % len(self.api_key)]) as temp_session:                
+                response = self.session.get(url, params=params, timeout=60)
                 response.raise_for_status()
                 data = response.json()
                 if data['total'] > 0 and 'openAccessPdf' in data['data'][0]:
@@ -95,17 +98,17 @@ class PaperDownloader:
                     return url
                 return ""
             except requests.exceptions.ReadTimeout:
-                print(f"Semantic Scholar Error: Read time out, Retry: {retry}")
+                logging.error(f"Semantic Scholar Error: Read time out, Retry: {retry}")
                 retry -= 1
-                time.sleep(1.5)
+                time.sleep(1)
             except Exception as e:
                 if response.status_code == 429:
                     self.times_429 += 1
-                    print(f"Semantic Scholar Error: 429, Retry: {retry}")
+                    logging.error(f"Semantic Scholar Error: 429, Retry: {retry}")
                 else:
-                    print(f"Semantic Scholar Error: {e}, Retry: {retry}")
+                    logging.error(f"Semantic Scholar Error: {e}, Retry: {retry}")
                 retry -= 1
-                time.sleep(1.5)
+                time.sleep(1)
         return "Network Error +"
         
     
@@ -119,16 +122,18 @@ class PaperDownloader:
                 with open(filepath, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
-                print(f"PDF已下载: {filepath}")
+                logging.info(f"PDF已下载: {filepath}")
                 return True
         except Exception as e:
-            print(f"PDF下载错误: {e}")
+            logging.error(f"PDF下载错误: {e}")
         return False
     
     def comprehensive_search(self, title: str) -> Dict[str, str]:
         """综合搜索论文"""  
         # print("1. 搜索arXiv...")
-        result = self.search_arxiv(title)
+        result = self.search_arxiv(f'ti:{title}')
+        if result is not None: return {"source": "arXiv", "url": result}     
+        result = self.search_arxiv(f'ti:"{title}"')
         if result is not None: return {"source": "arXiv", "url": result}     
         # print("2. 搜索Semantic Scholar...")
         result = self.search_semantic_scholar(title)
@@ -149,7 +154,7 @@ class PaperDownloader:
             if arxiv_key: arxiv_key = arxiv_key[-1]
         if arxiv_key:
             return 'inline arXiv', arxiv_key
-        # No arxiv link found. Try searching.
+        # print(f"request for {cite['title']}")
         result = self.comprehensive_search(cite['title'])
         if result['source']: return result['source'], result['url']
         else: return "", None
@@ -159,18 +164,30 @@ class PaperDownloader:
         # jobs = []
         arxiv_set, title_set = set(), set()
         info_to_title = {}
-        with open("../crawled_papers/cited_papers.jsonl", "w+", encoding='utf-8') as fout, \
-             open("../crawled_papers/cited_arxiv_ids.txt", "w+", encoding='utf-8') as fout_2, \
-             open("../crawled_papers/error_titles.json", "w+", encoding='utf-8') as fout_3:
+        with open("../crawled_papers/cited_papers.jsonl", "a+", encoding='utf-8') as fout, \
+             open("../crawled_papers/cited_arxiv_ids.txt", "a+", encoding='utf-8') as fout_2:
             for i, f in enumerate(files):
                 d = load_local(f)
                 arxiv_id = Path(f).parent.name
-                print(f"File {i + 1} / {len(files)} - {arxiv_id}/citation.jsonl")
+                logging.info(f"File {i + 1} / {len(files)} - {arxiv_id}/citation.jsonl")
                 for j, x in enumerate(d):
-                    print(f"  Sentence {j + 1} / {len(d)}")
+                    logging.info(f"  Sentence {j + 1} / {len(d)}")
                     for k in x['citation']:
                         cite = x['citation'][k]
                         if "info" in cite:
+                            arxiv_in_info = arxiv_pattern.findall(cite['info'])
+                            if arxiv_in_info:
+                                arxiv_id = arxiv_in_info[0]
+                                if arxiv_id not in arxiv_set:
+                                    fout_2.write(arxiv_id + "\n")
+                                    arxiv_set.add(arxiv_id)
+                                cite['source'] = "inline arXiv"
+                                cite['volume'] = arxiv_id
+                                if 'title' in cite: 
+                                    cite['title'] = cite['title'].strip()
+                                    if cite['title'].endswith("."): cite['title'] = cite['title'][:-1]
+                                    title_set.add(cite['title'])
+                                continue
                             if "author" in cite: 
                                 cite = {"info": f"{cite['author']}\n{cite['title']}\n{cite['info']}"}
                                 x['citation'][k] = cite
@@ -190,20 +207,24 @@ class PaperDownloader:
                                         cite['source'] = "inline arXiv"
                                         cite['volume'] = arxiv_id
                                         cite['title'] = title['title']
+                                        if cite['title'].endswith("."): cite['title'] = cite['title'][:-1]
                                         title_set.add(cite['title'])
                                         continue
                                 cite['title'] = title['title']
                                 info_to_title[cite['info']] = cite['title']
                             else: continue
-                        if 'title' not in cite or cite['title'] in title_set: continue
+                        if 'title' not in cite: continue
+                        cite['title'] = cite['title'].strip()
+                        if cite['title'].endswith("."): cite['title'] = cite['title'][:-1]
+                        if cite['title'] in title_set: continue
                         # cite['source'] = f
                         # cite['citation_key'] = k
                         # jobs.append(cite)
                         source, url = self.get_paper_url(cite)
                         cite['source'] = source
-                        if source == "Network Error":
-                            fout_3.write(cite['title'] + "\n")
+                        if source == "Network Error": continue
                         if "arXiv" in source:
+                            fout_2.write(url + "\n")
                             arxiv_set.add(url)
                             cite['volume'] = url
                         elif source:
@@ -248,7 +269,7 @@ class PaperDownloader:
                 return title
             except Exception as e:
                 retry -= 1
-                print(f"Error: {e}, Retry: {retry}")
+                logging.error(f"Error: {e}, Retry: {retry}")
                 time.sleep(5)    
 
 
