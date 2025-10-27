@@ -16,7 +16,7 @@ from typing import Optional, Dict, List, Tuple
 
 arxiv_pattern = re.compile(r"(?<![0-9])[0-9]{4}\.[0-9]{4,5}(?![0-9])")
 json_pattern = re.compile(r"\{.+?\}", re.DOTALL)
-logging.basicConfig(filename="../logs/clean.log", level=logging.INFO)
+logging.basicConfig(filename="../logs/clean1.log", level=logging.INFO)
 arxiv_logger = logging.getLogger('arxiv')
 arxiv_logger.setLevel(logging.WARNING)
 
@@ -80,9 +80,9 @@ class PaperDownloader:
         except:
             return
     
-    def search_semantic_scholar(self, title: str, max_results: int = 3, retry: int = 5) -> Optional[Dict]:
+    def search_semantic_scholar(self, title: str, max_results: int = 3, retry: int = -1) -> Optional[Dict]:
         """使用Semantic Scholar API搜索"""
-        while retry > 0:
+        while retry != 0:
             try:
                 time.sleep(0.5)
                 url = "https://api.semanticscholar.org/graph/v1/paper/search"
@@ -107,8 +107,8 @@ class PaperDownloader:
                     logging.error(f"Semantic Scholar Error: 429, Retry: {retry}")
                 else:
                     logging.error(f"Semantic Scholar Error: {e}, Retry: {retry}")
-                retry -= 1
                 time.sleep(1)
+                retry -= 1
         return "Network Error +"
         
     
@@ -160,7 +160,7 @@ class PaperDownloader:
         else: return "", None
 
     def run(self):
-        files = glob.glob("../crawled_papers/cs/*/citation.jsonl")
+        files = glob.glob("../crawled_papers/cs/*/citations-clean.jsonl")
         # jobs = []
         arxiv_set, title_set = set(), set()
         info_to_title = {}
@@ -174,7 +174,10 @@ class PaperDownloader:
                     logging.info(f"  Sentence {j + 1} / {len(d)}")
                     for k in x['citation']:
                         cite = x['citation'][k]
-                        if "info" in cite:
+                        if 'journal' in cite and cite['journal'] in ['arXiv', 'inline arXiv', 's2']:
+                            title_set.add(cite['title'])
+                            continue
+                        if 'title' not in cite and 'info' in cite:
                             arxiv_in_info = arxiv_pattern.findall(cite['info'])
                             if arxiv_in_info:
                                 arxiv_id = arxiv_in_info[0]
@@ -231,7 +234,8 @@ class PaperDownloader:
                             cite['url'] = url
                             fout.write(json.dumps({"title": cite['title'], 'url': url}) + "\n")
                         title_set.add(cite['title'])
-                print_json(d, f"{f[:-6]}s-clean.jsonl")
+                logging.info("Writing to clean.jsonl")
+                print_json(d, f)
 
         # files_to_update = {}
         # with TPE(max_workers=self.n_workers) as executor:
