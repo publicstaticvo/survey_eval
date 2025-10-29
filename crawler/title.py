@@ -207,6 +207,30 @@ class ArxivCrawlerEngine:
                 
         print(f"Found {len(all_papers)} papers in {category} {year}-{month:02d}")
         return all_papers
+
+    def get_abstract(self, arxiv_url: str, retry: int = 3) -> str:
+        """Fetch the abstract from a paper's abstract page."""
+        url = f"https://arxiv.org/abs/{arxiv_url}"
+        while retry > 0:
+            try:
+                response = self.session.get(url, timeout=30)
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.text, 'html.parser')                
+                # Find abstract in the blockquote with class 'abstract mathjax'
+                abstract_block = soup.find('blockquote', class_='abstract')
+                if abstract_block:
+                    abstract_text = abstract_block.text.replace('Abstract:', '').strip()
+                    # Clean up whitespace
+                    abstract_text = re.sub(r'\s+', ' ', abstract_text)
+                    return abstract_text
+                
+                return "Abstract not found"
+                
+            except requests.RequestException as e:
+                print(f"  Error fetching abstract from {arxiv_url}: {e}, Retry: {retry}")
+                time.sleep(2)
+                retry -= 1
     
     def save_to_file(self, papers: Dict, filename: str):
         """Save results to a text file."""
@@ -266,8 +290,20 @@ def get_citations(engine: ArxivCrawlerEngine, path: str, papers: Dict[str, Dict[
     print(f"Get {count} citation results")
 
 
+def fetch_abstracts(engine: ArxivCrawlerEngine, path: str, output: str = "paper2025_with_abs.jsonl"):
+    with open(path, encoding="utf-8") as f:
+        papers = json.load(f)['cs']
+    with open(output, "w+", encoding="utf-8") as f:
+        for paper in tqdm.tqdm(papers): 
+            abstract = engine.get_abstract(paper['arxiv_url'])
+            if abstract:
+                paper['abstract'] = abstract
+                f.write(json.dumps(paper, ensure_ascii=False) + "\n")
+
+
 if __name__ == "__main__":    
     # ["cs", "econ", "eess", "math", "phy", "q-bio", "q-fin", "stat"]
     # api_key=sk-6t2r2UAqWiwrk6hm7d499e1bFfE14399A3D7C947137891Eb
     crawler = ArxivCrawlerEngine()
-    download_title_and_save(crawler, ['cs'])
+    # download_title_and_save(crawler, ['cs'])
+    fetch_abstracts(crawler, "paper2025.json")

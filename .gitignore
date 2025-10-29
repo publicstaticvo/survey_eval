@@ -4,6 +4,7 @@ nature
 *.zip
 *.tar.gz
 *.json
+*.jsonl
 .idea
 .ipynb_checkpoints
 __pycache__
