@@ -49,7 +49,7 @@ def debug_sentences(sentences: List[Union[LatexSentence, LatexEnvironment]], sta
         else:
             s = f"{i + start_id}\t{sentence.__repr__()}\n"
         output += s
-    return output, start_id + len(sentences)
+    return output
 
 
 @dataclass
@@ -92,6 +92,16 @@ class LatexParagraph:
     def __repr__(self):
         repr_string, _ = debug_sentences(self.sentences)
         return repr_string
+    
+
+def get_paragraph_skeleton(paragraph: LatexParagraph, mode: str, accumulated_sentence_id: int = 0):
+    if mode == "none" or len(paragraph) == 0: return ""
+    if mode == "first":
+        for s in paragraph.sentences:
+            if isinstance(s, LatexSentence): return s.text
+        return paragraph.sentences[0].text
+    else:
+        return debug_sentences(paragraph.sentences, accumulated_sentence_id)
 
 
 @dataclass
@@ -231,12 +241,12 @@ class LatexPaper:
             sentences.extend(p.get_sentences())
         return sentences
     
-    def __str__(self):
+    def get_skeleton(self, mode: str = 'first') -> str:
         sentence_id = 0
-        repr_str = f"Title: {self.title}, Author: {self.author}\n"
+        repr_str = f"Title: {self.title}\nAuthor: {self.author}\n"
         if self.abstract is not None:
             abstract_sentences = self.abstract.get_sentences()
-            abstract_sentences, sentence_id = debug_sentences(abstract_sentences)
+            abstract_sentences = debug_sentences(abstract_sentences)
             repr_str += f"Abstract:\n{abstract_sentences}\n"
         
         for i, section in enumerate(self.sections):
@@ -246,7 +256,7 @@ class LatexPaper:
             for subsection in section.children:
                 if isinstance(subsection, LatexParagraph):
                     chapter_0_sentences = subsection.get_sentences()
-                    chapter_0, sentence_id = debug_sentences(chapter_0_sentences, sentence_id)
+                    chapter_0 = debug_sentences(chapter_0_sentences, sentence_id, mode)
                     section_str += f"{chapter_0}\n"
                 else:
                     subsection_count += 1
@@ -255,20 +265,19 @@ class LatexPaper:
                     for subsubsection in subsection.children:
                         if isinstance(subsubsection, LatexParagraph):
                             chapter_00_sentences = subsubsection.get_sentences()
-                            chapter_00, sentence_id = debug_sentences(chapter_00_sentences, sentence_id)
+                            chapter_00= debug_sentences(chapter_00_sentences, sentence_id, mode)
                             subsection_str += f"{chapter_00}\n"
                         else:
                             subsubsection_count += 1
                             subsubsection_str = f"Section {i + 1}.{subsection_count}.{subsubsection_count} - {subsubsection.name}\n"
                             for paragraph in subsection.children:
                                 sentences = paragraph.get_sentences()
-                                gathered_sentence, sentence_id = debug_sentences(sentences, sentence_id)
+                                gathered_sentence = debug_sentences(sentences, sentence_id, mode)
                                 subsubsection_str += f"{gathered_sentence}\n"
-
                             subsection_str += subsubsection_str
-
                     section_str += subsection_str
-
             repr_str += section_str
-
         return repr_str
+    
+    def __str__(self):
+        return self.get_skeleton('all')

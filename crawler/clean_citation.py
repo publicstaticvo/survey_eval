@@ -37,24 +37,9 @@ def print_json(d, fn):
             f.write(json.dumps(x, ensure_ascii=False) + "\n")
 
 
-class APISession(requests.Session):
-    def __init__(self):
-        super().__init__()
-        self._original_headers = self.headers.copy()
-
-    @contextmanager
-    def with_api_key(self, api_key):
-        try:
-            self.headers["Authorization"] = f"Bearer {api_key}"
-            yield self
-        finally:
-            self.headers.clear()
-            self.headers.update(self._original_headers)
-
-
 class PaperDownloader:
     def __init__(self, s2api_key: List[str] = [], llm_key: Dict = {}, n_workers: int = 20):
-        self.session = APISession()
+        self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         })
@@ -80,7 +65,7 @@ class PaperDownloader:
         except:
             return
     
-    def search_semantic_scholar(self, title: str, max_results: int = 3, retry: int = -1) -> Optional[Dict]:
+    def search_semantic_scholar(self, title: str, max_results: int = 10, retry: int = 5) -> Optional[Dict]:
         """使用Semantic Scholar API搜索"""
         while retry != 0:
             try:
@@ -91,11 +76,12 @@ class PaperDownloader:
                 response = self.session.get(url, params=params, timeout=60)
                 response.raise_for_status()
                 data = response.json()
-                if data['total'] > 0 and 'openAccessPdf' in data['data'][0]:
-                    url = data['data'][0].get('openAccessPdf', {}).get('url', "")
-                    arxiv_key = arxiv_pattern.findall(url)
-                    if arxiv_key: return f"arxiv:{arxiv_key[-1]}"
-                    return url
+                if data['total'] > 0:
+                    for item in data['data']:
+                        url = item.get('openAccessPdf', {}).get('url', "")
+                        arxiv_key = arxiv_pattern.findall(url)
+                        if arxiv_key: return f"arxiv:{arxiv_key[-1]}"
+                        return url
                 return ""
             except requests.exceptions.ReadTimeout:
                 logging.error(f"Semantic Scholar Error: Read time out, Retry: {retry}")
@@ -103,12 +89,11 @@ class PaperDownloader:
                 time.sleep(1)
             except Exception as e:
                 if response.status_code == 429:
-                    self.times_429 += 1
-                    logging.error(f"Semantic Scholar Error: 429, Retry: {retry}")
+                    logging.error(f"Semantic Scholar Error: 429")
                 else:
                     logging.error(f"Semantic Scholar Error: {e}, Retry: {retry}")
+                    retry -= 1
                 time.sleep(1)
-                retry -= 1
         return "Network Error +"
         
     
@@ -160,6 +145,26 @@ class PaperDownloader:
         else: return "", None
 
     def run(self):
+        null = []
+        title_set = set()
+        with open("../crawled_papers/citations/arXiv.jsonl", "a+") as f_arxiv, open("../crawled_papers/citations/s2.jsonl", "a+") as f_s2:
+            for x in tqdm.tqdm(yield_local("../crawled_papers/citations/null.jsonl"), total=10066):
+                if x['title'] in title_set: continue
+                new_info = self.search_semantic_scholar(x['title'])
+                if new_info:
+                    if 'arxiv' in new_info:
+                        x['source'] = 'arxiv'
+                        x['volume'] = new_info[6:]
+                        f_arxiv.write(json.dumps(x) + "\n")
+                    else:
+                        x['source'] = 's2'
+                        x['url'] = new_info
+                        f_s2.write(json.dumps(x) + "\n")
+                    title_set.add(x['title'])
+                else:
+                    null.append(x)                    
+
+    def old_run(self):
         files = glob.glob("../crawled_papers/cs/*/citations-clean.jsonl")
         # jobs = []
         arxiv_set, title_set = set(), set()
