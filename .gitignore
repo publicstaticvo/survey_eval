@@ -1,5 +1,8 @@
 crawled_papers
 nature
+logs
+*.log
+*.out
 *.pdf
 *.zip
 *.tar.gz

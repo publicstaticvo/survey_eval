@@ -1,18 +1,11 @@
-import requests
-from bs4 import BeautifulSoup
-import argparse
+import os
+import re
+import json
 import time
 import tqdm
-import json
-import re
-import os
-import tarfile, zipfile, gzip, shutil
+import requests
+from bs4 import BeautifulSoup
 from typing import List, Dict, Optional, Union
-from urllib.parse import urljoin, quote
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from collections import Counter
 from constants import *
 
 
@@ -26,7 +19,50 @@ class ArxivCrawlerEngine:
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         
-    def download_paper(self, arxiv_id: str, format: str = 'pdf', save_path: str = None) -> bool:
+    def _download_paper(self, url: str, save_path: str = None) -> bool:
+        """
+        Download PDF or TeX source file of an arXiv paper.
+        
+        Args:
+            arxiv_id: arXiv paper ID (e.g., '2301.12345' or '2301.12345v1')
+            format: 'pdf' for PDF file or 'tex' for TeX source files
+            save_path: Path to save the file. If None, saves to current directory
+            
+        Returns:
+            bool: True if download successful, False otherwise
+        """
+        import os
+        
+        # Clean arxiv_id (remove 'arXiv:' prefix if present)
+        retry = 3
+        while retry > 0:        
+            try:                
+                # Download the file
+                response = self.session.get(url, timeout=60, stream=True)
+                response.raise_for_status()
+                
+                # Save to file
+                with open(save_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                file_size = os.path.getsize(save_path) / (1024 * 1024)  # Size in MB
+                print(f"Successfully downloaded {url} to: {save_path} ({file_size:.2f} MB)", end=" ")
+                return True
+                
+            except requests.RequestException as e:
+                retry -= 1
+                print(f"{e}. Retry: {retry}")
+                if retry > 0: time.sleep(4 ** (3 - retry))
+            except Exception as e:
+                retry -= 1
+                print(f"Unknown error downloading paper {url}: {e}. Retry: {retry}")
+                if retry > 0: time.sleep(1)
+        
+        return False
+        
+    def download_arxiv_paper(self, arxiv_id: str, format: str = 'pdf', save_path: str = None) -> bool:
         """
         Download PDF or TeX source file of an arXiv paper.
         
@@ -54,33 +90,7 @@ class ArxivCrawlerEngine:
             print(f"Error: Invalid format '{format}'. Use 'pdf' or 'tex'.")
             return False
 
-        retry = 3
-        while retry > 0:        
-            try:                
-                # Download the file
-                response = self.session.get(url, timeout=60, stream=True)
-                response.raise_for_status()
-                
-                # Save to file
-                with open(save_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                
-                file_size = os.path.getsize(save_path) / (1024 * 1024)  # Size in MB
-                print(f"Successfully downloaded {arxiv_id}.{format} to: {save_path} ({file_size:.2f} MB)", end=" ")
-                return True
-                
-            except requests.RequestException as e:
-                retry -= 1
-                print(f"Error downloading paper {arxiv_id}: {e}. Retry: {retry}")
-                if retry > 0: time.sleep(4 ** (3 - retry))
-            except Exception as e:
-                retry -= 1
-                print(f"Unknown error downloading paper {arxiv_id}: {e}. Retry: {retry}")
-                if retry > 0: time.sleep(1)
-        
-        return False
+        return self._download_paper(url, save_path)
 
     def get_citations_semantic_scholar(self, arxiv_id: str, title: Optional[str] = None) -> Optional[Dict]:
         """Get citation count from Semantic Scholar API."""
@@ -302,8 +312,6 @@ def fetch_abstracts(engine: ArxivCrawlerEngine, path: str, output: str = "paper2
 
 
 if __name__ == "__main__":    
-    # ["cs", "econ", "eess", "math", "phy", "q-bio", "q-fin", "stat"]
-    # api_key=sk-6t2r2UAqWiwrk6hm7d499e1bFfE14399A3D7C947137891Eb
     crawler = ArxivCrawlerEngine()
     # download_title_and_save(crawler, ['cs'])
     fetch_abstracts(crawler, "paper2025.json")

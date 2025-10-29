@@ -26,7 +26,7 @@ class ArxivCrawlerEngine:
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         
-    def download_paper(self, arxiv_id: str, format: str = 'pdf', save_path: str = None) -> bool:
+    def download_arxiv_paper(self, arxiv_id: str, format: str = 'pdf', save_path: str = None) -> bool:
         """
         Download PDF or TeX source file of an arXiv paper.
         
@@ -457,8 +457,8 @@ class ArxivCrawlerEngine:
             for i, paper in enumerate(selected_papers):
                 save_path = os.path.join(project_download_base_path, s)
                 if os.path.exists(os.path.join(save_path, paper['arxiv_url'])): continue
-                # self.download_paper(paper['arxiv_url'], save_path=save_path)
-                status = self.download_paper(paper['arxiv_url'], "tex", save_path=save_path)
+                # self.download_arxiv_paper(paper['arxiv_url'], save_path=save_path)
+                status = self.download_arxiv_paper(paper['arxiv_url'], "tex", save_path=save_path)
                 if status:
                     # unzip paper
                     print(f"{i + 1}/{len(selected_papers)}")
