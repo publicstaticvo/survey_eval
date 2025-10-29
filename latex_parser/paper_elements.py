@@ -247,6 +247,7 @@ class LatexPaper:
         if self.abstract is not None:
             abstract_sentences = self.abstract.get_sentences()
             abstract_sentences = debug_sentences(abstract_sentences)
+            sentence_id += len(abstract_sentences)
             repr_str += f"Abstract:\n{abstract_sentences}\n"
         
         for i, section in enumerate(self.sections):
