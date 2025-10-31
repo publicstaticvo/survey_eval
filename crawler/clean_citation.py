@@ -5,6 +5,7 @@ import time
 import tqdm
 import arxiv
 import random
+import difflib
 import logging
 import requests
 
@@ -16,7 +17,7 @@ from typing import Optional, Dict, List, Tuple
 
 arxiv_pattern = re.compile(r"(?<![0-9])[0-9]{4}\.[0-9]{4,5}(?![0-9])")
 json_pattern = re.compile(r"\{.+?\}", re.DOTALL)
-logging.basicConfig(filename="../logs/clean1.log", level=logging.INFO)
+logging.basicConfig(filename="../logs/clean2.log", level=logging.INFO)
 arxiv_logger = logging.getLogger('arxiv')
 arxiv_logger.setLevel(logging.WARNING)
 
@@ -67,9 +68,10 @@ class PaperDownloader:
     
     def search_semantic_scholar(self, title: str, max_results: int = 10, retry: int = 5) -> Optional[Dict]:
         """使用Semantic Scholar API搜索"""
+        title = title.replace("{", "").replace("}", "")
         while retry != 0:
             try:
-                time.sleep(0.5)
+                # time.sleep(0.5)
                 url = "https://api.semanticscholar.org/graph/v1/paper/search"
                 params = {'query': title, 'limit': max_results, 'fields': 'paperId,title,openAccessPdf,url,citationCount'}
                 # with self.session.with_api_key(self.api_key[self.times_429 % len(self.api_key)]) as temp_session:                
@@ -78,10 +80,11 @@ class PaperDownloader:
                 data = response.json()
                 if data['total'] > 0:
                     for item in data['data']:
+                        if difflib.SequenceMatcher(None, item['title'], title).ratio() < 0.9: continue
                         url = item.get('openAccessPdf', {}).get('url', "")
                         arxiv_key = arxiv_pattern.findall(url)
                         if arxiv_key: return f"arxiv:{arxiv_key[-1]}"
-                        return url
+                        if url: return url
                 return ""
             except requests.exceptions.ReadTimeout:
                 logging.error(f"Semantic Scholar Error: Read time out, Retry: {retry}")
@@ -148,7 +151,7 @@ class PaperDownloader:
         null = []
         title_set = set()
         with open("../crawled_papers/citations/arXiv.jsonl", "a+") as f_arxiv, open("../crawled_papers/citations/s2.jsonl", "a+") as f_s2:
-            for x in tqdm.tqdm(yield_local("../crawled_papers/citations/null.jsonl"), total=10066):
+            for x in tqdm.tqdm(yield_local("../crawled_papers/citations/null.jsonl"), total=10065):
                 if x['title'] in title_set: continue
                 new_info = self.search_semantic_scholar(x['title'])
                 if new_info:
@@ -162,7 +165,8 @@ class PaperDownloader:
                         f_s2.write(json.dumps(x) + "\n")
                     title_set.add(x['title'])
                 else:
-                    null.append(x)                    
+                    null.append(x)           
+        print_json(null, "../crawled_papers/citations/null.jsonl")         
 
     def old_run(self):
         files = glob.glob("../crawled_papers/cs/*/citations-clean.jsonl")

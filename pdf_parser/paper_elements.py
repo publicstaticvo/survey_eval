@@ -10,9 +10,6 @@ class Sentence:
     father: Paragraph
     citations: List[str] = field(default_factory=list)
     
-    def to_dict(self):
-        return {'text': self.text, 'citations': self.citations}
-    
     def __str__(self):
         cite_str = f" [{', '.join(self.citations)}]" if self.citations else ""
         return f"{self.text} {cite_str}"
@@ -27,22 +24,19 @@ class Paragraph:
     def add_sentence(self, sentence: Sentence):
         self.sentences.append(sentence)
     
-    def to_dict(self):
-        result = {'sentences': [s.to_dict() for s in self.sentences]}
-        if self.name:
-            result['name'] = self.name
-        return result
-    
-    def get_sentences(self) -> List[Sentence]:
+    def get_sentences(self) -> List[str]:
         """Return all sentences in this paragraph"""
-        return self.sentences
+        return [str(s) for s in self.sentences]
+    
+    def get_first_sentence(self) -> str:
+        return str(self.sentences[0])
 
 
 @dataclass
 class Section:
-    """Represents a section (\section)"""
+    """Represents a section, subsection, subsubsection or abstract"""
     name: str
-    father: Section
+    father: Union[Section, Paper]
     paragraphs: List[Paragraph] = field(default_factory=list)
     children: List[Section] = field(default_factory=list)
     
@@ -51,22 +45,16 @@ class Section:
     
     def add_child(self, child: Section):
         self.children.append(child)
-    
-    def to_dict(self):
-        return {
-            'name': self.name,
-            'paragraphs': [{'type': 'paragraph', 'content': p.to_dict()} for p in self.paragraphs],
-            'children': [{'type': 'section', 'content': p.to_dict()} for p in self.children]
-        }
-    
-    def get_sentences(self) -> List[Sentence]:
-        """Return all sentences in this section"""
-        sentences = []
-        for p in self.paragraphs:
-            sentences.extend(p.get_sentences())
-        for p in self.children:
-            sentences.extend(p.get_sentences())
-        return sentences
+        
+    def get_skeleton(self, section_id: str = "0.", mode: str = "first"):
+        repr_str = f"\n{section_id} {self.name}\n" if section_id else f"{self.name}\n\n"
+        if mode != "none":
+            for i, p in enumerate(self.paragraphs):
+                repr_str += f"Paragraph {section_id}{i}\n{p.get_first_sentence() if mode == "first" else ' '.join(p.get_sentences())} ...\n"
+            for i, s in enumerate(self.children):
+                repr_str += s.get_skeleton(f"{section_id}{i}.", mode)
+            repr_str += "\n"
+        return repr_str
 
 
 @dataclass
@@ -77,23 +65,10 @@ class Paper(Section):
     abstract: Optional[Section] = None  # Abstract should not have children
     references: dict = field(default_factory=dict)  # Maps citation keys to bibliography entries
     
-    def to_dict(self):
-        result = {}
-        if self.title:
-            result['title'] = self.title
-        if self.author:
-            result['author'] = self.author
-        if self.abstract:
-            result['abstract'] = self.abstract.to_dict()
-        
-        result['sections'] = [s.to_dict() for s in self.children]
-        
-        return result
-    
-    def get_sentences(self) -> List[Sentence]:
-        """Return all sentences in this subsection"""
-        sentences = []
-        if self.abstract is not None: sentences = self.abstract.get_sentences()
-        for p in self.children:
-            sentences.extend(p.get_sentences())
-        return sentences
+    def get_skeleton(self, mode: str = "first") -> str:
+        repr_str = f"Title: {self.title}\nAuthor: {self.author}\n"
+        if self.abstract is not None:
+            repr_str += self.abstract.get_skeleton("", "all")        
+        for i, section in enumerate(self.children):
+            repr_str += section.get_skeleton(f"{i}.", mode)
+        return repr_str

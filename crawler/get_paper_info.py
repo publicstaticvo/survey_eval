@@ -23,6 +23,14 @@ if __name__ == "__main__":
                 pending_results.append([pool.apply_async(s2api_search_paper, (paper['title'], fields)), paper])
         logging.info("finish pending results")
         with open("paper2025_details.jsonl", "w+") as f:
-            for async_result in tqdm.tqdm(pending_results): 
+            for async_result, paper in tqdm.tqdm(pending_results): 
                 result = async_result.get()
+                data = result.get("data", [])
+                for x in data:
+                    venue = x.get("venue", "")
+                    fields_of_study = x.get("fieldsOfStudy", [])
+                    if venue and fields_of_study:
+                        paper['venue'] = venue
+                        paper['fieldsOfStudy'] = fields_of_study
+                        f.write(json.dumps(paper) + "\n")
     logging.info(f"Time: {time.time() - t:.4f}")
