@@ -2,7 +2,10 @@ import time
 import random
 import logging
 import requests
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+#     'x-api-key': 'sk-6aTIdwxxEWiQKciL6fDcB7713169490fAbEcBaC2B0798cEc'
+}
 
 
 def s2api_search_paper(title: str, fields: list[str], max_results: int = 5, retry: int = 3, unlimited_429: bool = True):
@@ -16,16 +19,16 @@ def s2api_search_paper(title: str, fields: list[str], max_results: int = 5, retr
             response.raise_for_status()
             data = response.json()
             return data
-        except requests.exceptions.ReadTimeout:
-            logging.error(f"Semantic Scholar Error: Read time out, Retry: {retry}")
-            retry -= 1
-            time.sleep(1)
-        except Exception as e:
+        except requests.exceptions.HTTPError as e:
             # if unlimited_429 and response.status_code == 429:
-            #     logging.error(f"Semantic Scholar Error: 429")
+            #     logging.warning(f"Semantic Scholar Error: 429")
             if not unlimited_429 or response.status_code != 429:
                 logging.error(f"Semantic Scholar Error: {e}, Retry: {retry}")
                 retry -= 1
+            time.sleep(1)
+        except Exception as e:
+            logging.error(f"Semantic Scholar {e}, Retry: {retry}")
+            retry -= 1
             time.sleep(1)
     return {}
 
