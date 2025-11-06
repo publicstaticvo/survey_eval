@@ -64,6 +64,7 @@ class Paper(Section):
     author: Optional[str] = None
     abstract: Optional[Section] = None  # Abstract should not have children
     references: dict = field(default_factory=dict)  # Maps citation keys to bibliography entries
+    has_section_index: bool = True
     
     def get_skeleton(self, mode: str = "first") -> str:
         repr_str = f"Title: {self.title}\nAuthor: {self.author}\n"
@@ -71,11 +72,11 @@ class Paper(Section):
             repr_str += self.abstract.get_skeleton("", "all")        
         if self.children:
             for i, section in enumerate(self.children):
-                repr_str += section.get_skeleton(f"{i + 1}.", mode)
+                repr_str += section.get_skeleton(f"{i + 1}." if self.has_section_index else "", mode)
         else:
             for i, paragraph in enumerate(self.paragraphs):
                 if mode == "all":
-                    repr_str += paragraph.get_sentences()
+                    repr_str += f"Paragraph {i + 1}\n{paragraph.get_sentences()}\n"
                 else:
-                    repr_str += paragraph.get_first_sentence()
+                    repr_str += f"Paragraph {i + 1}\n{paragraph.get_first_sentence()} ...\n"
         return repr_str

@@ -10,14 +10,13 @@ import logging
 import requests
 
 from constants import *
-from pathlib import Path
-from contextlib import contextmanager
 from typing import Optional, Dict, List, Tuple
-# from concurrent.futures import ThreadPoolExecutor as TPE
+from concurrent.futures import ThreadPoolExecutor as TPE
+from request_utils import openalex_search_paper, valid_check
 
 arxiv_pattern = re.compile(r"(?<![0-9])[0-9]{4}\.[0-9]{4,5}(?![0-9])")
 json_pattern = re.compile(r"\{.+?\}", re.DOTALL)
-logging.basicConfig(filename="../logs/clean2.log", level=logging.INFO)
+logging.basicConfig(filename="../logs/clean1.log", level=logging.INFO)
 arxiv_logger = logging.getLogger('arxiv')
 arxiv_logger.setLevel(logging.WARNING)
 
@@ -99,7 +98,22 @@ class PaperDownloader:
                 time.sleep(1)
         return "Network Error +"
         
-    
+    def search_openalex(self, title: str, retry: int = 5) -> str:
+        title = re.sub(r"[\{\}\(\)\[\]\$'`\"]", "", title)
+        response = openalex_search_paper("works", {"title.search": title}, add_mail=True, retry=retry)
+        best_abstract = ""
+        for paper_info in response.get("results", []):
+            if not valid_check(title, paper_info.get("title", "")): continue
+            best_oa_location = paper_info.get("best_oa_location", {})
+            if best_oa_location:
+                return best_oa_location["pdf_url"]
+            locations_count = paper_info.get("locations_count", 0)
+            if locations_count:
+                for l in paper_info.get("locations", []):
+                    if l['is_oa'] and l['pdf_url']:
+                        return l['pdf_url']
+        return best_abstract
+
     def download_pdf(self, pdf_url: str, filename: str) -> bool:
         """下载PDF文件"""
         try:
@@ -147,6 +161,32 @@ class PaperDownloader:
         if result['source']: return result['source'], result['url']
         else: return "", None
 
+    def run_openalex(self, n_workers: int = 10):                      
+        find, null = {}, []
+        if n_workers <= 1:
+            # for arg in ['arXiv', 's2', 'null']:
+            for x in tqdm.tqdm(yield_local("../crawled_papers/citations/null.jsonl")):
+                if x['title'] in find: continue
+                url = self.search_openalex(x['title'])
+                if url: find[x['title']] = url
+                else: null.append(x['title'])
+        else:
+            def inner_run(title: str) -> Tuple[str, Dict]:
+                return title, self.search_openalex(title)
+            
+            pending_results = set()
+            for arg in ['arXiv', 's2', 'null']:
+                for x in yield_local(f"../crawled_papers/citations/{arg}.jsonl"):
+                    pending_results.add(x['title'])
+            
+            with TPE(max_workers=n_workers) as executor:
+                for title, url in tqdm.tqdm(executor.map(inner_run, pending_results), total=len(pending_results)):
+                    if url: find[title] = url
+                    else: null.append(title)
+            logging.info(f"Get {len(find)} New URLs")
+        with open("../crawled_papers/citations/find.json", "w+", encoding='utf-8') as f: json.dump(find, f)
+        with open("../crawled_papers/citations/null.json", "w+", encoding='utf-8') as f: json.dump(null, f)
+    
     def run(self):
         null = []
         title_set = set()
@@ -167,97 +207,6 @@ class PaperDownloader:
                 else:
                     null.append(x)           
         print_json(null, "../crawled_papers/citations/null.jsonl")         
-
-    def old_run(self):
-        files = glob.glob("../crawled_papers/cs/*/citations-clean.jsonl")
-        # jobs = []
-        arxiv_set, title_set = set(), set()
-        info_to_title = {}
-        with open("../crawled_papers/cited_papers.jsonl", "a+", encoding='utf-8') as fout, \
-             open("../crawled_papers/cited_arxiv_ids.txt", "a+", encoding='utf-8') as fout_2:
-            for i, f in enumerate(files):
-                d = load_local(f)
-                arxiv_id = Path(f).parent.name
-                logging.info(f"File {i + 1} / {len(files)} - {arxiv_id}/citation.jsonl")
-                for j, x in enumerate(d):
-                    logging.info(f"  Sentence {j + 1} / {len(d)}")
-                    for k in x['citation']:
-                        cite = x['citation'][k]
-                        if 'journal' in cite and cite['journal'] in ['arXiv', 'inline arXiv', 's2']:
-                            title_set.add(cite['title'])
-                            continue
-                        if 'title' not in cite and 'info' in cite:
-                            arxiv_in_info = arxiv_pattern.findall(cite['info'])
-                            if arxiv_in_info:
-                                arxiv_id = arxiv_in_info[0]
-                                if arxiv_id not in arxiv_set:
-                                    fout_2.write(arxiv_id + "\n")
-                                    arxiv_set.add(arxiv_id)
-                                cite['source'] = "inline arXiv"
-                                cite['volume'] = arxiv_id
-                                if 'title' in cite: 
-                                    cite['title'] = cite['title'].strip()
-                                    if cite['title'].endswith("."): cite['title'] = cite['title'][:-1]
-                                    title_set.add(cite['title'])
-                                continue
-                            if "author" in cite: 
-                                cite = {"info": f"{cite['author']}\n{cite['title']}\n{cite['info']}"}
-                                x['citation'][k] = cite
-                            if cite['info'] in info_to_title:
-                                cite['title'] = info_to_title[cite['info']]
-                                continue
-                            title = self._request_llm_for_title(cite['info'])
-                            if title: 
-                                if not title['title']: continue
-                                if title["arxiv_id"]:
-                                    arxiv_id = arxiv_pattern.findall(title["arxiv_id"])
-                                    if arxiv_id:
-                                        arxiv_id = arxiv_id[0]
-                                        if arxiv_id not in arxiv_set:
-                                            fout_2.write(arxiv_id + "\n")
-                                            arxiv_set.add(arxiv_id)
-                                        cite['source'] = "inline arXiv"
-                                        cite['volume'] = arxiv_id
-                                        cite['title'] = title['title']
-                                        if cite['title'].endswith("."): cite['title'] = cite['title'][:-1]
-                                        title_set.add(cite['title'])
-                                        continue
-                                cite['title'] = title['title']
-                                info_to_title[cite['info']] = cite['title']
-                            else: continue
-                        if 'title' not in cite: continue
-                        cite['title'] = cite['title'].strip()
-                        if cite['title'].endswith("."): cite['title'] = cite['title'][:-1]
-                        if cite['title'] in title_set: continue
-                        # cite['source'] = f
-                        # cite['citation_key'] = k
-                        # jobs.append(cite)
-                        source, url = self.get_paper_url(cite)
-                        cite['source'] = source
-                        if source == "Network Error": continue
-                        if "arXiv" in source:
-                            fout_2.write(url + "\n")
-                            arxiv_set.add(url)
-                            cite['volume'] = url
-                        elif source:
-                            cite['url'] = url
-                            fout.write(json.dumps({"title": cite['title'], 'url': url}) + "\n")
-                        title_set.add(cite['title'])
-                logging.info("Writing to clean.jsonl")
-                print_json(d, f)
-
-        # files_to_update = {}
-        # with TPE(max_workers=self.n_workers) as executor:
-        #     for cite in tqdm.tqdm(executor.map(self.get_paper_url, jobs), desc="Async Jobs"):
-        #         if cite["source"] not in files_to_update:
-        #             files_to_update[cite['source']] = {}
-        #         files_to_update[cite['source']][cite['citation_key']] = {k: v for k, v in cite.items() if k not in ['source', 'citation_key']}
-        # for f in tqdm.tqdm(files, desc="Reorganizing files"):
-        #     citations = load_local(f)
-        #     for x in citations:
-        #         for k in x['citation']:
-        #             x['citation'][k].update(files_to_update[f][k])
-        #     print_json(citations, f"{f[:-6]}s-clean.jsonl")
 
     def _request_llm_for_title(self, text, retry=3):
         message = [{"role": "user", "content": GET_TITLE_FROM_LATEX_PROMPT.format(content=text)}]
@@ -291,4 +240,4 @@ if __name__ == "__main__":
         info = json.load(f)
         keys = info['semanticscholar']['key']
         llm_keys = info['cstcloud']
-    PaperDownloader(keys, llm_keys).run()
+    PaperDownloader(keys, llm_keys).run_openalex(8)

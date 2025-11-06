@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import tqdm
 import wget
 import urllib
@@ -10,7 +11,11 @@ if os.path.exists("s2orc_info"):
     with open("s2orc_info") as f: s2orc_urls = json.load(f)
 while True:
     if "files" not in s2orc_urls:
-        release_id = requests.get("https://api.semanticscholar.org/datasets/v1/release/latest").json()['release_id']
+        while True:
+            response = requests.get("https://api.semanticscholar.org/datasets/v1/release/latest")
+            if response.status_code == 200: break
+            time.sleep(1)
+        release_id = response.json()['release_id']
         s2orc_urls = requests.get(f"https://s2api.ominiai.cn/generalProxy/datasets/v1/release/{release_id}/dataset/s2orc/", 
                                 headers={"Authorization": f"Bearer sk-7CpRrtyqbVZwcb5k6b4eB6E176264374A2029e456c516a8b", 
                                         "OMINI-API-Model": "semantic"}).json()

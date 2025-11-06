@@ -7,8 +7,9 @@ import multiprocessing
 from request_utils import s2api_search_paper
 logging.basicConfig(filename="../logs/info.log", level=logging.INFO)
 fields = ",".join(['title', 'venue', 'publicationVenue', 's2FieldsOfStudy', "externalIds"])
-fin = "../paper2025_with_abs.jsonl"
+fin = "../../paper2025_with_abs.jsonl"
 foutput = "paper2025_details.jsonl"
+dont_parallel = False
 
 
 def request_and_output(paper):
@@ -81,5 +82,6 @@ def main():
 
 
 if __name__ == "__main__":
-    if os.name == "nt": parallel_main_windows()
+    if dont_parallel: main()
+    elif os.name == "nt": parallel_main_windows()
     else: parallel_main()

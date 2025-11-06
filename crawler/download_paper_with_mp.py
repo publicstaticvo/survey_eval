@@ -5,8 +5,7 @@ import tqdm
 import logging
 import requests
 import multiprocessing
-from requests.exceptions import RequestException
-logging.basicConfig(filename="../logs/download.log", level=logging.INFO)
+logging.basicConfig(filename="../logs/download1.log", level=logging.INFO)
 
 
 def download_paper(url, fn):
@@ -29,10 +28,11 @@ def download_paper(url, fn):
             logging.info(f"Successfully downloaded {fn} to: {save_path} ({file_size:.2f} MB)")
             return True
             
-        except RequestException as e:
+        except requests.exceptions.RequestException as e:
+            if isinstance(e, requests.exceptions.HTTPError) and response.status_code in [400, 401, 403, 404]: return
             retry -= 1
             logging.error(f"Error downloading paper {fn}: {e}. Retry: {retry}")
-            if retry > 0: time.sleep(4 ** (3 - retry))
+            if retry > 0: time.sleep(2)
         except Exception as e:
             retry -= 1
             logging.error(f"Unknown error downloading paper {fn}: {e}. Retry: {retry}")
@@ -43,12 +43,21 @@ if __name__ == "__main__":
     t = time.time()
     n_workers = 10
     logging.info(f"使用并行进程数: {n_workers}")
-    with open("../crawled_papers/citations/urls.json") as f: urls = json.load(f)
+    with open("../crawled_papers/citations/old_urls.json") as f: urls = json.load(f)
+    with open("../crawled_papers/citations/inlinearXiv_redownload.json") as f: urls.update(json.load(f))
+    with open("../crawled_papers/citations/find.json") as f: urls.update(json.load(f))
+    print(len(urls))
     with multiprocessing.Pool(processes=n_workers) as pool:
         pending_results = []
         for title, url in urls.items():
-            if "arxiv.org" in url: title = url.replace("https://arxiv.org/pdf/", "")
-            pending_results.append(pool.apply_async(download_paper, (url, title.replace(" ", "+").replace(":", "--"))))
+            if "https://arxiv.org/pdf/" in url: title = url.replace("https://arxiv.org/pdf/", "")
+            # elif "https://arxiv.org/abs/" in url: 
+            #     title = url.replace("https://arxiv.org/abs/", "")
+            #     url = url.replace("abs", "pdf")
+            title = title.replace(" ", "+").replace(":", "--")
+            if "/" in title:
+                title = title.split("/")[-1]
+            pending_results.append(pool.apply_async(download_paper, (url, title)))
         logging.info("finish pending results")
         for async_result in tqdm.tqdm(pending_results): async_result.get()
     logging.info(f"Time: {time.time() - t:.4f}")

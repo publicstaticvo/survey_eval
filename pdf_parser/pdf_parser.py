@@ -1,13 +1,12 @@
 import re
+import time
+import random
 import logging
 import requests
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
-
 from paper_elements import Paper, Section, Paragraph, Sentence
-
-logging.basicConfig(filename="../logs/pdfparse.log", level=logging.INFO)
 
 
 @dataclass
@@ -47,7 +46,7 @@ class GROBIDParser:
         self.grobid_url = grobid_url        
         self.current_section_hierarchy = []
     
-    def process_pdf(self, pdf_path: str) -> str:
+    def process_pdf_to_xml(self, pdf_path: str) -> str:
         """
         Send PDF to GROBID and get TEI XML response.
         
@@ -61,11 +60,20 @@ class GROBIDParser:
         
         with open(pdf_path, 'rb') as f:
             files = {'input': f}
-            response = requests.post(url, files=files)
-            response.raise_for_status()
+            while True:
+                try:
+                    time.sleep(2 * random.random())
+                    response = requests.post(url, files=files)
+                    response.raise_for_status()
+                    return response.text
+                except requests.exceptions.HTTPError as e:
+                    if response.status_code != 503:
+                        logging.error(f"{pdf_path} {e}")
+                        return ""
+                except Exception as e:
+                    logging.error(f"{pdf_path} {e}")
+                    return ""          
             
-        return response.text
-    
     def parse_xml(self, xml_content: str) -> Paper:
         """
         Parse GROBID TEI XML output into a Paper object.
@@ -159,22 +167,25 @@ class GROBIDParser:
         
         # 将section按照层级转化为Section类，需要分割句子。
         try:
+            # 没有标题的情形
             last_chapter = [1]
             current_level = 1  # 当前节点的层级
             father_section = paper  # 当前节点的father
+            if pseudo_sections[0].level == -1: paper.has_section_index = False
             for section in pseudo_sections:
                 # 需要回溯
-                while current_level > section.level or (current_level >= 2 and section.numbers[current_level - 2] != last_chapter[current_level - 2]):
-                    father_section = father_section.father
-                    current_level -= 1
-                # 一次进两级，说明丢失了其中的一级
-                while current_level < section.level:
-                    new_section = Section(name="", father=father_section)
-                    father_section.add_child(new_section)
-                    father_section = new_section
-                    current_level += 1
+                if paper.has_section_index:
+                    while current_level > section.level or (current_level >= 2 and section.numbers[current_level - 2] != last_chapter[current_level - 2]):
+                        father_section = father_section.father
+                        current_level -= 1
+                    # 一次进两级，说明丢失了其中的一级
+                    while current_level < section.level:
+                        new_section = Section(name="", father=father_section)
+                        father_section.add_child(new_section)
+                        father_section = new_section
+                        current_level += 1
 
-                last_chapter = section.numbers
+                    last_chapter = section.numbers
 
                 # 构建新的Section
                 new_section = Section(section.title, father_section)
@@ -188,11 +199,11 @@ class GROBIDParser:
                     new_section.add_paragraph(paragraph)
                 father_section.add_child(new_section)
 
-                # 默认将下一个Section设为当前Section的subsection，即默认进一级
-                current_level = section.level + 1
-                father_section = new_section
+                if paper.has_section_index:
+                    # 默认将下一个Section设为当前Section的subsection，即默认进一级
+                    current_level = section.level + 1
+                    father_section = new_section
         except Exception as e:
-            raise
             logging.warning(f" get {e}, fallback to parse paragraphs")
             self.fallback_parse_paragraphs(paper, body, paper.references)
     
@@ -270,7 +281,6 @@ class GROBIDParser:
                     text = text.replace(numbers, "", 1).lstrip()
                     if text[0] == ".": text = text[1:].lstrip()
                     text_split = re.split(r'(?<=[.!?])\s+', text, 1)
-                    # print(numbers, text_split)
                     return [int(num) for num in numbers.split('.')], text_split
         
         return None, text
@@ -363,26 +373,35 @@ class GROBIDParser:
         # 3. <head>3.2.</head><p>标题。正文
         # 一个<div>有可能有多个section；带<head>的不一定是section。
         current_section = None
+        has_section_index = (not self.current_section_hierarchy or self.current_section_hierarchy[-1].level >= 0)
         
         for child in div_element:
-            if child.tag.endswith('head'):
+            if child.tag.endswith("head"):
                 text = self._extract_text_from_element(child)
                 n_attr = child.get('n')
                 numbers, title = self._parse_section_title_from_p(text, 'head', n_attr)
-                if numbers:
+                if has_section_index and numbers:
                     current_section = self._update_section_hierarchy(numbers, title, child)
                     sections.append(current_section)
                 else:
+                    # 检查是否为全文都没有段落标号的情况。
+                    # all(not text.lower().startswith(x) for x in self.NON_SECTION_KEYWORDS)
+                    if not self.current_section_hierarchy or not has_section_index:
+                        # 此时所有section视为同级。
+                        has_section_index = False
+                        current_section = HTMLSection([], -1, text, child, [])
+                        self.current_section_hierarchy.append(current_section)
+                        sections.append(current_section)
                     # 非章节标题的head，忽略或作为当前章节的段落处理。                    
-                    if current_section:
+                    elif current_section:
                         text = self._extract_text_from_element(child)
                         if text:
                             current_section.paragraphs.append(text)
             
-            elif child.tag.endswith('p'):
+            elif child.tag == f"{{{self.NS}}}p":
                 # 首先判断是否含有标题以及标题是否合法。self._compare_section_levels(numbers)
                 text = self._extract_text_from_element(child)
-                numbers, title = self._parse_section_title_from_p(text, 'p')
+                numbers, title = self._parse_section_title_from_p(text, 'p') if has_section_index else (None, None)
                 if numbers:
                     # 情形1
                     title, text = title
@@ -390,7 +409,7 @@ class GROBIDParser:
                     sections.append(current_section)
                 else:
                     # 普通段
-                    if current_section and not current_section.title and '.' in text:
+                    if current_section and has_section_index and not current_section.title and '.' in text:
                         # 情形3
                         current_section.title, text = text.split(".", 1)
                         text = text.lstrip()
@@ -607,7 +626,7 @@ class GROBIDParser:
         Returns:
             Paper object with hierarchical structure
         """
-        xml_content = self.process_pdf(pdf_path)
+        xml_content = self.process_pdf_to_xml(pdf_path)
         return self.parse_xml(xml_content)
 
 
@@ -615,8 +634,10 @@ class GROBIDParser:
 if __name__ == "__main__":
     # Initialize parser (make sure GROBID is running on localhost:8070)
     parser = GROBIDParser()
-    with open("P:\\AI4S\\2408.12171v1.xml", encoding='utf-8') as f:
+    with open("../../1710.03675.xml", encoding='utf-8') as f:
         paper = f.read()
     paper = parser.parse_xml(paper)
+    print(len(paper.children))
     print("=" * 50 + "Skeletion" + "=" * 50)
     print(paper.get_skeleton("none"))
+    # filename = "../crawled_papers/pdf/1710.03675.pdf"
