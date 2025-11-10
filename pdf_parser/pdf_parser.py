@@ -634,10 +634,11 @@ class GROBIDParser:
 if __name__ == "__main__":
     # Initialize parser (make sure GROBID is running on localhost:8070)
     parser = GROBIDParser()
-    with open("../../1710.03675.xml", encoding='utf-8') as f:
-        paper = f.read()
-    paper = parser.parse_xml(paper)
+    # with open("/data/tsyu/1710.03675.xml", encoding='utf-8') as f:
+    #     paper = f.read()
+    # paper = parser.parse_xml(paper)
+    paper = parser.parse_pdf("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
     print(len(paper.children))
     print("=" * 50 + "Skeletion" + "=" * 50)
-    print(paper.get_skeleton("none"))
+    x = paper.get_skeleton("all")
     # filename = "../crawled_papers/pdf/1710.03675.pdf"

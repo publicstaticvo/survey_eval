@@ -8,8 +8,6 @@ from request_utils import openalex_search_paper
 from concurrent.futures import ThreadPoolExecutor as TPE
 logging.basicConfig(filename="../logs/alex.log", level=logging.INFO)
 domain = "https://openalex.org/"
-with open("openalex_level0_concepts.jsonl") as f:
-    all_level0_concepts = [json.loads(line)['id'].replace(domain, "") for line in f]
 
 
 def index_to_abstract(indexes):
@@ -26,6 +24,7 @@ def is_valid_paper(paper: dict) -> bool:
            paper.get('referenced_works', []) and \
            paper.get('related_works', []) and \
            paper.get('doi', None) and \
+           paper.get('id', None) and \
            paper.get('language', "") == "en"
 
 
@@ -33,6 +32,7 @@ def is_easy_negative(paper: dict, concepts: set[str]) -> bool:
     return paper.get('abstract_inverted_index', None) and \
            paper.get('language', "") == "en" and \
            paper.get('concepts', []) and \
+           paper.get('id', None) and \
            all(x['id'].replace(domain, "") not in concepts for x in paper['concepts'] if x['level'] == 0)
 
 
@@ -55,7 +55,7 @@ def lvalue_update(d: dict, update: dict) -> dict:
     return d
 
 
-num_seeds, per_page = 50000, 200
+num_seeds, per_page, per_page_step3 = 50000, 200, 25
 step1_path = "../paper_to_query/seeds.json"
 step2_path = "../paper_to_query/hard_neg.json"
 step3_path = "../paper_to_query/easy_neg.json"
@@ -84,9 +84,9 @@ def step2(seed: dict[str, dict[str, Any]]):
     hard_negative_set = {}
     for paper_id in tqdm.tqdm(seed, desc="step 2"):
         paper = seed[paper_id]
-        references = [x for x in paper['referenced_works'] if x not in seed and x not in hard_negative_set]
+        references = paper['referenced_works'] + paper['related_works']
         for sample in references:
-            if sample in hard_negative_set: continue
+            if sample == paper_id or sample in hard_negative_set: continue
             assert sample.startswith("W"), sample
             paper_info = openalex_search_paper(f"works/{sample}")
             if is_valid_paper(paper_info): 
@@ -101,9 +101,9 @@ def parallel_step2(seed: dict[str, dict[str, Any]], n_workers=20):
 
     def step2_inner(paper):
         paper_id, paper = paper
-        references = [x for x in paper['referenced_works'] if x not in seed]
+        references = [x.replace(domain, "") for x in paper['referenced_works'] + paper['related_works']]
         for sample in references:
-            if sample in hard_negative_set: continue
+            if sample == paper_id or sample in hard_negative_set: continue
             assert sample.startswith("W"), sample
             paper_info = openalex_search_paper(f"works/{sample}")
             if is_valid_paper(paper_info): 
@@ -127,21 +127,19 @@ def parallel_step2(seed: dict[str, dict[str, Any]], n_workers=20):
 
 
 # 第三步：取完全不同领域的论文
-def step3(seed: dict[str, dict[str, Any]], hard_negative: dict[str, dict[str, Any]]):
+def step3(seed: dict[str, dict[str, Any]], hard_negative: dict[str, dict[str, Any]], diff_concept_level: int = 10):
     easy_negative_set = {}
 
     def search_easy_negative_single_round(concepts: set[str]):
-        response = openalex_search_paper("works", max_results=per_page)
+        response = openalex_search_paper("works", max_results=per_page_step3)
         for paper_info in response.get("results"):
             if is_easy_negative(paper_info, concepts) and (neg := paper_info['id'].replace(domain, "")) \
                 not in hard_negative and neg not in easy_negative_set: return paper_info
 
     for paper_id in tqdm.tqdm(seed, desc="step 3"):
         paper = seed[paper_id]
-        level0_concepts = [x['id'].replace(domain, "") for x in paper['concepts'] if x['level'] == 0]
-        if len(level0_concepts) == len(all_level0_concepts): level0_concepts = level0_concepts[:-1]
-        exist_concepts = set(all_level0_concepts) - set(level0_concepts)
-        while not (paper_info := search_easy_negative_single_round(concepts=exist_concepts)): pass
+        concepts = set(x['id'].replace(domain, "") for x in paper['concepts'] if x['level'] <= diff_concept_level)
+        while not (paper_info := search_easy_negative_single_round(concepts=concepts)): pass
         neg_paper_id = paper_info['id'].replace(domain, "")
         easy_negative_set[neg_paper_id] = keep_critical_details(paper_info).update({"related_id": paper_id})
     with open(step3_path, "w+") as f:
@@ -149,22 +147,20 @@ def step3(seed: dict[str, dict[str, Any]], hard_negative: dict[str, dict[str, An
     return easy_negative_set
 
 
-def parallel_step3(seed: dict[str, dict[str, Any]], hard_negative: dict[str, dict[str, Any]], n_workers=20):
+def parallel_step3(seed: dict[str, dict[str, Any]], hard_negative, diff_concept_level: int = 10, n_workers: int = 20):
     easy_negative_set = {}
 
     def search_easy_negative_single_round(concepts: set[str]):
-        response = openalex_search_paper("works", max_results=per_page)
+        response = openalex_search_paper("works", max_results=per_page_step3)
         for paper_info in response.get("results"):
             if is_easy_negative(paper_info, concepts) and paper_info['id'].replace(domain, "") not in hard_negative:
                 return paper_info
                 
     def step3_inner(paper):
         paper_id, paper = paper
-        level0_concepts = [x['id'].replace(domain, "") for x in paper['concepts'] if x['level'] == 0]
-        if len(level0_concepts) == len(all_level0_concepts): level0_concepts = level0_concepts[:-1]
-        exist_concepts = set(all_level0_concepts) - set(level0_concepts)
-        while not (paper_info := search_easy_negative_single_round(concepts=exist_concepts)): pass        
-        return lvalue_update(keep_critical_details(paper_info), {"related_id": paper_id})
+        concepts = set(x['id'].replace(domain, "") for x in paper['concepts'] if x['level'] <= diff_concept_level)
+        while not (paper_info := search_easy_negative_single_round(concepts=concepts)): pass        
+        return lvalue_update(keep_critical_details(paper_info), {"id": paper_info['id'], "related_id": paper_id})
 
     processed = set()
     while len(easy_negative_set) < num_seeds:
@@ -172,8 +168,8 @@ def parallel_step3(seed: dict[str, dict[str, Any]], hard_negative: dict[str, dic
         pending_results = [(k, v) for k, v in seed.items() if k not in processed]
         with TPE(max_workers=n_workers) as executor:
             for paper_info in tqdm.tqdm(executor.map(step3_inner, pending_results), desc="step 3", total=len(pending_results)):
-                if not paper_info or (neg_paper_id := paper_info['id'].replace(domain, "")) not in easy_negative_set: continue
-                easy_negative_set[neg_paper_id] = paper_info
+                if not paper_info or paper_info['id'] in easy_negative_set: continue
+                easy_negative_set[paper_info['id']] = paper_info
                 processed.add(paper_info['related_id'])
                 has_updated = True
         if not has_updated: break

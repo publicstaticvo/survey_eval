@@ -109,12 +109,15 @@ def openalex_search_paper(
         try:
             url = f"https://api.openalex.org/{endpoint}"
             if filter is not None:
+                # filter
                 filter_string = ",".join([f"{k}:{v}" for k, v in filter.items()])
                 request_parameters = {"filter": filter_string}
             else:
                 request_parameters = {}
                 if max_results >= 0:
+                    # sample
                     request_parameters['sample'] = max_results
+                    request_parameters['seed'] = random.randint(0, 32767)
                     if max_results > 25:
                         request_parameters['per-page'] = 200
             if add_mail:
