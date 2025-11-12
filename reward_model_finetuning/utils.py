@@ -3,12 +3,11 @@
 
 # DeepSpeed Team
 import os
-import json
 import torch
 import random
 import numpy as np
 import torch.distributed as dist
-from transformers import set_seed, AutoTokenizer, LlamaTokenizerFast
+from transformers import set_seed
 import deepspeed
 import functools
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
@@ -18,11 +17,6 @@ from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 def barrier():
     if dist.is_initialized():
         dist.barrier()
-
-
-def print_rank_0(msg, rank=0):
-    if rank <= 0:
-        print(msg)
 
 
 def to_device(batch, device):
@@ -35,17 +29,28 @@ def to_device(batch, device):
     return output
 
 
-def init_tokenizer(tokenizer_name_or_path, padding_side="right"):
-    config = json.load(open(os.path.join(tokenizer_name_or_path, "tokenizer_config.json")))
-    is_llama = (config["tokenizer_class"].lower() == "llamatokenizer")
-    if is_llama:
-        tokenizer = LlamaTokenizerFast.from_pretrained(tokenizer_name_or_path, fast_tokenizer=True, padding_side=padding_side)
-        if not tokenizer.eos_token:
-            tokenizer.add_special_tokens({"eos_token": "</s>", "bos_token": "<s>", "unk_token": "<unk>"})
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path, fast_tokenizer=True, padding_side=padding_side)
-    tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
+def print_rank_0(msg, rank=0):
+    if rank <= 0: print(msg)
+
+
+def set_random_seed(seed):
+    if seed is not None:
+        set_seed(seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
+def save_model(model, config, tokenizer, zero_stage, sub_folder):
+    print_rank_0(f'saving {sub_folder} ...')
+    # model = convert_lora_to_linear_layer(model)
+    if config.local_rank == 0:
+        save_hf_format(model, tokenizer, config, sub_folder=sub_folder)
+    barrier()
+    if zero_stage == 3:
+        save_dir = os.path.join(config.model_save_path, sub_folder)
+        save_zero_three_model(model, config.local_rank, save_dir, zero_stage)
 
 
 class MovingAverage:
@@ -63,7 +68,7 @@ class MovingAverage:
         return self.mean
 
 
-def save_hf_format(model, tokenizer, args, sub_folder="", no_lm_head=False):
+def save_hf_format(model, tokenizer, args, sub_folder=""):
     # used to save huggingface format, so we can use it for hf.from_pretrained
     model_to_save = model.module if hasattr(model, 'module') else model
     CONFIG_NAME = "config.json"
@@ -73,9 +78,6 @@ def save_hf_format(model, tokenizer, args, sub_folder="", no_lm_head=False):
     output_model_file = os.path.join(output_dir, WEIGHTS_NAME)
     output_config_file = os.path.join(output_dir, CONFIG_NAME)
     save_dict = model_to_save.state_dict()
-    for key in list(save_dict.keys()):
-        if "lora" in key or (no_lm_head and "lm_head" in key):
-            del save_dict[key]
     torch.save(save_dict, output_model_file)
     model_to_save.config.to_json_file(output_config_file)
     try:
@@ -84,26 +86,13 @@ def save_hf_format(model, tokenizer, args, sub_folder="", no_lm_head=False):
         pass
 
 
-def set_random_seed(seed):
-    if seed is not None:
-        set_seed(seed)
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-
 def get_all_reduce_mean(tensor):
     torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
     tensor = tensor / torch.distributed.get_world_size()
     return tensor
 
 
-def get_optimizer_grouped_parameters(model,
-                                     weight_decay,
-                                     no_decay_name_list=[
-                                         "bias", "LayerNorm.weight"
-                                     ]):
+def get_optimizer_grouped_parameters(model, weight_decay, no_decay_name_list=["bias", "LayerNorm.weight"]):
     optimizer_grouped_parameters = [
         {
             "params": [
@@ -137,20 +126,18 @@ def _z3_params_to_fetch(param_list):
 def moving_average(model, model_ema, beta=0.992, device=None, zero_stage=0):
     zero_stage_3 = (zero_stage == 3)
     with torch.no_grad():
-        for param, param_ema in zip(model.parameters(),
-                                    model_ema.parameters()):
+        for param, param_ema in zip(model.parameters(), model_ema.parameters()):
             # TODO: use prefiltering for efficiency
             params_to_fetch = _z3_params_to_fetch([param, param_ema]) if zero_stage_3 else []
             should_gather_param = len(params_to_fetch) > 0
-            with deepspeed.zero.GatheredParameters(
-                    params_to_fetch, enabled=should_gather_param):
+            with deepspeed.zero.GatheredParameters(params_to_fetch, enabled=should_gather_param):
                 data = param.data
                 if device is not None:
                     data = data.to(device)
                 param_ema.data.copy_(torch.lerp(data, param_ema.data, beta))
 
 
-def save_zero_three_model(model_ema, global_rank, save_dir, zero_stage=0, no_lm_head=False):
+def save_zero_three_model(model_ema, global_rank, save_dir, zero_stage=0):
     zero_stage_3 = (zero_stage == 3)
     os.makedirs(save_dir, exist_ok=True)
     WEIGHTS_NAME = "pytorch_model.bin"
@@ -168,29 +155,11 @@ def save_zero_three_model(model_ema, global_rank, save_dir, zero_stage=0, no_lm_
                     v_p = v.data.cpu()
             else:
                 v_p = v.cpu()
-            if global_rank == 0 and "lora" not in k and not (no_lm_head and "lm_head" in k):
+            if global_rank == 0 and "lora" not in k:
                 output_state_dict[k] = v_p
         if global_rank == 0:
             torch.save(output_state_dict, output_model_file)
         del output_state_dict
-
-
-def save_model(model, args, tokenizer, zero_stage, sub_folder, no_lm_head=False):
-    print_rank_0(f'saving {sub_folder} ...')
-    # model = convert_lora_to_linear_layer(model)
-    if torch.distributed.get_rank() == 0:
-        save_hf_format(model, tokenizer, args, sub_folder=sub_folder, no_lm_head=no_lm_head)
-    torch.distributed.barrier()
-    if zero_stage == 3:
-        save_zero_three_model(model, global_rank=args.global_rank, save_dir=os.path.join(args.output_dir, sub_folder), zero_stage=zero_stage, no_lm_head=no_lm_head)
-
-
-def save_engine(engine, args, tokenizer, step):
-    save_model(engine.actor, args, tokenizer, args.actor_zero_stage, f"{step}/actor")
-    if args.with_reward_model:
-        save_model(engine.critic, args, tokenizer, args.critic_zero_stage, f"{step}/critic")
-    if args.enable_ema:
-        save_model(engine.actor_ema, args, tokenizer, args.actor_zero_stage, f"{step}/actor_ema")
 
 
 def rhasattr(obj, attr):
@@ -252,16 +221,3 @@ def freeze_bottom_causal_layers(model, num_layers_unfrozen=0):
         hidden_layers_to_freeze = []
     for layer in hidden_layers_to_freeze:
         layer.requires_grad_(False)
-
-
-def freeze_llama_layers(model, num_layers_unfrozen):
-    """Freezes the bottom transformer block layers of the specified model."""
-    if num_layers_unfrozen is None:
-        return
-    model.embed_tokens.requires_grad_(False)
-    model.norm.requires_grad_(False)
-    num_layers_frozen = max(0, len(model.layers) - num_layers_unfrozen)
-    for i, layer in enumerate(model.layers):
-        layer.requires_grad_(False)
-        if i + 1 == num_layers_frozen:
-            break
