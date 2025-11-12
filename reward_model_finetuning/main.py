@@ -180,6 +180,7 @@ def main():
         print_rank_0(f"Beginning of Epoch {epoch+1}/{config.train_epochs}, Total Micro Batches {len(train_dataloader)}", rank)
         rm_model.train()
         loss_10 = 0
+        print_steps = config.gradient_accumulation * config.deepspeed_config['steps_per_print']
         if isinstance(train_dataloader.sampler, DistributedSampler):
             train_dataloader.sampler.set_epoch(epoch)
         for step, batch in enumerate(train_dataloader):
@@ -189,25 +190,13 @@ def main():
             ph = torch.clamp(torch.sigmoid(rm_logits[:, 0] - rm_logits[:, 1]), 1e-8, 1-1e-8)
             hn = torch.clamp(torch.sigmoid(rm_logits[:, 1] - rm_logits[:, 2]), 1e-8, 1-1e-8)
             rm_loss = -(torch.log(ph) + torch.log(hn)).mean() / 2
-            # rm_loss = rm_loss.detach().requires_grad_(True)
             loss_10 += rm_loss.item()
             rm_model.backward(rm_loss)
             rm_model.step()
-            if (step + 1) % 10 == 0:
-                print_rank_0(f"Epoch {epoch+1}/{config.train_epochs}|Step {step+1}/{len(train_dataloader)}|loss {loss_10/10:.4f}", rank)
+            if (step + 1) % print_steps == 0:
+                rstep = (step+1) // config.gradient_accumulation
+                print_rank_0(f"Epoch {epoch+1}|Step {rstep}/{len(train_dataloader)}|loss {loss_10/print_steps:.4f}", rank)
                 loss_10 = 0
-            # losses.append(rm_loss.detach().item())
-            # if config.deepspeed_config['enabled']:
-            #     rm_model.backward(rm_loss)
-            #     rm_model.step()
-            # else:
-            #     rm_loss.backward()
-            #     if config.deepspeed_config['gradient_clipping']:
-            #         torch.nn.utils.clip_grad_norm_(rm_model.parameters(), config.deepspeed_config['gradient_clipping'])
-            #     if (step + 1) % config.gradient_accumulation == 0 or step == len(train_dataloader) - 1:
-            #         optimizer.step()
-            #         lr_scheduler.step()
-            #         optimizer.zero_grad()
         print_rank_0(f"***** Evaluating reward, Epoch {epoch+1}/{config.train_epochs} *****", rank)
         validate(rm_model, tokenizer, config, eval_dataset, rank, device)
         rm_model.tput_timer.update_epoch_count()
