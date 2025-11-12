@@ -86,19 +86,12 @@ def save_hf_format(model, tokenizer, args, sub_folder=""):
         pass
 
 
-def get_all_reduce_mean(tensor):
-    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
-    tensor = tensor / torch.distributed.get_world_size()
-    return tensor
-
-
 def get_optimizer_grouped_parameters(model, weight_decay, no_decay_name_list=["bias", "LayerNorm.weight"]):
     optimizer_grouped_parameters = [
         {
             "params": [
                 p for n, p in model.named_parameters()
-                if (not any(nd in n
-                            for nd in no_decay_name_list) and p.requires_grad)
+                if (not any(nd in n for nd in no_decay_name_list) and p.requires_grad)
             ],
             "weight_decay":
             weight_decay,
@@ -106,8 +99,7 @@ def get_optimizer_grouped_parameters(model, weight_decay, no_decay_name_list=["b
         {
             "params": [
                 p for n, p in model.named_parameters()
-                if (any(nd in n
-                        for nd in no_decay_name_list) and p.requires_grad)
+                if (any(nd in n for nd in no_decay_name_list) and p.requires_grad)
             ],
             "weight_decay":
             0.0,
