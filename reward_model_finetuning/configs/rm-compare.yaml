@@ -8,10 +8,10 @@ data:
   min_score_diff: 0.5
 
 train:
-  epochs: 5
+  epochs: 1
   gradient_accumulation: 1
   gradient_checkpointing: true
-  learning_rate: 2e-5
+  learning_rate: 5e-6
   max_seq_len: 1024
   per_device_train_batch_size: 64
   per_device_eval_batch_size: 64

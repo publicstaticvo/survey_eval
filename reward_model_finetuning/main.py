@@ -110,9 +110,9 @@ def validate(model, tokenizer, config: P2QConfig, dataset: list[dict[str, str]],
         print_rank_0(f"Positive-Easy Negative: {scores[0][1] * 100:.2f}", rank)
         print_rank_0(f"Hard Negative-Easy Negative: {scores[0][2] * 100:.2f}", rank)
         print_rank_0(f"Overall: {total_acc * 100:.2f}", rank)
-        print_rank_0(f"### Average Scores\nPositive: {scores[2][0] * 100:.2f}", rank)
-        print_rank_0(f"Hard Negative: {scores[2][1] * 100:.2f}", rank)
-        print_rank_0(f"Easy Negative: {scores[2][2] * 100:.2f}", rank)
+        print_rank_0(f"### Average Scores\nPositive: {scores[2][0]:.2f}", rank)
+        print_rank_0(f"Hard Negative: {scores[2][1]:.2f}", rank)
+        print_rank_0(f"Easy Negative: {scores[2][2]:.2f}", rank)
     except:
         import traceback
         print_rank(f"Get Evaluation {traceback.format_exc()}", rank)
