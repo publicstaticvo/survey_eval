@@ -12,3 +12,4 @@ logs
 .ipynb_checkpoints
 __pycache__
 s2orc_info
+langchain_study
