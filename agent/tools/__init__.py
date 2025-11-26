@@ -1,22 +1,37 @@
-from claim_segmentation import claim_segmentation_tool
-from dynamic_oracle_generator import dynamic_oracle_generator
-from factual_correctness import factual_correctness_critic
+from claim_segmentation import ClaimSegmentation, ClaimSegmentationLLMClient
+from dynamic_oracle_generator import DynamicOracleGenerator, SubtopicLLMClient
+from factual_correctness import FactualCorrectnessCritic, FactualLLMClient
+from survey_eval.agent.tools.citation_parser import CitationParser
 from quality import *
-from source_critic import source_selection_critic
-from synthesis_correctness import synthesis_correctness_critic
-from topic_coverage import topic_coverage_critic
+from source_critic import SourceSelectionCritic
+from synthesis_correctness import SynthesisCorrectnessCritic, SynthesisLLMClient
+from topic_coverage import TopicCoverageCritic
+from sbert_client import SentenceTransformerClient
+from tool_config import ToolConfig
+from llm_server import ConcurrentLLMClient
 
 tools = [
-    claim_segmentation_tool,
-    dynamic_oracle_generator,
-    factual_correctness_critic,
-    clarity_critic,
-    programmatic_readability_critic,
-    programmatic_redundancy_critic,
-    constraint_critic,
-    source_selection_critic,
-    synthesis_correctness_critic,
-    topic_coverage_critic
+    ClaimSegmentation,
+    DynamicOracleGenerator,
+    FactualCorrectnessCritic,
+    CitationParser,
+    ClarityCritic,
+    ProgrammaticReadabilityCritic,
+    ProgrammaticRedundancyCritic,
+    SourceSelectionCritic,
+    SynthesisCorrectnessCritic,
+    TopicCoverageCritic,
 ]
 
-__all__ = ["tools"] + [x.name for x in tools]
+llm_servers = [
+    ConcurrentLLMClient,
+    FactualLLMClient,
+    SubtopicLLMClient,
+    ClaimSegmentationLLMClient,
+    SynthesisLLMClient,
+    QualityLLMClient,
+]
+
+__all__ = ["SentenceTransformerClient", "ToolConfig"] + \
+          [x.__name__ for x in tools] + \
+          [x.__name__ for x in llm_servers]

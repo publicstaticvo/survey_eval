@@ -1,43 +1,54 @@
 import json
+import numpy as np
+from typing import List, Dict, Any
 from pydantic import BaseModel, Field
+from sentence_transformers import util
 from langchain_core.tools import BaseTool
-from dynamic_oracle_generator import DynamicOracleGenerator
+
+from sbert_client import SentenceTransformerClient
+from utils import split_content_to_paragraph
 
 
-class InitialToolInput(BaseModel):
-    """Input for InitialTool."""
-    review_text: str = Field(description="The full text of the generated literature review.")
-    dynamic_oracle_data: str = Field(description="The JSON string output from the 'DynamicOracleGenerator' tool.")
+class TopicCriticInput(BaseModel):
+    review_text: str = Field(..., description="The full text of the review.")
+    oracle_data: Dict[str, Any] = Field(..., description="Output from DynamicOracleGenerator.")
 
 
 class TopicCoverageCritic(BaseTool):
-    """
-    First tool that must be called. Loads document and creates context state.
-    """
-    name: str = "topic_coverage_critic"
-    description: str = """
-    Evaluates the topical coverage of the *written review*. It checks if the semantic 
-    content of the review text successfully covers the 'essential_subtopics' provided 
-    by the 'DynamicOracleGenerator'.
+    name = "topic_coverage_critic"
+    description = (
+        "Evaluates whether the review covers the essential subtopics identified by the Oracle. "
+        "Uses embedding similarity to match review paragraphs to required topics."
+    )
+    args_schema: type[BaseModel] = TopicCriticInput
 
-    Returns a JSON string containing a 'coverage_score' (a float 0-1 representing the 
-    percentage of essential topics covered) and 'missing_topics' (a list of strings).
-    """
-    args_schema: type[BaseModel] = InitialToolInput
-    oracle_generator: DynamicOracleGenerator
-    
-    def __init__(self, oracle, **kwargs):
+    def __init__(
+            self, 
+            sentence_transformer: SentenceTransformerClient, 
+            threshold: float | None = None,
+            **kwargs
+        ):
         super().__init__(**kwargs)
-        self.oracle_generator = oracle
-        self.model = None
+        self.sentence_transformer = sentence_transformer
+        self.threshold = threshold
+
+    def _run(self, paper_content: dict[str, str], oracle_data: Dict[str, Any]):
+        # get vectors of subtopics and paper paragraphs
+        golden_subtopics = oracle_data['subtopics']
+        paragraphs = split_content_to_paragraph(paper_content)
+        embeddings = self.sentence_transformer.embed(golden_subtopics + paragraphs)
+        # calculate similarity
+        num_topics = len(golden_subtopics)
+        topic_embeddings = embeddings[:num_topics]
+        paragraph_embeddings = embeddings[num_topics:]
+        cosine_similarity = util.cos_sim(topic_embeddings, paragraph_embeddings)
+        # coverage or max
+        max_similarity = cosine_similarity.max(1).tolist()
+        results = {s: ms for s, ms in zip(golden_subtopics, max_similarity)}
+        if self.threshold is None:   
+            return {"topic_evals": {"similarity_results": results}} 
+        missing_topics = [s for s, ms in zip(golden_subtopics, max_similarity) if ms < self.threshold]   
+        return {"similarity_results": results, "missing_topics": missing_topics}
     
-    def _run(self, review_text: str, dynamic_oracle_data: str, run_manager=None) -> str:
-        # Return context_id for other tools to use    
-        dynamic_oracle_data = json.loads(dynamic_oracle_data)
-        return json.dumps({
-            "coverage_score": 0,
-            "missing_topics": ["Introduction", "Methodology", "Results"]
-        }, indent=2)
-    
-    async def _arun(self, review_text: str, dynamic_oracle_data: str, run_manager=None) -> str:
-        return self._run(review_text, dynamic_oracle_data, run_manager)
+    async def _arun(self, paper_content: dict[str, str], dynamic_oracle_data: str) -> str:
+        return await self._run(paper_content, dynamic_oracle_data)

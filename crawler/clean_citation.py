@@ -101,18 +101,15 @@ class PaperDownloader:
     def search_openalex(self, title: str, retry: int = 5) -> str:
         title = re.sub(r"[\{\}\(\)\[\]\$'`\"]", "", title)
         response = openalex_search_paper("works", {"title.search": title}, add_mail=True, retry=retry)
-        best_abstract = ""
         for paper_info in response.get("results", []):
             if not valid_check(title, paper_info.get("title", "")): continue
-            best_oa_location = paper_info.get("best_oa_location", {})
-            if best_oa_location:
+            if (best_oa_location := paper_info.get("best_oa_location", {})):
                 return best_oa_location["pdf_url"]
             locations_count = paper_info.get("locations_count", 0)
             if locations_count:
                 for l in paper_info.get("locations", []):
                     if l['is_oa'] and l['pdf_url']:
                         return l['pdf_url']
-        return best_abstract
 
     def download_pdf(self, pdf_url: str, filename: str) -> bool:
         """下载PDF文件"""
