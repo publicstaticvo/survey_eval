@@ -45,6 +45,7 @@ class GROBIDParser:
         """
         self.grobid_url = grobid_url        
         self.current_section_hierarchy = []
+        self.citation_map = {}
     
     def process_pdf_to_xml(self, pdf_path: str) -> str:
         """
@@ -101,6 +102,8 @@ class GROBIDParser:
         
         # Extract body sections
         self._extract_body_sections(root, paper)
+
+        self._extract_references(root, paper)
         
         return paper
     
@@ -207,7 +210,7 @@ class GROBIDParser:
             logging.warning(f" get {e}, fallback to parse paragraphs")
             self.fallback_parse_paragraphs(paper, body, paper.references)
     
-    def _extract_text_from_element(self, element: ET.Element) -> str:
+    def extract_text_from_element(self, element: ET.Element) -> str:
         """从元素中提取文本内容"""
         return ' '.join(element.itertext()).strip()
 
@@ -468,7 +471,7 @@ class GROBIDParser:
                     paragraph.add_sentence(sentence)
                 paper.add_paragraph(paragraph)
     
-    def _parse_paragraph_element(self, p_elem: ET.Element, paragraph: Paragraph, references: dict):
+    def _parse_paragraph_element(self, p_element: ET.Element, paragraph: Paragraph, references: dict):
         """
         Parse a paragraph element into Sentence objects.
         
@@ -481,33 +484,35 @@ class GROBIDParser:
         text_parts = []
         current_text = []
         
-        def process_elem(elem: ET.Element, depth=0):
+        def process_elem(element: ET.Element, depth=0):
             # Add text before element
-            if elem.text:
-                current_text.append(elem.text)
+            if element.text:
+                current_text.append(element.text)
             
             # Handle citation references
-            if elem.tag == f"{{{self.NS['tei']}}}ref" and elem.get('type') == 'bibr':
-                citation_id = elem.get('target', '').replace('#', '')
-                ref_text = ''.join(elem.itertext()).strip()
+            if element.tag == f"{{{self.NS['tei']}}}ref" and element.get('type') == 'bibr':
+                citation_id = element.get('target', '').replace('#', '')
+                ref_text = ''.join(element.itertext()).strip()
+                if citation_id not in self.citation_map:
+                    self.citation_map[citation_id] = {"id": citation_id, "ref_text": ref_text}
                 
                 # Add citation marker
                 if current_text:
                     text_parts.append(('text', ''.join(current_text)))
                     current_text.clear()
                 
-                text_parts.append(('citation', citation_id))
+                text_parts.append(('citation', self.citation_map[citation_id]))
             else:
                 # Recursively process child elements
-                for child in elem:
+                for child in element:
                     process_elem(child, depth + 1)
             
             # Add text after element
-            if elem.tail and depth > 0:
-                current_text.append(elem.tail)
+            if element.tail and depth > 0:
+                current_text.append(element.tail)
         
         # Process the paragraph element
-        process_elem(p_elem)
+        process_elem(p_element)
         
         # Add any remaining text
         if current_text:
@@ -532,67 +537,57 @@ class GROBIDParser:
                 # Split text into sentences (simple approach)
                 sentences = re.split(r'(?<=[.!?])\s+', content)
                 
-                for i, sent in enumerate(sentences):
-                    sent = sent.strip()
-                    if not sent:
-                        continue
+                for i, sentence in enumerate(sentences):                    
+                    if not (sentence := sentence.strip()): continue
                     
                     if i == 0:
                         # Continuation of current sentence
-                        current_sentence += sent
+                        current_sentence += sentence
                     else:
                         # Create sentence for the previous one
                         if current_sentence:
-                            sentence_obj = Sentence(
-                                text=current_sentence.strip(),
-                                father=paragraph,
-                                citations=current_citations.copy()
-                            )
+                            sentence_obj = Sentence(current_sentence.strip(), paragraph, current_citations.copy())
                             paragraph.add_sentence(sentence_obj)
                         
                         # Start new sentence
-                        current_sentence = sent
+                        current_sentence = sentence
                         current_citations = []
                 
             elif part_type == 'citation':
                 current_citations.append(content)
         
         # Add the last sentence
-        if current_sentence.strip():
-            sentence_obj = Sentence(
-                text=current_sentence.strip(),
-                father=paragraph,
-                citations=current_citations
-            )
+        if current_sentence := current_sentence.strip():
+            sentence_obj = Sentence(current_sentence, paragraph, current_citations)
             paragraph.add_sentence(sentence_obj)
     
-    def _extract_references(self, root: ET.Element) -> dict:
+    def _extract_references(self, root: ET.Element, paper: Paper) -> dict:
         """Extract bibliography/reference list as a dictionary."""
-        references = {}
         
         back = root.find('.//tei:text/tei:back', self.NS)
-        if back is None:
-            return references
+        if back is None: return
         
         for biblstruct in back.findall('.//tei:listBibl/tei:biblStruct', self.NS):
             ref_id = biblstruct.get('{http://www.w3.org/XML/1998/namespace}id', '')
             
             # Extract title
-            title_elem = biblstruct.find('.//tei:analytic/tei:title', self.NS)
-            if title_elem is None:
-                title_elem = biblstruct.find('.//tei:monogr/tei:title', self.NS)
-            title = ''.join(title_elem.itertext()).strip() if title_elem is not None else ""
+            title_element = biblstruct.find('.//tei:analytic/tei:title', self.NS)
+            if title_element is None:
+                title_element = biblstruct.find('.//tei:monogr/tei:title', self.NS)
+            title = ''.join(title_element.itertext()).strip() if title_element is not None else ""
             
             # Extract authors
             ref_authors = []
-            for author in biblstruct.findall('.//tei:analytic/tei:author', self.NS):
+            author_element = biblstruct.findall('.//tei:analytic/tei:author', self.NS)
+            if author_element is None:
+                author_element = biblstruct.findall('.//tei:monogr/tei:author', self.NS)
+            for author in author_element:
                 persname = author.find('.//tei:persName', self.NS)
                 if persname is not None:
                     forename = persname.find('.//tei:forename', self.NS)
                     surname = persname.find('.//tei:surname', self.NS)
                     name = f"{forename.text if forename is not None else ''} {surname.text if surname is not None else ''}".strip()
-                    if name:
-                        ref_authors.append(name)
+                    if name: ref_authors.append(name)
             
             # Extract publication info
             monogr = biblstruct.find('.//tei:monogr', self.NS)
@@ -600,21 +595,21 @@ class GROBIDParser:
             year = ""
             
             if monogr is not None:
-                journal_elem = monogr.find('.//tei:title', self.NS)
-                journal = ''.join(journal_elem.itertext()).strip() if journal_elem is not None else ""
+                journal_element = monogr.find('.//tei:title', self.NS)
+                if journal_element is not None: journal = ''.join(journal_element.itertext()).strip()
                 
-                date_elem = monogr.find('.//tei:imprint/tei:date', self.NS)
-                year = date_elem.get('when', '') if date_elem is not None else ""
+                date_element = monogr.find('.//tei:imprint/tei:date', self.NS)
+                if date_element is not None: year = date_element.get('when', '')
             
             if ref_id:
-                references[ref_id] = {
+                self.citation_map[ref_id].update({
                     'title': title,
                     'authors': ref_authors,
                     'journal': journal,
                     'year': year
-                }
+                })
         
-        return references
+        paper.references = self.citation_map
     
     def parse_pdf(self, pdf_path: str) -> Paper:
         """

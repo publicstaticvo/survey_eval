@@ -1,6 +1,7 @@
 import re
 import json
 import time
+import asyncio
 import numpy as np
 from typing import List, Tuple
 from collections import Counter
@@ -256,3 +257,34 @@ class ProgrammaticRedundancyCritic(BaseTool):
 
     async def _arun(self, paper_content: dict):
         return await self._run(paper_content)
+
+
+class QualityCritic(BaseTool):
+    """
+    Runs Clarity, Readability, Redundancy in one node
+    """
+
+    def __init__(self, llm, sbert, threshold, n_gram):
+        # Initialize classes (assuming they are wrapped as simple async functions or classes)
+        self.redundancy_tool = ProgrammaticRedundancyCritic(sbert, threshold, n_gram)
+        self.readability_tool = ProgrammaticReadabilityCritic()
+        self.clarity_tool = ClarityCritic(llm)
+
+    def _run(self, review_paper):
+        # 1. Create Async Tasks
+        # Note: segment_tool only needs the review_text, not the parsed papers!
+        task_redundancy = self.redundancy_tool.ainvoke(review_paper)
+        task_readability = self.readability_tool.ainvoke(review_paper) 
+        task_clarity = self.clarity_tool.ainvoke(review_paper)
+
+        # 2. Run them all at once
+        redundancy_res, readability_res, clarity_res = asyncio.gather(
+            task_redundancy, task_readability, task_clarity
+        )
+
+        # 3. Return combined state updates
+        return {
+            "redundancy_evals": redundancy_res,
+            "readability_evals": readability_res,
+            "clarity_evals": clarity_res,
+        }

@@ -70,4 +70,5 @@ class Paper(Section):
             "abstract": self.abstract.get_skeleton() if self.abstract else "",
             "paragraphs": [paragraph.get_skeleton() for paragraph in self.paragraphs],
             "sections": [section.get_skeleton() for section in self.children],
+            "citations": self.references
         }

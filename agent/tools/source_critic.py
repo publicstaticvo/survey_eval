@@ -98,7 +98,7 @@ class SourceSelectionCritic(BaseTool):
         if idcg == 0: return 0.0
         return dcg / idcg
 
-    def _run(self, citations: dict, query: str, oracle_data: dict, run_manager):
+    def _run(self, citations: dict, query: str, oracle_data: dict):
         oracle_data = oracle_data['dynamic_oracle_data']
         num_oracles, num_citations = len(oracle_data), len(citations)
         self.topn = min(num_citations, num_oracles)
@@ -165,5 +165,5 @@ class SourceSelectionCritic(BaseTool):
             "incorrect_papers": [x[0] for x in incorrect if x[1] < oracle_ranked_list[self.topn]]
         }
 
-    async def _arun(self, citations: dict, query: str, oracle_data: dict, run_manager):
-        return await self._run(citations, query, oracle_data, run_manager)
+    async def _arun(self, citations: dict, query: str, oracle_data: dict):
+        return await self._run(citations, query, oracle_data)

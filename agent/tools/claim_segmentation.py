@@ -17,19 +17,21 @@ class ClaimSegmentationLLMClient(ConcurrentLLMClient):
     def __init__(self, llm, sampling_params, n_workers, retry = 5):
         super().__init__(llm, sampling_params, n_workers, retry)
 
-    def _pattern_check(self, output):
+    def _pattern_check(self, output: str, citations: dict):
         try:
             pattern = self.format_pattern.findall(output)[-1]
             claim = json.loads(pattern)
-            assert 'claim_text' in claim and 'claim_type' in claim
+            assert all(x in claim for x in ['claim', 'claim_type', 'requires'])
+            assert set(claim['requires'].keys()) == set(citations.keys())
             return claim
         except:
             return
 
     def run_llm(self, inputs):
-        retry = 3
+        retry = 5
         message = self.PROMPT.format(text=inputs['text'], range=inputs['range'])
-        while retry and (claim := self._pattern_check(super().run_llm(message))) is None: retry -= 1
+        while retry and (claim := self._pattern_check(super().run_llm(message)), inputs['citations']) is None: 
+            retry -= 1
         claim['citations'] = inputs['citations']
         return claim
 

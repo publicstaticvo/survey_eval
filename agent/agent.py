@@ -12,15 +12,15 @@ from langchain.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import BaseMessage
 from langchain_core.language_models import BaseChatModel
+from langgraph.prebuilt import tools_condition
 
 from tools import (
+    AgentState,
     ClaimSegmentation,
     DynamicOracleGenerator,
     FactualCorrectnessCritic,
     CitationParser,
-    ClarityCritic,
-    ProgrammaticReadabilityCritic,
-    ProgrammaticRedundancyCritic,
+    QualityCritic,
     SourceSelectionCritic,
     SynthesisCorrectnessCritic,
     TopicCoverageCritic,
@@ -32,31 +32,6 @@ from tools import (
     SynthesisLLMClient,
     ClaimSegmentationLLMClient,
 )
-
-
-# --- The State ---
-class AgentState(TypedDict):
-    # Inputs
-    query: str
-    review_paper: Dict[str, Any]
-    
-    # Shared Resources (Written once)
-    oracle_data: Dict[str, Any]  # From Oracle
-    claims: List[Dict]                   # From Segmentation
-    paper_content_map: Dict[str, str]    # From Retriever (Map: ID -> Text)
-
-    # REQUIRED for standard tool calling:
-    messages: Annotated[List[BaseMessage], operator.add]
-
-    # Critic Outputs (Reducers allow parallel writing)
-    # Each critic appends its result to these lists
-    fact_checks: Annotated[List[Dict], operator.add] 
-    source_evals: Dict[str, Any]
-    topic_evals: Dict[str, Any]
-    quality_evals: Dict[str, Any]
-    
-    # Final Report
-    final_report: str
 
 
 class AgentNode:
@@ -88,10 +63,7 @@ class AgentNode:
         3. If the writing seems repetitive, call 'programmatic_redundancy_critic'.
         4. If you have sufficient evidence to score the paper, respond with FINAL_REPORT.
         """
-        response = await self.main_llm.ainvoke([
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Current State Query: {state.query}"}
-        ])
+        response = await self.main_llm.ainvoke(state.messages)
         
         return {"messages": [response]}
 
@@ -113,7 +85,7 @@ class ParallelDataPreperation:
             sentence_transformer=sbert,
             eval_date=config.evaluation_date,
         )
-        self.parser_tool = CitationParser(config.grobid_url, config.grobid_num_workers)
+        self.parser_tool = CitationParser(grobid_url=config.grobid_url, n_workers=config.grobid_num_workers)
         self.segment_tool = ClaimSegmentation(
             llm=ClaimSegmentationLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers)
         )
@@ -138,7 +110,6 @@ class ParallelDataPreperation:
 
 
 # --- 2. Document-Level Critics (Standard Nodes) ---
-
 class RunSourceCritic:
 
     def __init__(self, config: ToolConfig):
@@ -176,34 +147,16 @@ class QualityEvaluation:
 
     def __init__(self, config: ToolConfig):
         # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.redundancy_tool = ProgrammaticRedundancyCritic(
+        self.tool = QualityCritic(
+            llm=QualityLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers),
             sentence_transformer=SentenceTransformerClient(config.sbert_server_url), 
             threshold=config.redundancy_similarity_threshold, 
             n_gram=config.redundancy_ngram,
         )
-        self.readability_tool = ProgrammaticReadabilityCritic()
-        llm = QualityLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers, True)
-        self.clarity_tool = ClarityCritic(llm)
 
     async def __call__(self, state: AgentState):
-        logging.info("--- Starting Parallel Data Prep ---")
-        # 1. Create Async Tasks
-        # Note: segment_tool only needs the review_text, not the parsed papers!
-        task_redundancy = self.redundancy_tool.ainvoke(state['query'])
-        task_readability = self.readability_tool.ainvoke(state['citation_list']) 
-        task_clarity = self.clarity_tool.ainvoke(state['review_text'])
-
-        # 2. Run them all at once
-        redundancy_res, readability_res, clarity_res = await asyncio.gather(
-            task_redundancy, task_readability, task_clarity
-        )
-
-        # 3. Return combined state updates
-        return {"quality_evals": {
-            "redundancy_evals": redundancy_res,
-            "readability_evals": readability_res,
-            "clarity_evals": clarity_res,
-        }}
+        results = await self.tool.ainvoke(state.review_paper)
+        return {"quality_evals": results}
 
 
 # --- 3. Fact-Checking Critics (Map-Reduce Workers) ---
@@ -243,6 +196,72 @@ class RunSynthesisCritic:
         return {"topic_evals": score}
 
 
+def map_all_critics(state: AgentState):
+    """
+    The central router. Maps all claims to workers and launches document critics 
+    using LangGraph's Send() for maximum parallelism.
+    """
+    sends = []
+
+    def paper_routing(claim: Dict[str, Any]):
+        cids = claim['citations']
+    
+    # A. Map claims to Factual/Synthesis workers (Claim-Level Critics)
+    for claim in state.get('claims', []):
+        # paper routing depend on claims
+        match claim['type']:
+            case "FACTUAL_CLAIM":
+                # Spawn 1 Factual Critic
+                cids = claim['citations']
+                sends.append(Send("factual_critic", {
+                    "claim": claim['claim_text'],
+                    "cited_papers": {cid: state.paper_content_map[cid] for cid in cids}
+                }))
+                # # EXPLODE: Spawn multiple Factual Critics
+                # for sub in claim['sub_claims']:
+                #     cid = sub['citation']
+                #     sends.append(Send("factual_critic", {
+                #         "claim_text": sub['text'],
+                #         "paper_text": state.paper_content_map[cid]
+                #     }))
+            
+            case "SYNTHESIS_CLAIM":
+                # Spawn 1 Synthesis Critic
+                cids = claim['citations']
+                sends.append(Send("synthesis_critic", {
+                    "claim": claim['text'],
+                    "cited_papers": {cid: state.paper_content_map[cid] for cid in cids}
+                }))
+            
+            case _:
+                continue
+
+    # B. Launch Document-Level Critics (Source, Topic, Quality) - Always run
+    sends.append(Send(node="source_critic", payload={
+        "citations": state.review_paper['citations'], 
+        "query": state.query,
+        "oracle_data": state.oracle_data,
+    }))
+    sends.append(Send(node="topic_critic", payload={
+        "paper_content": state.review_paper,
+        "oracle_data": state.oracle_data,
+    }))
+    sends.append(Send(node="clarity_critic", payload={"review_paper": state.review_paper}))
+    
+    return sends
+
+
+# ----------------- PHASE 4: REDUCE/AGGREGATE -----------------
+async def results_aggregator(state: AgentState):
+    """Placeholder for the 'reduce' step. All claim_checks and document_scores 
+       are gathered automatically by the Annotated[..., operator.add] in the state."""
+    
+    print("--- 4. All Critics Finished. Aggregator Node Reached. ---")
+    print(f"Total claims checked: {len(state.get('claim_checks', []))}")
+    print(f"Total document scores collected: {len(state.get('document_scores', []))}")
+    return state # Pass the aggregated state to the final agent
+
+
 def map_claims_to_critics(state: AgentState):
     """
     Generator function that creates Send objects.
@@ -251,35 +270,63 @@ def map_claims_to_critics(state: AgentState):
     tasks = []
     content_map = state.paper_content_map
     
-    for claim in state.claims:
-        c_type = claim['type']
-        
-        if c_type == "SINGLE_CLAIM":
-            # Spawn 1 Factual Critic
-            cid = claim['citations'][0]
-            tasks.append(Send("factual_critic", {
-                "claim": claim['claim_text'],
-                "cited_paper": content_map[cid]
-            }))
-            
-        elif c_type == "SYNTHESIS_CLAIM":
-            # Spawn 1 Synthesis Critic
-            cids = claim['citations']
-            tasks.append(Send("synthesis_critic", {
-                "claim": claim['text'],
-                "cited_paper": {cid: content_map[cid] for cid in cids}
-            }))
-            
-        elif c_type == "SERIAL_CLAIMS":
-            # EXPLODE: Spawn multiple Factual Critics
-            for sub in claim['sub_claims']:
-                cid = sub['citation']
+    for claim in state.claims:        
+        match claim['type']:
+            case "SINGLE_CLAIM":
+                # Spawn 1 Factual Critic
+                cid = claim['citations'][0]
                 tasks.append(Send("factual_critic", {
-                    "claim_text": sub['text'],
-                    "paper_text": content_map[cid]
+                    "claim": claim['claim_text'],
+                    "cited_paper": content_map[cid]
                 }))
+            
+            case "SYNTHESIS_CLAIM":
+                # Spawn 1 Synthesis Critic
+                cids = claim['citations']
+                tasks.append(Send("synthesis_critic", {
+                    "claim": claim['text'],
+                    "cited_paper": {cid: content_map[cid] for cid in cids}
+                }))
+            
+            case "SERIAL_CLAIMS":
+                # EXPLODE: Spawn multiple Factual Critics
+                for sub in claim['sub_claims']:
+                    cid = sub['citation']
+                    tasks.append(Send("factual_critic", {
+                        "claim_text": sub['text'],
+                        "paper_text": content_map[cid]
+                    }))
                 
     return tasks
+
+
+def aggregate_claim_results(state: AgentState) -> AgentState:
+    """
+    Consolidates results from parallel claim critics (Factual and Synthesis).
+    """
+    logging.log("--- Aggregator Node: Collecting parallel results ---")
+    
+    # Assuming worker results are appended to a 'fact_checks' list in the state
+    fact_checks = state.get("fact_checks", [])
+    
+    # Basic summary statistics
+    total_claims = len(fact_checks)
+    supported_count = sum(1 for fc in fact_checks if fc['status'] == 'SUPPORTED')
+    refuted_count = sum(1 for fc in fact_checks if fc['status'] == 'REFUTED')
+    
+    # Store summary for the final report
+    state_update = {
+        "summary_fact_check_metrics": {
+            "total_claims": total_claims,
+            "supported": supported_count,
+            "refuted": refuted_count,
+            "accuracy": supported_count / total_claims if total_claims > 0 else 0.0
+        },
+        # You may want to retain the full list for the final report
+        "fact_checks": fact_checks
+    }
+    
+    return state_update
 
 
 class FinalAggregation:
@@ -307,10 +354,6 @@ class FinalAggregation:
         return {"final_report": result.model_dump()}
     
 
-def tools_condition(state: AgentState):
-    pass
-
-
 def build_agent(config: ToolConfig):
 
     llm = ChatOpenAI(
@@ -331,7 +374,6 @@ def build_agent(config: ToolConfig):
     run_final_aggregation = FinalAggregation(llm)
 
     tools_to_bind = [
-        run_parallel_data_prep, 
         run_quality_group, 
         run_source_critic,
         run_topic_critic,
@@ -340,49 +382,40 @@ def build_agent(config: ToolConfig):
         run_final_aggregation
     ]
     
-    tools = ToolNode(tools_to_bind)
+    # tools = ToolNode(tools_to_bind)
 
     workflow = StateGraph(AgentState)
-    workflow.add_node("judge", agent)
-    workflow.add_node("tools", tools)
-    workflow.add_conditional_edges("judge", tools_condition, {"tools": "tools", "__end__": END})
-    workflow.add_edge("tools", "judge")
+    workflow.add_node("data_prep", run_parallel_data_prep)
+    workflow.add_node("factual_critic", run_factual_critic)
+    workflow.add_node("synthesis_critic", run_synthesis_critic)
+    workflow.add_node("source_critic", run_source_critic)
+    workflow.add_node("topic_critic", run_topic_critic)
+    workflow.add_node("quality_critic", run_quality_group)
+    workflow.add_node("final_report_agent", agent)
 
-    # # Add Nodes
-    # workflow.add_node("data_prep", run_parallel_data_prep)       # The Sync Node
-    # workflow.add_node("quality_critics", run_quality_group)      # Independent
-    # workflow.add_node("source_critic", run_source_critic)
-    # workflow.add_node("topic_critic", run_topic_critic)
-    # workflow.add_node("factual_critic", run_factual_critic)      # Worker
-    # workflow.add_node("synthesis_critic", run_synthesis_critic)  # Worker
-    # workflow.add_node("aggregator", run_final_aggregation)
+    workflow.set_entry_point("data_prep")
+    workflow.add_conditional_edges(
+        "data_prep",
+        map_all_critics,
+        {
+            # The keys here must match the node names used in Send(node=...)
+            "factual_critic": "factual_critic",
+            "synthesis_critic": "synthesis_critic",
+            "source_critic": "source_critic",
+            "topic_critic": "topic_critic",
+            "quality_critic": "quality_critic",
+            # We don't need a fallback here, as the map_all_critics handles the Send logic
+        }
+    )
 
-    # # --- EDGES ---
+    workflow.add_edge("factual_worker", "aggregator")
+    workflow.add_edge("synthesis_worker", "aggregator")
+    workflow.add_edge("source_critic", "aggregator")
+    workflow.add_edge("topic_critic", "aggregator")
+    workflow.add_edge("quality_critic", "aggregator")
 
-    # # Branch 1: Independent Quality Check
-    # workflow.add_edge(START, "quality_critics")
-    # workflow.add_edge("quality_critics", "aggregator")
-
-    # # Branch 2: The Main Pipeline
-    # workflow.add_edge(START, "data_prep")
-
-    # # Fan-Out from Data Prep (Now safe because all data is ready)
-    # workflow.add_edge("data_prep", "source_critic")
-    # workflow.add_edge("data_prep", "topic_critic")
-
-    # # Retrieval -> Map-Reduce for Facts
-    # # This is the Conditional Edge that spawns workers
-    # workflow.add_conditional_edges("data_prep", map_claims_to_critics, ["factual_critic", "synthesis_critic"])
-
-    # # Fan-In: All critics -> Aggregator
-    # workflow.add_edge("source_critic", "aggregator")
-    # workflow.add_edge("topic_critic", "aggregator")
-    # workflow.add_edge("quality_critics", "aggregator")
-    # workflow.add_edge("factual_critic", "aggregator")
-    # workflow.add_edge("synthesis_critic", "aggregator")
-
-    # workflow.add_edge("aggregator", END)
-
-    # Compile
+    # Phase 5: Aggregator -> Final Report Agent -> END
+    workflow.add_edge("aggregator", "final_report_agent")
+    workflow.add_edge("final_report_agent", END)
     app = workflow.compile()
     return app

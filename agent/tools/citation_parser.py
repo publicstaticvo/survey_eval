@@ -1,4 +1,6 @@
 import io
+import re
+import json
 import logging
 import requests
 import xml.etree.ElementTree as ET
@@ -10,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor as TPE
 
 from paper_parser import GROBIDParser
 from utils import openalex_search_paper, valid_check, index_to_abstract, URL_DOMAIN
+from llm_server import ConcurrentLLMClient
 
 
 @dataclass
@@ -39,7 +42,7 @@ class CitationParser(BaseTool):
     )
     args_schema: type[BaseModel] = CitationProcessInput
     
-    def __init__(self, grobid_url: str = "http://localhost:8070", n_workers: int = 10, **kwargs):
+    def __init__(self, grobid_url: str, n_workers: int = 10, **kwargs):
         """
         Initialize the GROBID parser.
         
@@ -70,8 +73,9 @@ class CitationParser(BaseTool):
         return pdf_file_obj.name, pdf_file_obj, 'application/pdf'
     
     def _search_paper_from_api(self, paper: Dict[str, Any]) -> Dict[str, Any]:
-        # TODO: 改成填表，由于OpenAlex会有重复条目，所以需要手动去重，在多个同名条目中寻找共同的ID。
-        # TODO: 可第一步统计所有正确结果，第二步从结果中选择去重。
+        """
+        paper = citation_info，可能要改成特定的类。
+        """
         paper_title = paper['title']
         # 获取所有正确结果
         on_target = []
@@ -79,52 +83,48 @@ class CitationParser(BaseTool):
         for paper_info in results:
             if valid_check(paper_title, paper_info.get("title", "")): 
                 paper_info['id'] = paper_info['id'].replace(URL_DOMAIN, "")
+                # paper_info['abstract'] = index_to_abstract(paper_info['abstract_inverted_index'])
+                # del paper_info['abstract_inverted_index']
                 on_target.append(paper_info)
-        
-        # 从正确结果中统计。
-        best_field = {
-            "id": [],
-            "authorship": [],
-            "title": paper['title'], 
-            "cited_by_count": 0,
-            "counts_by_year": [],
-            "abstract": "",
-            'publication_date': "",
-            "file_obj": None
-        }
+        # 只需要尝试获取全文内容和摘要，将完整的信息返回以核对引用正确性。
+        info = {"metadata": [self._get_metadata(x) for x in on_target], "abstract": "", "full_content": {}}
         for paper in on_target:
-            # if not best_field['id']: best_field['id'] = paper['id']
-            # best_field['cited_by_count'] = max(best_field['cited_by_count'], paper['cited_by_count'])
-            best_field['id'].append(paper['id'])
-            best_field['cited_by_count'] += paper['cited_by_count']
-            if not best_field['authorship']:
-                best_field['authorship'] = [x['author']['display_name'] for x in paper['authorship']]
-            if not best_field['abstract'] and (abstract := index_to_abstract(paper['abstract_inverted_index'])):
-                best_field['abstract'] = abstract
-            if not best_field['file_obj'] and \
-                (best_oa_location := paper.get("best_oa_location", {})) and \
-                (file_obj := self._download_paper_to_memory(best_oa_location["pdf_url"])):
-                best_field['file_obj'] = file_obj
-            if not best_field['file_obj'] and paper_info.get("locations_count", 0):
-                for l in paper_info.get("locations", []):
-                    if (file_obj := self._download_paper_to_memory(l['pdf_url'])): 
-                        best_field['file_obj'] = file_obj
-                        break            
-            if not best_field['publication_date'] or \
-                (date := paper['publication_date']) < best_field['publication_date']:
-                best_field['publication_date'] = date
-        return best_field
+            if not info['full_content'] and (best_oa_location := paper["best_oa_location"]) and \
+                (file_obj := self._download_paper_to_memory(best_oa_location["pdf_url"])) and \
+                (paper_content := self.paper_parser.parse_pdf(file_obj)):
+                info['full_content'] = paper_content.get_skeleton()
+            if not info['abstract'] and (abstract := index_to_abstract(paper['abstract_inverted_index'])):
+                info['abstract'] = abstract
+        # 0 - OK
+        # 1 - fail to download paper
+        # 2 - fail to download paper and fetch abstract
+        # 3 - fail to get information of the citation. Please check its existance.
+        if info['full_content']: 
+            info['status'] = 0
+        elif info['abstract']:
+            info['status'] = 1
+            info['full_content'] = info['abstract']
+        elif info['metadata']:
+            info['status'] = 2
+            info['full_content'] = paper['title']
+        else:
+            info['status'] = 3
+            info['full_content'] = paper['title']
+        return info
     
-    # def _get_paper_features(self, paper: Dict[str, Any]):
-    #     # The following information to get:
-    #     return {
-    #         "id": paper['id'].replace(URL_DOMAIN, ""),
-    #         "title": paper['title'], 
-    #         "cited_by_count": paper['cited_by_count'],
-    #         "counts_by_year": paper['counts_by_year'],
-    #         "abstract": paper['abstract'],
-    #         'publication_date': paper['publication_date'],
-    #     }
+    def _get_metadata(self, paper: Dict[str, Any]):
+        # The following information to get:
+        return {
+            "id": paper['id'].replace(URL_DOMAIN, ""),
+            "ids": paper['ids'],
+            "doi": paper['doi'],
+            "title": paper['display_name'],
+            "authors": paper['authorship'],
+            "locations": [x['source'] for x in paper['locations']],
+            "cited_by_count": paper['cited_by_count'],
+            "counts_by_year": paper['counts_by_year'],
+            "publication_date": paper['publication_date'],
+        }
     
     def _run(self, citations: Dict[str, Dict[str, str]]) -> str:
         paper_content_map = {}  # key: citation key; value: citation info.
@@ -134,19 +134,6 @@ class CitationParser(BaseTool):
             pending_jobs.append(v)
         with TPE(max_workers=self.n_workers) as executor:
             for paper, info in zip(pending_jobs, executor.map(self._search_paper_from_api, pending_jobs)):
-                if info['file_obj']:
-                    paper_content = self.paper_parser.parse_pdf(info['file_obj'])
-                    info['full_content'] = paper_content.get_skeleton()
-                    info['status'] = "ok" 
-                elif info['abstract']:
-                    info['status'] = "fail to download paper"
-                    info['full_content'] = info['abstract']
-                elif info['id']:
-                    info['status'] = "fail to download paper and fetch abstract"
-                    info['full_content'] = info['title']
-                else:
-                    info = {'status': "fail to get information of the citation. Please check its existance.", 
-                            'content': paper['title']}
                 paper_content_map[paper['citation_key']] = info     
         return paper_content_map
     

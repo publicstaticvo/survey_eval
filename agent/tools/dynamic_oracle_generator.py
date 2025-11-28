@@ -35,19 +35,14 @@ class SubtopicLLMClient(ConcurrentLLMClient):
         return pattern
 
 
-class DynamicOracleInput(BaseModel):
-    query: str = Field(description="The research query topic (e.g., 'Federated Learning in Edge Computing').")
+class OracleInput(BaseModel):
+    query: str = Field(..., description="Research query.")
 
 
 class DynamicOracleGenerator(BaseTool):
     name = "dynamic_oracle_generator"
-    description = (
-        "Generates a 'Dynamic Oracle' for evaluation. "
-        "1. Retrieves top 1000 papers from OpenAlex to build a seed set. "
-        "2. Calculates prestige features (PageRank, Co-citation) and extracts essential subtopics. "
-        "Use this ONCE at the start."
-    )
-    args_schema: type[BaseModel] = DynamicOracleInput
+    description = "Generates seed set and features."
+    args_schema: type[BaseModel] = OracleInput
     
     def __init__(
             self, 
@@ -197,7 +192,7 @@ class DynamicOracleGenerator(BaseTool):
             topics[topic_id]['paper_titles'].append(title)
         return topics
     
-    def _run(self, query: str, run_manager=None) -> dict:
+    def _run(self, query: str) -> dict:
         logging.info(f"DynamicOracleGenerator::Request for oracle paper with query {query}")
         # 1. Request for papers
         self._request_for_papers(query)
@@ -222,5 +217,5 @@ class DynamicOracleGenerator(BaseTool):
         logging.info(f"DynamicOracleGenerator::Return")
         return {"oracle_papers": self.oracle, "subtopics": self.subtopics}
     
-    async def _arun(self, query: str, run_manager=None) -> str:
-        return await self._run(query, run_manager)
+    async def _arun(self, query: str) -> str:
+        return await self._run(query)
