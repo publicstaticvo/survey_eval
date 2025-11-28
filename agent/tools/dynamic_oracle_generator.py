@@ -11,20 +11,22 @@ from sbert_client import SentenceTransformerClient
 from sklearn.feature_extraction.text import CountVectorizer
 
 from utils import openalex_search_paper, index_to_abstract, URL_DOMAIN
+from prompts import SUBTOPIC_GENERATION_PROMPT
 from llm_server import ConcurrentLLMClient
 
 
 class SubtopicLLMClient(ConcurrentLLMClient):
 
-    format_pattern: re.Pattern = re.compile(r"\\boxed\{(.+?)\}", re.DOTALL)
-    PROMPT: str = """..."""
+    format_pattern: re.Pattern = re.compile(r"\{.+?\}", re.DOTALL)
+    PROMPT: str = SUBTOPIC_GENERATION_PROMPT
 
     def __init__(self, llm, sampling_params, n_workers, retry = 5):
         super().__init__(llm, sampling_params, n_workers, retry)
 
     def _pattern_check(self, output):
         try:
-            return self.format_pattern.findall(output)[-1]
+            subtopic_map = json.loads(self.format_pattern.findall(output)[-1])
+            return list(subtopic_map.values())
         except:
             return
 
@@ -80,6 +82,51 @@ class DynamicOracleGenerator(BaseTool):
         paper_age = self._paper_age(paper)
         cited_by = self._citation_count_by_eval_date(paper)
         return cited_by / paper_age
+
+    def _request_for_papers(self, query):
+        # key现在是标题+一作。
+        filter_params = {
+            "default.search": query,
+            "to_publication_date": self.eval_date.strftime("%Y-%m-%d"), 
+        }
+        page = 1
+        while len(self.oracle) < self.num_oracle_papers:
+            results = openalex_search_paper("works", filter_params, per_page=200, page=page, retry=100)
+            for x in results.get('results'):
+                x['id'] = x['id'].replace(URL_DOMAIN, "")
+                first_author = x['authorships'][0]['author']['display_name'] if x['authorships'] else ""
+                if (paper_id := (x['display_name'], first_author)) not in self.oracle:
+                    x['id'] = [x['id']]
+                    x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
+                    del x['abstract_inverted_index']
+                    x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
+                    # reorganize counts_by_year
+                    x['counts_by_year'] = {y['year']: y['cited_by_count'] for y in x['counts_by_year']}
+                    self.oracle[paper_id] = x
+                    self.oracle_ids.append(paper_id)
+                else:
+                    prev_paper = self.oracle[paper_id]
+                    if x['id'] not in prev_paper['id']: prev_paper['id'].append(x['id'])
+                    else: continue
+                    if x['publication_date'] < prev_paper['publication_date']:
+                        prev_paper['publication_date'] = x['publication_date']
+                    # Gemini says should use max instead of sum
+                    if x['cited_by_count'] > prev_paper['cited_by_count']:
+                        prev_paper['cited_by_count'] = x['cited_by_count']
+                        prev_paper['counts_by_year'] = {y['year']: y['cited_by_count'] for y in x['counts_by_year']}
+                if len(self.oracle) == self.num_oracle_papers:
+                    break
+            page += 1
+        # calculate features
+        # feature 0: openalex relevance score
+        # feature 1: cosine similarity
+        # feature 2: citation count == global prestige
+        # feature 3: local citation count == local_prestige
+        # feature 4: local pagerank
+        # feature 5: citation velocity == emengence
+        for x in self.oracle.values():
+            x['features'] = [x['relevance_score'], 0, self._citation_count_by_eval_date(x), 0, 0, self._citation_velocity(x)]
+        self.min_openalex_relevance = self.oracle[self.oracle_ids[-1]]['relevance_score']
     
     def _local_citation_and_pagerank(self):
         """
@@ -89,12 +136,14 @@ class DynamicOracleGenerator(BaseTool):
         # 1. Create a lookup map and a set of valid IDs
         # This allows O(1) access to paper objects and quick existence checks
         # Initialize local_citation_count to 0 for all papers
-        paper_map = {}
-        for paper_id in self.oracle_ids:
+        paper_map, map_workid_to_key = {}, {}
+        for paper_id in self.oracle_ids:  # paper_id = (title, first author)
             x = self.oracle[paper_id]
+            assert isinstance(x['id'], list)
+            for i in x['id']: map_workid_to_key[i] = paper_id
             references = x['referenced_works'] if x['referenced_works'] else []
             paper_map[paper_id] = {"references": references, "local_citation_count": 0}
-        valid_ids = set(paper_map.keys())
+        valid_ids = set(paper_map.keys())  # valid_id = set((title, first author))
 
         # 2. Construct the Graph
         # A citation network is a Directed Graph (DiGraph)
@@ -108,12 +157,12 @@ class DynamicOracleGenerator(BaseTool):
         for source_id, paper_data in paper_map.items():
             citations = paper_data['references']
             
-            for target_id in citations:
+            for target_id in citations:  # target_id = workid
                 # strictly filter for 'local' papers only
-                if target_id in valid_ids:
+                if target_id in map_workid_to_key:
+                    target_id = map_workid_to_key[target_id]
                     # Add Edge to Graph
-                    citation_graph.add_edge(source_id, target_id)
-                    
+                    citation_graph.add_edge(source_id, target_id)                    
                     # Increment Local Citation Count
                     # Note: If A cites B, B gets the citation count
                     paper_map[target_id]['local_citation_count'] += 1
@@ -128,36 +177,6 @@ class DynamicOracleGenerator(BaseTool):
             self.oracle[paper_id]['features'][3] = paper_map[paper_id]['local_citation_count']
             self.oracle[paper_id]['features'][4] = score
 
-    def _request_for_papers(self, query):
-        # TODO: 用标题+一作姓氏作为paper fingerprint，并统计相同的条目：引用数量求和。
-        filter_params = {
-            "default.search": query,
-            "to_publication_date": self.eval_date.strftime("%Y-%m-%d"), 
-        }
-        page = 1
-        while len(self.oracle) < self.num_oracle_papers:
-            results = openalex_search_paper("works", filter_params, per_page=200, page=page, retry=100)
-            for x in results.get('results'):
-                if (paper_id := x['id'].replace(URL_DOMAIN, "")) not in self.oracle:
-                    if x['abstract_inverted_index']: 
-                        x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
-                    del x['abstract_inverted_index']
-                    x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
-                    cited_by_count = self._citation_count_by_eval_date(x)
-                    # feature 0: openalex relevance score
-                    # feature 1: cosine similarity
-                    # feature 2: citation count == global prestige
-                    # feature 3: local citation count == local_prestige
-                    # feature 4: local pagerank
-                    # feature 5: citation velocity == emengence
-                    x['features'] = [x['relevance_score'], 0, cited_by_count, 0, 0, self._citation_velocity(x)]
-                    self.oracle[paper_id] = x
-                    self.oracle_ids.append(paper_id)
-                    if len(self.oracle) == self.num_oracle_papers:
-                        break
-            page += 1
-        self.min_openalex_relevance = self.oracle[self.oracle_ids[-1]]['relevance_score']
-
     def _calculate_similarity(self, query: str):
         sentences = []
         for paper_id in self.oracle_ids:
@@ -171,11 +190,7 @@ class DynamicOracleGenerator(BaseTool):
 
     def _cluster_with_bertopic(self):
         paper_titles = [x['display_name'] for x in self.oracle.values()]
-        vectorizer_model = CountVectorizer(
-            stop_words='english',
-            min_df=2,  # Minimum document frequency
-            ngram_range=(1, 2)  # Unigrams and bigrams
-        )
+        vectorizer_model = CountVectorizer(stop_words='english', min_df=2, ngram_range=(1, 2))
         topic_model = BERTopic(
             embedding_model=self.sentence_transformer,
             vectorizer_model=vectorizer_model,
@@ -207,13 +222,13 @@ class DynamicOracleGenerator(BaseTool):
         # 3.1 Cluster with BERTopic
         clusters = self._cluster_with_bertopic()
         # 3.2 Get subtopic names by LLM
-        inputs = []
+        inputs = {}
+        cluster_count = 0
         for k, v in clusters.items():
             if k == -1: continue
-            title_str = "\n".join(v['paper_titles'])
-            keywords = ", ".join(v['keywords'])
-            inputs.append({"titles": title_str, "keywords": keywords})
-        self.subtopics = self.llm_model.run_parallel(inputs)
+            cluster_count += 1
+            inputs[f'Cluster {cluster_count}'] = v['keywords']
+        self.subtopics = self.llm_model.run_llm({"query": query, "clusters": json.dumps(inputs, indent=2, ensure_ascii=False)})
         logging.info(f"DynamicOracleGenerator::Return")
         return {"oracle_papers": self.oracle, "subtopics": self.subtopics}
     

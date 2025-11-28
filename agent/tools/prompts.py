@@ -5,10 +5,11 @@ You are an expert academic editor and research strategist. Your task is to defin
 The overall research topic (User Query) is: "{query}"
 
 **Input Clusters:**
-Below are lists of keywords/titles extracted from clusters of papers. Each cluster represents a potential section of the review.
+Below is a JSON object containing lists of keywords/titles extracted from clusters of papers. Each cluster represents a potential section of the review.
 
-{keywords}
-*(Format of cluster_data: "Cluster 1: [keywords...]\nCluster 2: [keywords...]")*
+```json
+{clusters}
+```
 
 **Requirements:**
 1. **Distinctiveness**: Each subtopic name must be unique and clearly distinguishable from the others. Avoid generic terms that could apply to any cluster (e.g., "Methods," "Applications").
@@ -17,16 +18,16 @@ Below are lists of keywords/titles extracted from clusters of papers. Each clust
 4. **Formatting**: Output the result as a strictly formatted JSON list of strings.
 
 **Output Format:**
-Return strictly a JSON object with a single key "subtopics" containing the list of names in order of the input clusters.
-
-Example:
+Return strictly a JSON object with a single key "subtopics" containing the names mapped with the input clusters. Example:
+```json
 {{
-    "subtopics": [
-        "Privacy-Preserving Optimization",
-        "Communication-Efficient Aggregation",
-        "Byzantine Fault Tolerance"
-    ]
+    "subtopics": {{
+        "Cluster 1": "Privacy-Preserving Optimization",
+        "Cluster 2": "Communication-Efficient Aggregation",
+        "Cluster 3": "Byzantine Fault Tolerance"
+    }}
 }}
+```
 '''
 
 CLAIM_SEGMENTATION_PROMPT = '''

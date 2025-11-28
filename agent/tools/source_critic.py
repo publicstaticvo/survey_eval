@@ -99,40 +99,58 @@ class SourceSelectionCritic(BaseTool):
         return dcg / idcg
 
     def _run(self, citations: dict, query: str, oracle_data: dict):
+        """
+        The format of param citations is:
+        {
+            "metadatas": list of metadatas [{"id": ., "year": ., "citation_count": .,}]
+            "abstract": "abstract", 
+            "full_content": "full_content" or "abstract" or "title",
+            "status": 0-3
+        }
+        status == 0 -> OK
+        status == 1 -> fail to download paper
+        status == 2 -> fail to download paper and fetch abstract
+        status == 3 -> fail to get information of the citation. Please check its existance.
+        The key of oracle_data['dynamic_oracle_data'] is (title, first_author).
+        """
+        # preparation
         oracle_data = oracle_data['dynamic_oracle_data']
         num_oracles, num_citations = len(oracle_data), len(citations)
         self.topn = min(num_citations, num_oracles)
         min_api_relevance = min(x['feature'][0] for x in oracle_data.values())
         query_embedding = normalize(self.sentence_transformer.embed([query])[0])
         # try to search in oracle papers
-        oracle_data_id_map = {}
-        oracle_citations, not_oracle_citations = {}, {}
+        map_workid_to_oracle = {}  # transfer the key from (title, author) to work_id
+        oracle_citation_feature_map, not_oracle_citation_feature_map = {}, {}  # citation key -> feature
+        # TODO: Should we change the citation key from "b123" to "Yu et al."?
         for v in oracle_data.values():
-            if isinstance(v['id'], str): oracle_data_id_map[v['id']] = v
-            else:
-                for i in v['id']: oracle_data_id_map[v['id'][i]] = v
+            for i in v['id']: map_workid_to_oracle[v['id'][i]] = v
+        unfound_papers = []
         for citation_key, citation in citations.items():
-            citation_ids = [citation['id']] if isinstance(citation['id'], str) else citation['id']
-            for i in citation_ids:
-                if i in oracle_data_id_map: 
+            if citation['status'] == 3:
+                # process unfound papers
+                unfound_papers.append(citation['full_content'])
+                continue
+            metadata = citation['metadatas']
+            for i in metadata:
+                if i['id'] in map_workid_to_oracle: 
                     # The cited paper is in oracle papers
-                    oracle_citations[citation_key] = oracle_data_id_map[i]['feature']
-                    oracle_data_id_map[i]['citation_key'] = citation_key
+                    oracle_citation_feature_map[citation_key] = map_workid_to_oracle[i]['feature']
+                    map_workid_to_oracle[i]['citation_key'] = citation_key
                     break
             else:
                 # Not in
                 feature = [min_api_relevance / 2, 0, 0, 0, 0, 0]
-                abstract = citation['abstract'] if citation['abstract'] else citation['title']
-                feature[1] = cos_sim(query_embedding, self.sentence_transformer.embed([abstract])[0])
-                feature[2] = self._citation_count_by_eval_date(citation)
-                feature[5] = self._citation_velocity(citation)
-                not_oracle_citations[citation_key] = feature
+                feature[1] = cos_sim(query_embedding, self.sentence_transformer.embed([citation['abstract']])[0])
+                feature[2] = self._citation_count_by_eval_date(metadata)
+                feature[5] = self._citation_velocity(metadata)
+                not_oracle_citation_feature_map[citation_key] = feature
         # rank all oracle papers and non-oracle cited papers
         paper_features, paper_ids = [], []
         for paper_id, paper in oracle_data.items():
             paper_features.append(paper['feature'])
             paper_ids.append(paper_id)
-        for citation_key, citation in not_oracle_citations.items():
+        for citation_key, citation in not_oracle_citation_feature_map.items():
             paper_features.append(citation['feature'])
             paper_ids.append(citation_key)
         ranks = self.letor_model.rank(paper_features)
@@ -155,14 +173,18 @@ class SourceSelectionCritic(BaseTool):
             if "citation_key" in oracle_data[paper_ids[i]]:
                 missing.append([oracle_data[paper_ids[i]], ranks[i]])
         missing = sorted(missing, key=lambda x: x[1], reverse=True)
+        missing = {x[0]: x[1] for x in missing if x[1] > oracle_ranked_list[self.topn]}
         # false positives: All papers that has low ranks and are not in the oracle list.
-        incorrect = [[not_oracle_citations[paper_ids[i]], ranks[i]] for i in range(num_oracles, len(ranks))]
+        incorrect = [[not_oracle_citation_feature_map[paper_ids[i]], ranks[i]] for i in range(num_oracles, len(ranks))]
         incorrect = sorted(incorrect, key=lambda x: x[1], reverse=True)
+        incorrect = {x[0]: x[1] for x in incorrect if x[1] < oracle_ranked_list[self.topn]}
+        for m in unfound_papers:
+            incorrect[m] = "paper not found"
         return {
             "ranked_based_recall": ranked_based_recall,
             "weighted_precision": weighted_precision,
-            "missing_important_papers": [x[0] for x in missing if x[1] > oracle_ranked_list[self.topn]],
-            "incorrect_papers": [x[0] for x in incorrect if x[1] < oracle_ranked_list[self.topn]]
+            "missing_important_papers": missing,
+            "incorrect_papers": incorrect,
         }
 
     async def _arun(self, citations: dict, query: str, oracle_data: dict):

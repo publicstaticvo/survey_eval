@@ -87,7 +87,7 @@ class CitationParser(BaseTool):
                 # del paper_info['abstract_inverted_index']
                 on_target.append(paper_info)
         # 只需要尝试获取全文内容和摘要，将完整的信息返回以核对引用正确性。
-        info = {"metadata": [self._get_metadata(x) for x in on_target], "abstract": "", "full_content": {}}
+        info = {"metadatas": [self._get_metadata(x) for x in on_target], "abstract": "", "full_content": {}}
         for paper in on_target:
             if not info['full_content'] and (best_oa_location := paper["best_oa_location"]) and \
                 (file_obj := self._download_paper_to_memory(best_oa_location["pdf_url"])) and \
@@ -95,18 +95,18 @@ class CitationParser(BaseTool):
                 info['full_content'] = paper_content.get_skeleton()
             if not info['abstract'] and (abstract := index_to_abstract(paper['abstract_inverted_index'])):
                 info['abstract'] = abstract
-        # 0 - OK
-        # 1 - fail to download paper
-        # 2 - fail to download paper and fetch abstract
-        # 3 - fail to get information of the citation. Please check its existance.
+        # status == 0 -> OK
+        # status == 1 -> fail to download paper
+        # status == 2 -> fail to download paper and fetch abstract
+        # status == 3 -> fail to get information of the citation. Please check its existance.
         if info['full_content']: 
             info['status'] = 0
         elif info['abstract']:
             info['status'] = 1
             info['full_content'] = info['abstract']
-        elif info['metadata']:
+        elif info['metadatas']:
             info['status'] = 2
-            info['full_content'] = paper['title']
+            info['abstract'] = info['full_content'] = paper['title']
         else:
             info['status'] = 3
             info['full_content'] = paper['title']
@@ -117,12 +117,11 @@ class CitationParser(BaseTool):
         return {
             "id": paper['id'].replace(URL_DOMAIN, ""),
             "ids": paper['ids'],
-            "doi": paper['doi'],
             "title": paper['display_name'],
             "authors": paper['authorship'],
             "locations": [x['source'] for x in paper['locations']],
             "cited_by_count": paper['cited_by_count'],
-            "counts_by_year": paper['counts_by_year'],
+            "counts_by_year": {y['year']: y['cited_by_count'] for y in paper['counts_by_year']},
             "publication_date": paper['publication_date'],
         }
     

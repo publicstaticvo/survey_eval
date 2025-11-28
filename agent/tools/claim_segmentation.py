@@ -7,12 +7,13 @@ from dynamic_oracle_generator import DynamicOracleGenerator
 from utils import split_content_to_paragraph
 from llm_server import ConcurrentLLMClient
 from pydantic import BaseModel
+from prompts import CLAIM_SEGMENTATION_PROMPT
 
 
 class ClaimSegmentationLLMClient(ConcurrentLLMClient):
 
     format_pattern: re.Pattern = re.compile(r"\{.+?\}", re.DOTALL | re.IGNORECASE)
-    PROMPT: str = """..."""
+    PROMPT: str = CLAIM_SEGMENTATION_PROMPT
 
     def __init__(self, llm, sampling_params, n_workers, retry = 5):
         super().__init__(llm, sampling_params, n_workers, retry)

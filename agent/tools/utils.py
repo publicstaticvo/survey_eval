@@ -110,7 +110,7 @@ def openalex_search_paper(
 
 
 def index_to_abstract(indexes: dict | None):
-    if indexes is None: return None
+    if not indexes: return None
     abstract_length = max(v[-1] for v in indexes.values())
     abstract = ["<mask>" for _ in range(abstract_length + 1)]
     for k, v in indexes.items():

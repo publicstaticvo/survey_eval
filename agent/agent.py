@@ -271,6 +271,7 @@ def map_claims_to_critics(state: AgentState):
     content_map = state.paper_content_map
     
     for claim in state.claims:        
+        # 要判断包含情况。
         match claim['type']:
             case "SINGLE_CLAIM":
                 # Spawn 1 Factual Critic
