@@ -63,11 +63,6 @@ class SourceSelectionCritic(BaseTool):
             if x['year'] <= eval_year:
                 citation_count += x['cited_by_count']
         return citation_count
-
-    def _citation_velocity(self, paper):
-        paper_age = self._paper_age(paper)
-        cited_by = self._citation_count_by_eval_date(paper)
-        return cited_by / paper_age
     
     def calculate_rank_biased_recall(self, agent_paper_ids, oracle_ranked_list):
         """
@@ -117,7 +112,12 @@ class SourceSelectionCritic(BaseTool):
         oracle_data = oracle_data['dynamic_oracle_data']
         num_oracles, num_citations = len(oracle_data), len(citations)
         self.topn = min(num_citations, num_oracles)
-        min_api_relevance = min(x['feature'][0] for x in oracle_data.values())
+        min_relevance, min_pagerank, max_citations = 10, 10, 0
+        for x in oracle_data.values:
+            min_relevance = min(min_relevance, x['feature'][0])
+            min_pagerank = min(min_pagerank, x['feature'][4])
+            max_citations = max(max_citations, x['feature'][2])
+        max_citations = math.log(1 + max_citations)
         query_embedding = normalize(self.sentence_transformer.embed([query])[0])
         # try to search in oracle papers
         map_workid_to_oracle = {}  # transfer the key from (title, author) to work_id
@@ -126,6 +126,7 @@ class SourceSelectionCritic(BaseTool):
         for v in oracle_data.values():
             for i in v['id']: map_workid_to_oracle[v['id'][i]] = v
         unfound_papers = []
+        # normalization
         for citation_key, citation in citations.items():
             if citation['status'] == 3:
                 # process unfound papers
@@ -140,10 +141,10 @@ class SourceSelectionCritic(BaseTool):
                     break
             else:
                 # Not in
-                feature = [min_api_relevance / 2, 0, 0, 0, 0, 0]
+                feature = [min_relevance / 2, 0, 0, 0, min_pagerank, 0]
                 feature[1] = cos_sim(query_embedding, self.sentence_transformer.embed([citation['abstract']])[0])
-                feature[2] = self._citation_count_by_eval_date(metadata)
-                feature[5] = self._citation_velocity(metadata)
+                feature[2] = math.log(1 + self._citation_count_by_eval_date(metadata)) / max_citations
+                feature[5] = feature[2] / math.log(1 + self._paper_age(metadata))
                 not_oracle_citation_feature_map[citation_key] = feature
         # rank all oracle papers and non-oracle cited papers
         paper_features, paper_ids = [], []

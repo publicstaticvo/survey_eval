@@ -16,6 +16,7 @@ from langgraph.prebuilt import tools_condition
 
 from tools import (
     AgentState,
+    InputState,
     ClaimSegmentation,
     DynamicOracleGenerator,
     FactualCorrectnessCritic,
@@ -32,40 +33,6 @@ from tools import (
     SynthesisLLMClient,
     ClaimSegmentationLLMClient,
 )
-
-
-class AgentNode:
-
-    def __init__(self, llm: BaseChatModel, tools: List[BaseTool]):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.tools = tools
-        self.main_llm = llm.bind_tools(tools)
-
-    async def __call__(self, state: AgentState):
-        """
-        The 'Brain' node.
-        """
-        logging.info("--- Judge Agent Reasoning ---")
-
-        # 4. Invoke. The LLM will return an AIMessage.
-        # If it wants to call a tool, AIMessage.tool_calls will be populated.
-        # 光有action不够，还要有input。
-        prompt = f"""
-        You are a Literature Review Judge. 
-        Current Data Status:
-        - Oracle Data: {"READY" if state.get('dynamic_oracle_data') else "MISSING"}
-        - Parsed Papers: {len(state.get('paper_content_map', {}))} papers
-        - Facts Checked: {len(state.get('fact_checks', []))} claims
-        
-        Task:
-        1. If Oracle/Parsing is missing, you MUST call 'run_parallel_data_prep'.
-        2. Analyze the 'claims'. If you see suspicious claims, call 'factual_correctness_critic'.
-        3. If the writing seems repetitive, call 'programmatic_redundancy_critic'.
-        4. If you have sufficient evidence to score the paper, respond with FINAL_REPORT.
-        """
-        response = await self.main_llm.ainvoke(state.messages)
-        
-        return {"messages": [response]}
 
 
 # --- 1. The "Super Node" for Synchronization ---
@@ -176,7 +143,13 @@ class RunFactualCritic:
 
     def __init__(self, config: ToolConfig):
         # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        llm = FactualLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers, True)
+        llm = FactualLLMClient(
+            critic_llm=config.llm_server_info, 
+            rerank_llm=config.rerank_server_info,
+            sampling_params=config.sampling_params, 
+            n_workers=config.llm_num_workers, 
+            num_selected_documents=config.n_documents,
+        )
         self.tool = FactualCorrectnessCritic(llm)
 
     async def __call__(self, payload: FactCheckPayload):
@@ -203,38 +176,52 @@ def map_all_critics(state: AgentState):
     """
     sends = []
 
-    def paper_routing(claim: Dict[str, Any]):
-        cids = claim['citations']
+    def _claim_verifiable(claim: Dict[str, Any]) -> bool:
+        """
+        Requires
+        - 0: full text
+        - 1: title and abstract only
+        - 2: title only
+
+        status
+        - 0: full text available
+        - 1: abstract available; full text unavailable
+        - 2: abstract and full text unavailable
+        - 3: no metadata
+        """
+        for x in claim['citations']:
+            if claim['requires'][x] < state.review_paper['citations'][x]['status']: return False
+        return True
     
     # A. Map claims to Factual/Synthesis workers (Claim-Level Critics)
     for claim in state.get('claims', []):
-        # paper routing depend on claims
-        match claim['type']:
-            case "FACTUAL_CLAIM":
-                # Spawn 1 Factual Critic
-                cids = claim['citations']
-                sends.append(Send("factual_critic", {
-                    "claim": claim['claim_text'],
-                    "cited_papers": {cid: state.paper_content_map[cid] for cid in cids}
-                }))
-                # # EXPLODE: Spawn multiple Factual Critics
-                # for sub in claim['sub_claims']:
-                #     cid = sub['citation']
-                #     sends.append(Send("factual_critic", {
-                #         "claim_text": sub['text'],
-                #         "paper_text": state.paper_content_map[cid]
-                #     }))
-            
-            case "SYNTHESIS_CLAIM":
-                # Spawn 1 Synthesis Critic
-                cids = claim['citations']
-                sends.append(Send("synthesis_critic", {
-                    "claim": claim['text'],
-                    "cited_papers": {cid: state.paper_content_map[cid] for cid in cids}
-                }))
-            
-            case _:
-                continue
+        # claim: {"claim": text, "claim_type": type, "citations": {citations}, "requires": {requires}}}
+        # verify claim based on requirements and status
+        if _claim_verifiable(claim):
+            # paper routing depend on claims
+            match claim['type'].upper():
+                case "SINGLE_FACTUAL":
+                    cid = claim['citations'][0]
+                    sends.append(Send("factual_critic", {
+                        "claim": claim['claim_text'],
+                        "cited_paper": state.paper_content_map[cid]
+                    }))            
+                case "SERIAL_FACTUAL":
+                    for cid in claim['citations']:
+                        sends.append(Send("factual_critic", {
+                            "claim": claim['claim_text'],
+                            "cited_paper": state.paper_content_map[cid]
+                        }))            
+                case "SYNTHESIS":
+                    sends.append(Send("synthesis_critic", {
+                        "claim": claim['claim_text'],
+                        "cited_papers": {cid: state.paper_content_map[cid] for cid in claim['citations']}
+                    }))            
+                case _:
+                    # state.invalid_claims means claims with insufficient evidence or wrong classifications
+                    state.invalid_claims += 1
+        else:
+            state.invalid_claims += 1
 
     # B. Launch Document-Level Critics (Source, Topic, Quality) - Always run
     sends.append(Send(node="source_critic", payload={
@@ -253,52 +240,15 @@ def map_all_critics(state: AgentState):
 
 # ----------------- PHASE 4: REDUCE/AGGREGATE -----------------
 async def results_aggregator(state: AgentState):
-    """Placeholder for the 'reduce' step. All claim_checks and document_scores 
-       are gathered automatically by the Annotated[..., operator.add] in the state."""
+    """
+    Placeholder for the 'reduce' step. All claim_checks and document_scores 
+    are gathered automatically by the Annotated[..., operator.add] in the state.
+    """
     
     print("--- 4. All Critics Finished. Aggregator Node Reached. ---")
-    print(f"Total claims checked: {len(state.get('claim_checks', []))}")
-    print(f"Total document scores collected: {len(state.get('document_scores', []))}")
+    print(f"Total claims checked: {len(state.fact_checks)}")
+    print(f"Invalid claims: {len(state.invalid_claims)}")
     return state # Pass the aggregated state to the final agent
-
-
-def map_claims_to_critics(state: AgentState):
-    """
-    Generator function that creates Send objects.
-    It inspects the 'claims' list and spawns the correct worker for each.
-    """
-    tasks = []
-    content_map = state.paper_content_map
-    
-    for claim in state.claims:        
-        # 要判断包含情况。
-        match claim['type']:
-            case "SINGLE_CLAIM":
-                # Spawn 1 Factual Critic
-                cid = claim['citations'][0]
-                tasks.append(Send("factual_critic", {
-                    "claim": claim['claim_text'],
-                    "cited_paper": content_map[cid]
-                }))
-            
-            case "SYNTHESIS_CLAIM":
-                # Spawn 1 Synthesis Critic
-                cids = claim['citations']
-                tasks.append(Send("synthesis_critic", {
-                    "claim": claim['text'],
-                    "cited_paper": {cid: content_map[cid] for cid in cids}
-                }))
-            
-            case "SERIAL_CLAIMS":
-                # EXPLODE: Spawn multiple Factual Critics
-                for sub in claim['sub_claims']:
-                    cid = sub['citation']
-                    tasks.append(Send("factual_critic", {
-                        "claim_text": sub['text'],
-                        "paper_text": content_map[cid]
-                    }))
-                
-    return tasks
 
 
 def aggregate_claim_results(state: AgentState) -> AgentState:
@@ -342,14 +292,14 @@ class FinalAggregation:
         self.structured_llm = llm.with_structured_output(FinalReport)
 
 
-    async def run_final_aggregation(self, state: AgentState):
+    def run_final_aggregation(self, state: AgentState):
         # Use .with_structured_output to force Pydantic compliance
         # This guarantees your final report is valid JSON, not markdown text.
         
         # ... construct evidence string ...
         prompt = ""
         
-        result = await self.structured_llm.ainvoke(prompt)
+        result = self.structured_llm.invoke(prompt)
         
         # Result is now a FinalReport object, not a string
         return {"final_report": result.model_dump()}
@@ -364,7 +314,6 @@ def build_agent(config: ToolConfig):
         temperature=0,
         max_tokens=config.agent_max_tokens,
     )
-    agent = AgentNode(llm, tools_to_bind)
 
     run_parallel_data_prep = ParallelDataPreperation(config)
     run_quality_group = QualityEvaluation(config)
@@ -373,26 +322,17 @@ def build_agent(config: ToolConfig):
     run_factual_critic = RunFactualCritic(config)
     run_synthesis_critic = RunSynthesisCritic(config)
     run_final_aggregation = FinalAggregation(llm)
-
-    tools_to_bind = [
-        run_quality_group, 
-        run_source_critic,
-        run_topic_critic,
-        run_factual_critic,
-        run_synthesis_critic,
-        run_final_aggregation
-    ]
     
     # tools = ToolNode(tools_to_bind)
 
-    workflow = StateGraph(AgentState)
+    workflow = StateGraph(AgentState, input_schema=InputState)
     workflow.add_node("data_prep", run_parallel_data_prep)
     workflow.add_node("factual_critic", run_factual_critic)
     workflow.add_node("synthesis_critic", run_synthesis_critic)
     workflow.add_node("source_critic", run_source_critic)
     workflow.add_node("topic_critic", run_topic_critic)
     workflow.add_node("quality_critic", run_quality_group)
-    workflow.add_node("final_report_agent", agent)
+    workflow.add_node("final_report_agent", run_final_aggregation)
 
     workflow.set_entry_point("data_prep")
     workflow.add_conditional_edges(
@@ -418,5 +358,6 @@ def build_agent(config: ToolConfig):
     # Phase 5: Aggregator -> Final Report Agent -> END
     workflow.add_edge("aggregator", "final_report_agent")
     workflow.add_edge("final_report_agent", END)
+    
     app = workflow.compile()
     return app

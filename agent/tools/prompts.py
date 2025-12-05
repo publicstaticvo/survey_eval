@@ -76,28 +76,29 @@ Return strictly a JSON object. Do not output markdown code blocks.
 '''
 
 CLARITY_EVAL_PROMPT = '''
-You are a senior editor at a top-tier scientific journal (e.g., Nature, NeurIPS). Evaluate the writing quality of the following paper segment.
+You are a senior editor at a top-tier scientific journal (e.g., Nature, NeurIPS). Your task is to score the writing quality of the following target paper segment, specifically focusing on logical flow and clarity.
 
-**Input Text:**
-"""{segment_text}"""
+**Context (Previous Paragraph):**
+"""{pre_text}"""
+
+**Input Target (Current Paragraph):**
+"""{text}"""
 
 **Scoring Rubric (1-5):**
 1. **Unreadable**: Grammatically broken, incoherent, or nonsensical.
-2. **Poor**: Major logic gaps, highly repetitive, or confusing phrasing. Hard to follow.
-3. **Average**: Understandable but dry, repetitive, or structurally weak. Lacks flow.
-4. **Good**: Clear, logical flow, correct terminology. Professional but not exceptional.
-5. **Excellent**: Compelling narrative, perfect logical transitions, concise, and highly persuasive.
+2. **Poor**: Major logic gaps. The paragraph does not follow logically from the context. Confusing phrasing.
+3. **Average**: Understandable but dry or repetitive. Transitions between sentences or from the previous paragraph are weak or abrupt.
+4. **Good**: Clear, logical flow. Good use of transition words. Terminology is correct and professional.
+5. **Excellent**: Compelling narrative. The transition from the context is seamless. The argument builds perfectly within the paragraph. Concise and persuasive.
 
 **Instructions:**
-Evaluate the text based on:
-- **Logical Flow**: Do sentences transition smoothly?
-- **Conciseness**: Is there unnecessary redundancy?
-- **Tone**: Is it appropriate for a scientific paper?
+1. **Check Transitions:** If the "Context" is NOT "This is the first paragraph of the paper", evaluate how well the "Input Target" flows from it. Does the topic shift abruptly?
+2. **Check Internal Flow:** Within the "Input Target", do the sentences progress logically?
+3. **Check Style:** Is the tone scientific? Is there unnecessary redundancy?
 
 **Output:**
-Return strictly a JSON object.
 {{
     "score": <Integer 1-5>,
-    "reason": "<Specific critique referencing flow, redundancy, or logic>"
+    "reason": ""<Specific critique. Mention if the transition from the previous paragraph was smooth or abrupt.>"
 }}
 '''

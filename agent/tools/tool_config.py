@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
-from ruamel.yaml import YAML
-from typing import Any
 from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
+import yaml
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,10 @@ class ToolConfig:
     # citation parser
     grobid_url: str = "http://localhost:8070"
     grobid_num_workers: int = 10
+    # factual correctness - reranking
+    rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
+    n_documents: int = 5
+    synthesis_n_documents: int = 5
     # source selection
     topn: int = 0
     # topic coverage
@@ -40,8 +44,7 @@ class ToolConfig:
 
     @classmethod
     def from_yaml(cls, config_path):
-        loader = YAML(typ='safe')
-        with open(config_path) as f: config = loader.load(f)
+        with open(config_path) as f: config = yaml.safe_load(f)
         return cls(
             agent_info=LLMServerInfo(
                 base_url=config['agent']['base_url'],
@@ -60,6 +63,13 @@ class ToolConfig:
             sbert_server_url=config['sbert']['base_url'],
             grobid_url=config['citation_parser']['grobid_url'],
             grobid_num_workers=config['citation_parser']['n_workers'],
+            rerank_server_info=LLMServerInfo(
+                base_url=config['rerank']['base_url'],
+                api_key=config['rerank']['api_key'],
+                model=config['rerank']['model'],
+            ),
+            n_documents=config['rerank']['num_documents'],
+            synthesis_n_documents=config['synthesis']['num_documents'],
             topn=config['source_selection']['topn'],
             topic_similarity_threshold=config['topic_coverage']['topic_similarity_threshold'],
             redundancy_similarity_threshold=config['quality']['redundancy_similarity_threshold'],

@@ -51,7 +51,7 @@ class CitationParser(BaseTool):
         """
         super().__init__(**kwargs)
         self.n_workers = n_workers
-        self.paper_parser = GROBIDParser(grobid_url) 
+        self.paper_parser = GROBIDParser(grobid_url, False) 
 
     def _download_paper_to_memory(self, url) -> Optional[tuple[str, io.BytesIO, str]]:
         """
@@ -81,13 +81,16 @@ class CitationParser(BaseTool):
         on_target = []
         results = openalex_search_paper("works", {"title.search": paper_title}).get("results", [])
         for paper_info in results:
-            if valid_check(paper_title, paper_info.get("title", "")): 
+            if valid_check(paper_title, paper_info['display_name']): 
                 paper_info['id'] = paper_info['id'].replace(URL_DOMAIN, "")
-                # paper_info['abstract'] = index_to_abstract(paper_info['abstract_inverted_index'])
-                # del paper_info['abstract_inverted_index']
                 on_target.append(paper_info)
         # 只需要尝试获取全文内容和摘要，将完整的信息返回以核对引用正确性。
-        info = {"metadatas": [self._get_metadata(x) for x in on_target], "abstract": "", "full_content": {}}
+        info = {
+            "metadatas": [self._get_metadata(x) for x in on_target], 
+            "title": paper['title'],
+            "abstract": "", 
+            "full_content": {}
+        }
         for paper in on_target:
             if not info['full_content'] and (best_oa_location := paper["best_oa_location"]) and \
                 (file_obj := self._download_paper_to_memory(best_oa_location["pdf_url"])) and \

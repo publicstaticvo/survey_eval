@@ -36,7 +36,7 @@ class GROBIDParser:
         'algorithm', 'equation', 'appendix'
     ]
     
-    def __init__(self, grobid_url: str = "http://localhost:8070"):
+    def __init__(self, grobid_url: str = "http://localhost:8070", parse_citations: bool = True):
         """
         Initialize the GROBID parser.
         
@@ -46,6 +46,7 @@ class GROBIDParser:
         self.grobid_url = grobid_url        
         self.current_section_hierarchy = []
         self.citation_map = {}
+        self.parse_citations = parse_citations
     
     def process_pdf_to_xml(self, pdf_path: str) -> str:
         """
@@ -228,13 +229,14 @@ class GROBIDParser:
                 ref_text = ''.join(element.itertext()).strip()  # "Yu et al." or "[1]"
                 
                 # Add citation marker
-                if current_text:
-                    text_parts.append(('text', ''.join(current_text)))
-                    current_text.clear()
+                if self.parse_citations:
+                    if current_text:
+                        text_parts.append(('text', ''.join(current_text)))
+                        current_text.clear()
 
-                if citation_id in self.citation_map:
-                    self.citation_map[citation_id]['ref_text'] = ref_text
-                    text_parts.append(('citation', self.citation_map[citation_id]))                
+                    if citation_id in self.citation_map:
+                        self.citation_map[citation_id]['ref_text'] = ref_text
+                        text_parts.append(('citation', self.citation_map[citation_id]))
                 
             else:
                 # Recursively process child elements

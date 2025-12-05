@@ -1,4 +1,4 @@
-from agent_state import AgentState
+from agent_state import AgentState, InputState
 from claim_segmentation import ClaimSegmentation, ClaimSegmentationLLMClient
 from dynamic_oracle_generator import DynamicOracleGenerator, SubtopicLLMClient
 from fact_check import (
@@ -14,6 +14,7 @@ from topic_coverage import TopicCoverageCritic
 from sbert_client import SentenceTransformerClient
 from tool_config import ToolConfig
 from llm_server import ConcurrentLLMClient
+from paper_parser import GROBIDParser as PDFParser
 
 tools = [
     ClaimSegmentation,
@@ -35,6 +36,6 @@ llm_servers = [
     QualityLLMClient,
 ]
 
-__all__ = ["SentenceTransformerClient", "ToolConfig", "AgentState"] + \
+__all__ = ["SentenceTransformerClient", "ToolConfig", "AgentState", "InputState", "PDFParser"] + \
           [x.__name__ for x in tools] + \
           [x.__name__ for x in llm_servers]

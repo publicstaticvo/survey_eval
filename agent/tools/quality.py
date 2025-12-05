@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import BaseTool
 from sentence_transformers.util import cos_sim
 
+from prompts import CLARITY_EVAL_PROMPT
 from llm_server import ConcurrentLLMClient
 from sbert_client import SentenceTransformerClient
 from utils import split_content_to_paragraph, prepare_paragraphs_for_clarity
@@ -21,7 +22,7 @@ class TextSegmentInput(BaseModel):
 class QualityLLMClient(ConcurrentLLMClient):
 
     format_pattern: re.Pattern = re.compile(r"\[\[([0-9]+)\]\]", re.DOTALL | re.IGNORECASE)
-    PROMPT: str = """..."""
+    PROMPT: str = CLARITY_EVAL_PROMPT
 
     def __init__(self, llm, sampling_params, n_workers, retry = 5):
         super().__init__(llm, sampling_params, n_workers, retry)

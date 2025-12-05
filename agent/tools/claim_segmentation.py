@@ -33,7 +33,14 @@ class ClaimSegmentationLLMClient(ConcurrentLLMClient):
         message = self.PROMPT.format(text=inputs['text'], range=inputs['range'])
         while retry and (claim := self._pattern_check(super().run_llm(message)), inputs['citations']) is None: 
             retry -= 1
+        if not claim: return
         claim['citations'] = inputs['citations']
+        # 将FULL_TEXT、TITLE_AND_ABSTRACT、TITLE_ONLY转化为0/1/2，与status对应。
+        for x in claim['requires']:
+            if claim['requires'][x].upper() == "TITLE_ONLY": claim['requires'][x] = 2
+            elif claim['requires'][x].upper() == "TITLE_AND_ABSTRACT": claim['requires'][x] = 1
+            # 默认为FULL_TEXT
+            else: claim['requires'][x] = 0
         return claim
 
 
@@ -65,17 +72,6 @@ class ClaimSegmentation(BaseTool):
             for s in p: citations.append({"text": s['text'], "citations": s['citations'], "range": p_text})
         # 第三步：并行调用
         return self.llm.run_parallel(citations)
-        # {
-        #     "citation_ids": ["p1", "p3"],
-        #     "claims": [
-        #         {"text": "A did X [p1]", "type": "SINGLE_CLAIM", "citations": ["p1"]},
-        #         {"text": "A implies B [p1, p3]", "type": "SYNTHESIS_CLAIM", "citations": ["p1", "p3"]},
-        #         {"text": "Lists: A [p1], B [p3]", "type": "SERIAL_CLAIMS", "sub_claims": [
-        #             {"text": "A [p1]", "citation": "p1"},
-        #             {"text": "B [p3]", "citation": "p3"}
-        #         ]}
-        #     ]
-        # }
     
     async def _arun(self, paper_content: dict[str, str]) -> str:
         return self._run(paper_content)

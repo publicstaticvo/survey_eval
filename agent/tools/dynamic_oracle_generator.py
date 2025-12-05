@@ -1,4 +1,5 @@
 import re
+import math
 import json
 import logging
 import networkx as nx
@@ -63,6 +64,9 @@ class DynamicOracleGenerator(BaseTool):
         self.sentence_transformer = sentence_transformer
 
     def _citation_count_by_eval_date(self, paper: dict):
+        """
+        Calculate the cited by count on evaluation date.
+        """
         eval_year = int(self.eval_date.year)
         if (citation_count := paper.get("cited_by_count", 0)):
             for x in paper.get("counts_by_year", []):
@@ -78,11 +82,6 @@ class DynamicOracleGenerator(BaseTool):
     def _paper_age(self, paper):
         return (self.eval_date - datetime.strptime(paper['publication_date'], "%Y-%m-%d")).days
 
-    def _citation_velocity(self, paper):
-        paper_age = self._paper_age(paper)
-        cited_by = self._citation_count_by_eval_date(paper)
-        return cited_by / paper_age
-
     def _request_for_papers(self, query):
         # key现在是标题+一作。
         filter_params = {
@@ -90,6 +89,7 @@ class DynamicOracleGenerator(BaseTool):
             "to_publication_date": self.eval_date.strftime("%Y-%m-%d"), 
         }
         page = 1
+        # 
         while len(self.oracle) < self.num_oracle_papers:
             results = openalex_search_paper("works", filter_params, per_page=200, page=page, retry=100)
             for x in results.get('results'):
@@ -97,36 +97,40 @@ class DynamicOracleGenerator(BaseTool):
                 first_author = x['authorships'][0]['author']['display_name'] if x['authorships'] else ""
                 if (paper_id := (x['display_name'], first_author)) not in self.oracle:
                     x['id'] = [x['id']]
+                    # abstract
                     x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
                     del x['abstract_inverted_index']
+                    # referenced_works
                     x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
                     # reorganize counts_by_year
                     x['counts_by_year'] = {y['year']: y['cited_by_count'] for y in x['counts_by_year']}
+                    # store
                     self.oracle[paper_id] = x
                     self.oracle_ids.append(paper_id)
                 else:
+                    # duplicated items
                     prev_paper = self.oracle[paper_id]
                     if x['id'] not in prev_paper['id']: prev_paper['id'].append(x['id'])
                     else: continue
+                    # publication date
                     if x['publication_date'] < prev_paper['publication_date']:
                         prev_paper['publication_date'] = x['publication_date']
                     # Gemini says should use max instead of sum
                     if x['cited_by_count'] > prev_paper['cited_by_count']:
                         prev_paper['cited_by_count'] = x['cited_by_count']
                         prev_paper['counts_by_year'] = {y['year']: y['cited_by_count'] for y in x['counts_by_year']}
-                if len(self.oracle) == self.num_oracle_papers:
-                    break
+                if len(self.oracle) == self.num_oracle_papers: break
             page += 1
         # calculate features
-        # feature 0: openalex relevance score
-        # feature 1: cosine similarity
-        # feature 2: citation count == global prestige
-        # feature 3: local citation count == local_prestige
-        # feature 4: local pagerank
+        # feature 0: openalex relevance score (0~1)
+        # feature 1: cosine similarity (-1~1)
+        # feature 2: citation count == global prestige (regularized to 0~1)
+        # feature 3: local citation count == local_prestige (regularized to 0~1)
+        # feature 4: local pagerank (regularized to 0~1)
         # feature 5: citation velocity == emengence
         for x in self.oracle.values():
-            x['features'] = [x['relevance_score'], 0, self._citation_count_by_eval_date(x), 0, 0, self._citation_velocity(x)]
-        self.min_openalex_relevance = self.oracle[self.oracle_ids[-1]]['relevance_score']
+            x['features'] = [x['relevance_score'], 0, 0, 0, 0, 0]
+            x['features'][2] = self._citation_count_by_eval_date(x)
     
     def _local_citation_and_pagerank(self):
         """
@@ -143,6 +147,7 @@ class DynamicOracleGenerator(BaseTool):
             for i in x['id']: map_workid_to_key[i] = paper_id
             references = x['referenced_works'] if x['referenced_works'] else []
             paper_map[paper_id] = {"references": references, "local_citation_count": 0}
+
         valid_ids = set(paper_map.keys())  # valid_id = set((title, first author))
 
         # 2. Construct the Graph
@@ -178,10 +183,13 @@ class DynamicOracleGenerator(BaseTool):
             self.oracle[paper_id]['features'][4] = score
 
     def _calculate_similarity(self, query: str):
+        # vector similarity query and title & abstract
         sentences = []
         for paper_id in self.oracle_ids:
             x = self.oracle[paper_id]
-            sentences.append(x.get("abstract", x['display_name']))
+            title = x['display_name']
+            abstract = x.get("abstract", None)
+            sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
         sentences.append(query)
         embeddings = self.sentence_transformer.embed(sentences)
         cosine_scores = util.cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
@@ -217,6 +225,15 @@ class DynamicOracleGenerator(BaseTool):
         self._calculate_similarity(query)
         # 2.3 local citation count == local_prestige && 2.4 local pagerank
         self._local_citation_and_pagerank()
+        # regularization
+        max_citation_count = math.log(1 + max(x['features'][2] for x in self.oracle.values()))
+        max_local_citation_count = math.log(1 + max(x['features'][3] for x in self.oracle.values()))
+        for x in self.oracle.values():
+            if max_citation_count > 0:
+                x['features'][2] = math.log(1 + x['features'][2]) / max_citation_count
+            if max_local_citation_count > 0:
+                x['features'][3] = math.log(1 + x['features'][3]) / max_local_citation_count
+            x['features'][5] = x['features'][2] / math.log(1 + self._paper_age(x))
         # 3. Get subtopics
         logging.info(f"DynamicOracleGenerator::Get subtopics")
         # 3.1 Cluster with BERTopic

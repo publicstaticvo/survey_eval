@@ -21,8 +21,8 @@ class ConcurrentLLMClient:
         self.retry = retry
 
     def run_llm(self, message: list | str):
-        return callLLM(self.llm, message, self.sampling_params, self.retry)
+        return callLLM(self.llm, "chat/completions", self.sampling_params, self.retry, messages=message)
     
     def run_parallel(self, messages):
         with TPE(max_workers=self.n_workers) as executor:
-            return list(executor.map(self.run_llm, messages))  
+            return list(executor.map(self.run_llm, messages))

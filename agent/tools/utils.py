@@ -42,29 +42,40 @@ def request_template(method: str, url: str, headers: dict, parameters: dict, tim
 
 
 def callLLM(
-        llm: LLMServerInfo, 
-        messages: list | str, 
+        llm: LLMServerInfo,
+        endpoint: str, 
         sampling_params: dict, 
         return_reasoning: bool = False,
-        retry: int = 5
+        retry: int = 5,
+        **kwargs
     ) -> str:
     if not llm.base_url or llm.api_key is None: return ""
-    if isinstance(messages, str):
-        messages = [{"role": "user", "content": messages}]
-    sampling_params.update({"model": llm.model, "messages": messages})
+    # messages - chat/completions
+    messages = kwargs.get("messages")
+    if messages:
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+    sampling_params['model'] = llm.model
+    sampling_params.update(kwargs)
     while retry > 0:
         try:            
             headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {llm.api_key}'}
-            url = f"{llm.base_url}/v1/chat/completions"
+            url = f"{llm.base_url}/v1/{endpoint}"
             response = request_template("post", url, headers, json.dumps(sampling_params), 600, False)
-            message = response['choices'][0]['message']
-            text = message['content']     
-            think = message.get("reasoning_content", "")
-            if not think and "</think>" in text:
-                think = text[:text.index("</think>")]
-                text = text[text.index("</think>") + 8:]
-            if return_reasoning: return text, think
-            return text
+            match endpoint:
+                case "chat/completions":
+                    message = response['choices'][0]['message']
+                    text = message['content']     
+                    think = message.get("reasoning_content", "")
+                    if not think and "</think>" in text:
+                        think = text[:text.index("</think>")]
+                        text = text[text.index("</think>") + 8:]
+                    if return_reasoning: return text, think
+                    return text
+                case "rerank":
+                    return [x['document']['text'] for x in response['results']]
+                case _:
+                    return response
         except Exception as e:
             retry -= 1
             logging.error(f"Error: {e}, Retry: {retry}")
@@ -134,6 +145,10 @@ def split_content_to_paragraph(content: dict | list):
     for section in content['sections']:
         paragraphs.extend(split_content_to_paragraph(section))
     return paragraphs
+
+
+def paragraph_to_text(content: list[dict]):
+    return " ".join([s['text'] for s in content])
 
 
 def prepare_paragraphs_for_clarity_2(paper_content: dict):
