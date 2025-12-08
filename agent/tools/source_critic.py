@@ -98,6 +98,7 @@ class SourceSelectionCritic(BaseTool):
         The format of param citations is:
         {
             "metadatas": list of metadatas [{"id": ., "year": ., "citation_count": .,}]
+            "title": "title",
             "abstract": "abstract", 
             "full_content": "full_content" or "abstract" or "title",
             "status": 0-3
@@ -106,25 +107,24 @@ class SourceSelectionCritic(BaseTool):
         status == 1 -> fail to download paper
         status == 2 -> fail to download paper and fetch abstract
         status == 3 -> fail to get information of the citation. Please check its existance.
-        The key of oracle_data['dynamic_oracle_data'] is (title, first_author).
+        The key of oracle_data['oracle_papers'] has changed back to work_id.
         """
         # preparation
-        oracle_data = oracle_data['dynamic_oracle_data']
+        oracle_data = oracle_data['oracle_papers']
+        citation_graph = oracle_data['adjacent_graph']
         num_oracles, num_citations = len(oracle_data), len(citations)
         self.topn = min(num_citations, num_oracles)
-        min_relevance, min_pagerank, max_citations = 10, 10, 0
-        for x in oracle_data.values:
+        min_relevance, max_citations, max_local_citations = 10, 0, 0
+        for x in oracle_data.values():
             min_relevance = min(min_relevance, x['feature'][0])
-            min_pagerank = min(min_pagerank, x['feature'][4])
             max_citations = max(max_citations, x['feature'][2])
+            max_citations = max(max_local_citations, x['feature'][3])
         max_citations = math.log(1 + max_citations)
+        max_local_citations = math.log(1 + max_local_citations)
         query_embedding = normalize(self.sentence_transformer.embed([query])[0])
         # try to search in oracle papers
-        map_workid_to_oracle = {}  # transfer the key from (title, author) to work_id
         oracle_citation_feature_map, not_oracle_citation_feature_map = {}, {}  # citation key -> feature
         # TODO: Should we change the citation key from "b123" to "Yu et al."?
-        for v in oracle_data.values():
-            for i in v['id']: map_workid_to_oracle[v['id'][i]] = v
         unfound_papers = []
         # normalization
         for citation_key, citation in citations.items():
@@ -132,18 +132,31 @@ class SourceSelectionCritic(BaseTool):
                 # process unfound papers
                 unfound_papers.append(citation['full_content'])
                 continue
-            metadata = citation['metadatas']
-            for i in metadata:
-                if i['id'] in map_workid_to_oracle: 
+            metadata = citation['metadata']
+            for i in metadata['id']:
+                if i in oracle_data: 
                     # The cited paper is in oracle papers
-                    oracle_citation_feature_map[citation_key] = map_workid_to_oracle[i]['feature']
-                    map_workid_to_oracle[i]['citation_key'] = citation_key
+                    oracle_citation_feature_map[citation_key] = oracle_data[i]['feature']
+                    oracle_data[i]['citation_key'] = citation_key
                     break
             else:
                 # Not in
-                feature = [min_relevance / 2, 0, 0, 0, min_pagerank, 0]
+                feature = [min_relevance / 2, 0, 0, 0, 0, 0]
                 feature[1] = cos_sim(query_embedding, self.sentence_transformer.embed([citation['abstract']])[0])
-                feature[2] = math.log(1 + self._citation_count_by_eval_date(metadata)) / max_citations
+                # feature 2: global citations
+                feature[2] = math.log(1 + self._citation_count_by_eval_date(metadata))
+                if max_citations > 0: feature[2] /= max_citations
+                # local co-citation: calcultate number of oracle papers cites this paper
+                # local_pagerank = average(pageranks of oracle papers cites this paper)
+                ids_set = set(metadata['id'])
+                for n in citation_graph:
+                    if set(ids_set) - set(citation_graph[n]):
+                        feature[3] += 1
+                        feature[4] += oracle_data[n]['feature'][4]
+                if feature[3] > 0: feature[4] /= feature[3]
+                feature[3] = math.log(1 + feature[3])
+                if max_local_citations > 0: feature[3] /= max_local_citations
+                # feature 5: 
                 feature[5] = feature[2] / math.log(1 + self._paper_age(metadata))
                 not_oracle_citation_feature_map[citation_key] = feature
         # rank all oracle papers and non-oracle cited papers

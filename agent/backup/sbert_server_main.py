@@ -6,6 +6,8 @@ from sentence_transformers import SentenceTransformer
 from typing import List, Union
 import uvicorn
 import numpy as np
+import os
+import sys
 
 # 全局加载模型（只加载一次）
 model = None
@@ -16,7 +18,7 @@ async def lifespan(app: FastAPI):
     """启动时加载模型"""
     global model
     print("正在加载模型...")
-    model = SentenceTransformer('sentence-transformers/msmarco-MiniLM-L-12-v3')
+    model = SentenceTransformer(sys.argv[1])
     print("模型加载完成！")
     yield
 
@@ -175,9 +177,9 @@ async def model_info():
 if __name__ == "__main__":
     # 启动服务器
     uvicorn.run(
-        "main:app",  # 假设文件名为 main.py
+        f"{os.path.basename(__file__)[:-3]}:app",
         host="0.0.0.0",
-        port=8000,
+        port=int(sys.argv[2]),
         reload=False,  # 生产环境设置为 False
-        workers=1  # 可以根据需要调整工作进程数
+        workers=int(sys.argv[3])  # 可以根据需要调整工作进程数
     )

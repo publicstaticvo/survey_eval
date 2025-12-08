@@ -48,7 +48,7 @@ class ParallelDataPreperation:
         sbert = SentenceTransformerClient(config.sbert_server_url)
         self.oracle_tool = DynamicOracleGenerator(
             num_oracle_papers=config.num_oracle_papers, 
-            llm_model=SubtopicLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers),
+            llm_model=SubtopicLLMClient(config.llm_server_info, config.sampling_params),
             sentence_transformer=sbert,
             eval_date=config.evaluation_date,
         )
@@ -147,7 +147,6 @@ class RunFactualCritic:
             critic_llm=config.llm_server_info, 
             rerank_llm=config.rerank_server_info,
             sampling_params=config.sampling_params, 
-            n_workers=config.llm_num_workers, 
             num_selected_documents=config.n_documents,
         )
         self.tool = FactualCorrectnessCritic(llm)
@@ -161,7 +160,7 @@ class RunSynthesisCritic:
 
     def __init__(self, config: ToolConfig):
         # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        llm = SynthesisLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers, True)
+        llm = SynthesisLLMClient(config.llm_server_info, config.sampling_params, True)
         self.tool = SynthesisCorrectnessCritic(llm)
 
     async def __call__(self, payload: SynthesisPayload):

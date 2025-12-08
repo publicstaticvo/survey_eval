@@ -20,11 +20,10 @@ class FactualLLMClient(ConcurrentLLMClient):
             critic_llm: LLMServerInfo, 
             rerank_llm: LLMServerInfo, 
             sampling_params: Dict[str, Any], 
-            n_workers: int, 
             num_selected_documents: int = 3,
             retry: int = 5
         ):
-        super().__init__(critic_llm, sampling_params, n_workers, retry)
+        super().__init__(critic_llm, sampling_params, 1, retry)
         self.num_selected_documents = num_selected_documents
         self.rerank_llm = rerank_llm
 
@@ -101,8 +100,8 @@ class SynthesisLLMClient(ConcurrentLLMClient):
                                             re.DOTALL | re.IGNORECASE)
     PROMPT: str = """..."""
 
-    def __init__(self, llm, sampling_params, n_workers, retry = 5):
-        super().__init__(llm, sampling_params, n_workers, retry)
+    def __init__(self, llm, sampling_params, retry = 5):
+        super().__init__(llm, sampling_params, 1, retry)
 
     def _pattern_check(self, output):
         try:

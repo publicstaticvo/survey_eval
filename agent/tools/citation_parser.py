@@ -1,27 +1,13 @@
 import io
-import re
-import json
 import logging
 import requests
-import xml.etree.ElementTree as ET
 from pydantic import BaseModel, Field
-from dataclasses import dataclass, field
 from langchain_core.tools import BaseTool
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor as TPE
 
 from paper_parser import GROBIDParser
 from utils import openalex_search_paper, valid_check, index_to_abstract, URL_DOMAIN
-from llm_server import ConcurrentLLMClient
-
-
-@dataclass
-class HTMLSection:
-    numbers: List[int]
-    level: int
-    title: str
-    element: Optional[ET.Element]
-    paragraphs: List[str]
 
 
 class CitationProcessInput(BaseModel):
@@ -77,27 +63,40 @@ class CitationParser(BaseTool):
         paper = citation_info，可能要改成特定的类。
         """
         paper_title = paper['title']
-        # 获取所有正确结果
-        on_target = []
-        results = openalex_search_paper("works", {"title.search": paper_title}).get("results", [])
-        for paper_info in results:
-            if valid_check(paper_title, paper_info['display_name']): 
-                paper_info['id'] = paper_info['id'].replace(URL_DOMAIN, "")
-                on_target.append(paper_info)
-        # 只需要尝试获取全文内容和摘要，将完整的信息返回以核对引用正确性。
+        # 获取所有正确结果      
         info = {
-            "metadatas": [self._get_metadata(x) for x in on_target], 
+            "metadata": None, 
             "title": paper['title'],
             "abstract": "", 
             "full_content": {}
         }
-        for paper in on_target:
-            if not info['full_content'] and (best_oa_location := paper["best_oa_location"]) and \
-                (file_obj := self._download_paper_to_memory(best_oa_location["pdf_url"])) and \
-                (paper_content := self.paper_parser.parse_pdf(file_obj)):
-                info['full_content'] = paper_content.get_skeleton()
-            if not info['abstract'] and (abstract := index_to_abstract(paper['abstract_inverted_index'])):
-                info['abstract'] = abstract
+        results = openalex_search_paper("works", {"title.search": paper_title}).get("results", [])
+        for paper_info in results:
+            if valid_check(paper_title, paper_info['display_name']): 
+                paper_info['id'] = paper_info['id'].replace(URL_DOMAIN, "")
+                # download full content
+                if not info['full_content'] and (best_oa_location := paper_info["best_oa_location"]) and \
+                    (file_obj := self._download_paper_to_memory(best_oa_location["pdf_url"])) and \
+                    (paper_content := self.paper_parser.parse_pdf(file_obj)):
+                    info['full_content'] = paper_content.get_skeleton()
+                # abstract
+                if not info['abstract'] and (abstract := index_to_abstract(paper_info['abstract_inverted_index'])):
+                    info['abstract'] = abstract
+                # metadata
+                paper_info = self._get_metadata(paper_info)
+                if info['metadata'] is None: 
+                    info['metadata'] = paper_info
+                    info['metadata']['id'] = [info['metadata']['id']]
+                else:
+                    info['metadata']['id'].append(paper_info['id'])
+                    info['metadata']['locations'].extend(paper_info['locations'])
+                    if len(paper_info['authors']) > info['metadata']['authors']:
+                        info['metadata']['authors'] = paper_info['authors']
+                    if paper_info['cited_by_count'] > info['metadata']['cited_by_count']:
+                        info['metadata']['cited_by_count'] = paper_info['cited_by_count']
+                        info['metadata']['counts_by_year'] = paper_info['counts_by_year']
+                    if paper_info['publication_date'] < info['metadata']['publication_date']:
+                        info['metadata']['publication_date'] = paper_info['publication_date']
         # status == 0 -> OK
         # status == 1 -> fail to download paper
         # status == 2 -> fail to download paper and fetch abstract
@@ -124,7 +123,7 @@ class CitationParser(BaseTool):
             "authors": paper['authorship'],
             "locations": [x['source'] for x in paper['locations']],
             "cited_by_count": paper['cited_by_count'],
-            "counts_by_year": {y['year']: y['cited_by_count'] for y in paper['counts_by_year']},
+            "counts_by_year": paper['counts_by_year'],
             "publication_date": paper['publication_date'],
         }
     
