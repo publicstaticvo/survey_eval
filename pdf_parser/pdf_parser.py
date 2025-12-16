@@ -95,7 +95,7 @@ class GROBIDParser:
         paper.author = self._extract_authors_string(root)
         
         # Extract references/bibliography
-        paper.references = self._extract_references(root)
+        # paper.references = self._extract_references(root)
         
         # Extract abstract
         paper.abstract = self._extract_abstract(root, paper)
@@ -103,7 +103,7 @@ class GROBIDParser:
         # Extract body sections
         self._extract_body_sections(root, paper)
 
-        self._extract_references(root, paper)
+        # self._extract_references(root, paper)
         
         return paper
     
@@ -208,9 +208,9 @@ class GROBIDParser:
                     father_section = new_section
         except Exception as e:
             logging.warning(f" get {e}, fallback to parse paragraphs")
-            self.fallback_parse_paragraphs(paper, body, paper.references)
+            self._fallback_parse_paragraphs(paper, body, paper.references)
     
-    def extract_text_from_element(self, element: ET.Element) -> str:
+    def _extract_text_from_element(self, element: ET.Element) -> str:
         """从元素中提取文本内容"""
         return ' '.join(element.itertext()).strip()
 
@@ -379,7 +379,7 @@ class GROBIDParser:
         has_section_index = (not self.current_section_hierarchy or self.current_section_hierarchy[-1].level >= 0)
         
         for child in div_element:
-            if child.tag.endswith("head"):
+            if child.tag == f"{{{self.NS['tei']}}}head":
                 text = self._extract_text_from_element(child)
                 n_attr = child.get('n')
                 numbers, title = self._parse_section_title_from_p(text, 'head', n_attr)
@@ -401,10 +401,11 @@ class GROBIDParser:
                         if text:
                             current_section.paragraphs.append(text)
             
-            elif child.tag == f"{{{self.NS}}}p":
+            elif child.tag == f"{{{self.NS['tei']}}}p":
                 # 首先判断是否含有标题以及标题是否合法。self._compare_section_levels(numbers)
                 text = self._extract_text_from_element(child)
                 numbers, title = self._parse_section_title_from_p(text, 'p') if has_section_index else (None, None)
+                if "1. Introduction." in text: print(numbers, title)
                 if numbers:
                     # 情形1
                     title, text = title
@@ -440,7 +441,7 @@ class GROBIDParser:
 
         return sections
     
-    def fallback_parse_paragraphs(self, paper: Paper, body: ET.Element, references: dict):
+    def _fallback_parse_paragraphs(self, paper: Paper, body: ET.Element, references: dict):
         """
         有些文章没有章节号不能判断章节从属关系，会导致正常的判断流程出错。
         该函数为应急方案，假如章节序号出现错乱，则去掉章节号，将所有内容视为自然段。
@@ -629,11 +630,11 @@ class GROBIDParser:
 if __name__ == "__main__":
     # Initialize parser (make sure GROBID is running on localhost:8070)
     parser = GROBIDParser()
-    # with open("/data/tsyu/1710.03675.xml", encoding='utf-8') as f:
-    #     paper = f.read()
-    # paper = parser.parse_xml(paper)
-    paper = parser.parse_pdf("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
+    with open("../../2105.07221v2.xml", encoding='utf-8') as f:
+        paper = f.read()
+    paper = parser.parse_xml(paper)
+    # paper = parser.parse_pdf("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
     print(len(paper.children))
     print("=" * 50 + "Skeletion" + "=" * 50)
-    x = paper.get_skeleton("all")
-    # filename = "../crawled_papers/pdf/1710.03675.pdf"
+    # x = paper.get_skeleton("none")
+    # print(x)

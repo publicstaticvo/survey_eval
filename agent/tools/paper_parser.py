@@ -9,15 +9,6 @@ from typing import Dict, List, Optional, Tuple
 from paper_elements import Paper, Section, Paragraph, Sentence
 
 
-@dataclass
-class HTMLSection:
-    numbers: List[int]
-    level: int
-    title: str
-    element: Optional[ET.Element]
-    paragraphs: List[str]
-
-
 class GROBIDParser:
     """
     A class to parse academic papers using GROBID service.
@@ -175,7 +166,7 @@ class GROBIDParser:
         """从元素中提取文本内容"""
         return ' '.join(element.itertext()).strip()
 
-    def _parse_div_element(self, div_element: ET.Element, father: Section) -> List[HTMLSection]:
+    def _parse_div_element(self, div_element: ET.Element, father: Section):
         """
         Parse a div element that may contain multiple sections within paragraphs.
         
@@ -196,14 +187,23 @@ class GROBIDParser:
                 n_attr = child.get('n')
                 text = self._extract_text_from_element(child)
                 current_head = f"{n_attr} {text}" if n_attr else text
+                sections.append(Section(name=current_head, father=father))
+
+            elif child.tag.endswith("div"):
+                self._parse_div_element(child, sections[-1])
             
             else:
                 paragraph = Paragraph(father=father)
                 if current_head:
                     paragraph.add_sentence(Sentence(current_head, paragraph, []))
+                if not sections:
+                    sections.append(Section(name=current_head, father=father))
+                current_head = None
                 self._parse_paragraph_element(child, paragraph)
+                sections[-1].add_paragraph(paragraph)
 
-        return sections
+        for section in sections:
+            father.add_child(section)
     
     def _parse_paragraph_element(self, p_element: ET.Element, paragraph: Paragraph):
         """
