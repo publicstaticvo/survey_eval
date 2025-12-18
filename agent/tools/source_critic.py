@@ -1,12 +1,9 @@
-import json
 import math
 import numpy as np
 from datetime import datetime
-from typing import List, Dict, Any
-from pydantic import BaseModel, Field
-from langchain_core.tools import BaseTool
 
-from sbert_client import SentenceTransformerClient
+from .sbert_client import SentenceTransformerClient
+from .tool_config import ToolConfig
 
 
 def normalize(a: np.ndarray) -> np.ndarray:
@@ -20,33 +17,13 @@ def cos_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sum(a * b))
 
 
-class SourceCriticInput(BaseModel):
-    cited_paper_ids: List[str] = Field(..., description="List of paper IDs cited in the survey.")
-    oracle_data: Dict[str, Any] = Field(..., description="Output from DynamicOracleGenerator.")
+class SourceSelectionCritic:
 
-
-class SourceSelectionCritic(BaseTool):
-    name = "source_selection_critic"
-    description = (
-        "Evaluates the quality of the bibliography. "
-        "Uses a LETOR model to compare the agent's citations against the "
-        "ranked Dynamic Oracle list. Returns nDCG score and missing important papers."
-    )
-    args_schema: type[BaseModel] = SourceCriticInput
-
-    def __init__(
-            self, 
-            sentence_transformer: SentenceTransformerClient, 
-            letor_model,
-            eval_date: datetime = datetime.now(),
-            topn: int = 0,
-            **kwargs
-        ):
-        super().__init__(**kwargs)
-        self.sentence_transformer = sentence_transformer
-        self.letor_model = letor_model
-        self.eval_date = eval_date
-        self.topn = topn
+    def __init__(self, config: ToolConfig):
+        self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
+        self.letor_model = ...
+        self.eval_date = config.evaluation_date
+        self.topn = config.topn
 
     def _paper_age(self, paper):
         return (self.eval_date - datetime.strptime(paper['publication_date'], "%Y-%m-%d")).days
@@ -93,7 +70,7 @@ class SourceSelectionCritic(BaseTool):
         if idcg == 0: return 0.0
         return dcg / idcg
 
-    def _run(self, citations: dict, query: str, oracle_data: dict):
+    def __call__(self, citations: dict, query: str, oracle_data: dict):
         """
         The format of param citations is:
         {
@@ -194,12 +171,9 @@ class SourceSelectionCritic(BaseTool):
         incorrect = {x[0]: x[1] for x in incorrect if x[1] < oracle_ranked_list[self.topn]}
         for m in unfound_papers:
             incorrect[m] = "paper not found"
-        return {
+        return {"source_evals": {
             "ranked_based_recall": ranked_based_recall,
             "weighted_precision": weighted_precision,
             "missing_important_papers": missing,
             "incorrect_papers": incorrect,
-        }
-
-    async def _arun(self, citations: dict, query: str, oracle_data: dict):
-        return await self._run(citations, query, oracle_data)
+        }}

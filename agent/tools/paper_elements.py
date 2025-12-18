@@ -6,8 +6,8 @@ from typing import List, Optional, Union, Dict, Any
 @dataclass
 class Sentence:
     """Represents a single sentence with its citations"""
-    text: str  # without citations
-    father: Paragraph
+    text: str = ""  # without citations
+    father: Paragraph = None
     citations: List[str] = field(default_factory=list)
     
     def __str__(self):
@@ -21,7 +21,7 @@ class Sentence:
 @dataclass
 class Paragraph:
     """Represents a paragraph with multiple sentences"""
-    father: Section
+    father: Section = None
     sentences: List[Sentence] = field(default_factory=list)
     
     def add_sentence(self, sentence: Sentence):
@@ -36,7 +36,7 @@ class Paragraph:
 class Section:
     """Represents a section, subsection, subsubsection or abstract"""
     name: str = ""
-    father: Union[Section, Paper]
+    father: Union[Section, Paper] = None
     paragraphs: List[Paragraph] = field(default_factory=list)
     children: List[Section] = field(default_factory=list)
     

@@ -1,6 +1,7 @@
 crawled_papers
 nature
 logs
+*.txt
 *.log
 *.out
 *.pdf

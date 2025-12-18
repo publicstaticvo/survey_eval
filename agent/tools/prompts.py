@@ -75,6 +75,10 @@ Return strictly a JSON object. Do not output markdown code blocks.
 }}
 '''
 
+FACTUAL_CORRECTNESS_PROMPT = ''''''
+
+SYNTHESIS_CORRECTNESS_PROMPT = ''''''
+
 CLARITY_EVAL_PROMPT = '''
 You are a senior editor at a top-tier scientific journal (e.g., Nature, NeurIPS). Your task is to score the writing quality of the following target paper segment, specifically focusing on logical flow and clarity.
 

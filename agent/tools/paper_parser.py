@@ -1,19 +1,11 @@
 import re
-import time
-import random
-import logging
-import requests
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-from paper_elements import Paper, Section, Paragraph, Sentence
+from typing import List, Optional
+
+from .paper_elements import Paper, Section, Paragraph, Sentence
 
 
-class GROBIDParser:
-    """
-    A class to parse academic papers using GROBID service.
-    Returns a Paper object with hierarchical structure.
-    """
+class PaperParser:
     NS = {'tei': 'http://www.tei-c.org/ns/1.0'}
 
     # Regex patterns for section numbering
@@ -27,77 +19,23 @@ class GROBIDParser:
         'algorithm', 'equation', 'appendix'
     ]
     
-    def __init__(self, grobid_url: str = "http://localhost:8070", parse_citations: bool = True):
-        """
-        Initialize the GROBID parser.
-        
-        Args:
-            grobid_url: URL of the GROBID service (default: localhost:8070)
-        """
-        self.grobid_url = grobid_url        
-        self.current_section_hierarchy = []
+    def __init__(self):
         self.citation_map = {}
-        self.parse_citations = parse_citations
-    
-    def process_pdf_to_xml(self, pdf_path: str) -> str:
-        """
-        Send PDF to GROBID and get TEI XML response.
-        
-        Args:
-            pdf_path: Path to the PDF file
+        self.current_section_hierarchy = []
             
-        Returns:
-            TEI XML string
-        """
-        url = f"{self.grobid_url}/api/processFulltextDocument"
-        
-        with open(pdf_path, 'rb') as f:
-            files = {'input': f}
-            while True:
-                try:
-                    time.sleep(2 * random.random())
-                    response = requests.post(url, files=files)
-                    response.raise_for_status()
-                    return response.text
-                except requests.exceptions.HTTPError as e:
-                    if response.status_code != 503:
-                        logging.error(f"{pdf_path} {e}")
-                        return ""
-                except Exception as e:
-                    logging.error(f"{pdf_path} {e}")
-                    return ""          
-            
-    def parse_xml(self, xml_content: str) -> Paper:
-        """
-        Parse GROBID TEI XML output into a Paper object.
-        
-        Args:
-            xml_content: TEI XML string from GROBID
-            
-        Returns:
-            Paper object containing the structured paper data
-        """
-        root = ET.fromstring(xml_content)
-        
+    def parse(self, xml_content: str) -> Paper:
+        root = ET.fromstring(xml_content)        
         # Create the root Paper object
-        paper = Paper(name="root", father=None)
-        
+        paper = Paper(name="root", father=None)        
         # Extract metadata
         paper.title = self._extract_title(root)
-        paper.author = self._extract_authors_string(root)
-        
+        paper.author = self._extract_authors_string(root)        
         # Extract references/bibliography
-        paper.references = self._extract_references(root)
-        
+        paper.references = self._extract_references(root)        
         # Extract abstract
         paper.abstract = self._extract_abstract(root, paper)
-
-        # Extract references first
-        self._extract_references(root, paper)
-        
         # Extract body sections
         self._extract_body_sections(root, paper)
-
         paper.references = self.citation_map        
         return paper
     
@@ -229,14 +167,13 @@ class GROBIDParser:
                 ref_text = ''.join(element.itertext()).strip()  # "Yu et al." or "[1]"
                 
                 # Add citation marker
-                if self.parse_citations:
-                    if current_text:
-                        text_parts.append(('text', ''.join(current_text)))
-                        current_text.clear()
+                if current_text:
+                    text_parts.append(('text', ''.join(current_text)))
+                    current_text.clear()
 
-                    if citation_id in self.citation_map:
-                        self.citation_map[citation_id]['ref_text'] = ref_text
-                        text_parts.append(('citation', self.citation_map[citation_id]))
+                if citation_id in self.citation_map:
+                    self.citation_map[citation_id]['ref_text'] = ref_text
+                    text_parts.append(('citation', self.citation_map[citation_id]))
                 
             else:
                 # Recursively process child elements
@@ -297,7 +234,7 @@ class GROBIDParser:
             sentence_obj = Sentence(current_sentence, paragraph, current_citations)
             paragraph.add_sentence(sentence_obj)
     
-    def _extract_references(self, root: ET.Element, paper: Paper) -> dict:
+    def _extract_references(self, root: ET.Element) -> dict:
         """Extract bibliography/reference list as a dictionary."""
         
         back = root.find('.//tei:text/tei:back', self.NS)
@@ -344,29 +281,16 @@ class GROBIDParser:
                     'journal': journal,
                     'year': year
                 }
-    
-    def parse_pdf(self, pdf_path: str) -> Paper:
-        """
-        Complete pipeline: process PDF and parse results into Paper object.
-        
-        Args:
-            pdf_path: Path to the PDF file
-            
-        Returns:
-            Paper object with hierarchical structure
-        """
-        xml_content = self.process_pdf_to_xml(pdf_path)
-        return self.parse_xml(xml_content)
 
 
 # Example usage
 if __name__ == "__main__":
     # Initialize parser (make sure GROBID is running on localhost:8070)
-    parser = GROBIDParser()
+    parser = PaperParser()
     # with open("/data/tsyu/1710.03675.xml", encoding='utf-8') as f:
     #     paper = f.read()
     # paper = parser.parse_xml(paper)
-    paper = parser.parse_pdf("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
+    paper = parser.parse("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
     print(len(paper.children))
     print("=" * 50 + "Skeletion" + "=" * 50)
     x = paper.get_skeleton("all")

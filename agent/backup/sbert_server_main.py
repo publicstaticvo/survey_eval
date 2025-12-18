@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     """启动时加载模型"""
     global model
     print("正在加载模型...")
-    model = SentenceTransformer(sys.argv[1])
+    model = SentenceTransformer("/data/tsyu/models/all-MiniLM-L6-v2")
     print("模型加载完成！")
     yield
 
@@ -168,7 +168,7 @@ async def model_info():
         raise HTTPException(status_code=503, detail="模型未加载")
     
     return {
-        "model_name": "msmarco-MiniLM-L-12-v3",
+        "model_name": "all-MiniLM-L6-v2",
         "embedding_dimension": model.get_sentence_embedding_dimension(),
         "max_seq_length": model.max_seq_length,
     }
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     uvicorn.run(
         f"{os.path.basename(__file__)[:-3]}:app",
         host="0.0.0.0",
-        port=int(sys.argv[2]),
+        port=8030,
         reload=False,  # 生产环境设置为 False
-        workers=int(sys.argv[3])  # 可以根据需要调整工作进程数
+        workers=1  # 可以根据需要调整工作进程数
     )

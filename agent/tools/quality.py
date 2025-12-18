@@ -1,25 +1,19 @@
 import re
-import json
 import time
 import asyncio
 import numpy as np
 from typing import List, Tuple
 from collections import Counter
-from pydantic import BaseModel, Field
-from langchain_core.tools import BaseTool
 from sentence_transformers.util import cos_sim
 
-from prompts import CLARITY_EVAL_PROMPT
-from llm_server import ConcurrentLLMClient
-from sbert_client import SentenceTransformerClient
-from utils import split_content_to_paragraph, prepare_paragraphs_for_clarity
+from .tool_config import ToolConfig
+from .prompts import CLARITY_EVAL_PROMPT
+from .request_utils import AsyncLLMClient
+from .sbert_client import SentenceTransformerClient
+from .utils import split_content_to_paragraph, prepare_paragraphs_for_clarity
 
 
-class TextSegmentInput(BaseModel):
-    text_segment: str = Field(..., description="A paragraph or section of text to analyze.")
-
-
-class QualityLLMClient(ConcurrentLLMClient):
+class QualityLLMClient(AsyncLLMClient):
 
     format_pattern: re.Pattern = re.compile(r"\[\[([0-9]+)\]\]", re.DOTALL | re.IGNORECASE)
     PROMPT: str = CLARITY_EVAL_PROMPT
@@ -46,20 +40,13 @@ class QualityLLMClient(ConcurrentLLMClient):
         return {"score": "Invalid format or Evaluation server error", "think": ""}
 
 
-class ClarityCritic(BaseTool):
-    name = "clarity_critic"
-    description = (
-        "Evaluates logical flow and clarity using an LLM with Chain-of-Thought. "
-        "Returns a score (1-5) and detailed reasoning."
-    )
-    args_schema: type[BaseModel] = TextSegmentInput
+class ClarityCritic:
     
-    def __init__(self, llm: QualityLLMClient, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, config: ToolConfig):
         self.prompt = """None"""
-        self.llm = llm
+        self.llm = QualityLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers)
     
-    def _run(self, paper_content: dict):
+    def __call__(self, paper_content: dict):
         """
         每次给出本段和前一段。
         """
@@ -69,23 +56,11 @@ class ClarityCritic(BaseTool):
         scores = [x['score'] for x in results if isinstance(x['score'], int)]
         if not scores: return {"status": "request error", "mean_score": 0, "detailed_results": []}
         return {"status": "ok", "mean_score": sum(scores) / len(scores), "detailed_results": results}
-    
-    async def _arun(self, paper_content: str):
-        return await self._run(paper_content)
 
 
-class ProgrammaticReadabilityCritic(BaseTool):
-    name = "programmatic_readability_critic"
-    description = (
-        "Calculates objective readability metrics (Flesch-Kincaid, Gunning Fog). "
-        "Returns raw scores."
-    )
-    args_schema: type[BaseModel] = TextSegmentInput
+class ProgrammaticReadabilityCritic:
 
     vowels: set = set("aeiouAEIOU")
-
-    def __init__(self, **kwargs):
-        return super().__init__(**kwargs)
 
     def _count_syllables(self, word: str) -> int:
         """
@@ -161,7 +136,7 @@ class ProgrammaticReadabilityCritic(BaseTool):
         fog = 0.4 * ((total_words / total_sentences) + percent_complex)
         return round(fog, 2)
 
-    def _run(self, paper_content: dict):
+    def __call__(self, paper_content: dict):
         paragraphs = split_content_to_paragraph(paper_content)
         paragraph_contents = [" ".join(x['text'] for x in p) for p in paragraphs]
         full_content = "\n".join(paragraph_contents)
@@ -172,30 +147,14 @@ class ProgrammaticReadabilityCritic(BaseTool):
             "flesch-kincaid grade": fkgl, 
             "gunning-fog index": gfi
         }
-    
-    async def _arun(self, text_segment: str):
-        return await self._run(text_segment)
 
 
-class ProgrammaticRedundancyCritic(BaseTool):
-    name = "programmatic_redundancy_critic"
-    description = (
-        "Calculates text redundancy using N-gram overlap and semantic similarity "
-        "between sentences. Returns a redundancy score (0-1)."
-    )
-    args_schema: type[BaseModel] = TextSegmentInput
+class ProgrammaticRedundancyCritic:
 
-    def __init__(
-            self, 
-            sentence_transformer: SentenceTransformerClient, 
-            threshold: float = 0.95,
-            n_gram: int = 5,
-            **kwargs
-        ):
-        super().__init__(**kwargs)
-        self.sentence_transformer = sentence_transformer
-        self.threshold = threshold
-        self.n_gram = n_gram
+    def __init__(self, config: ToolConfig):
+        self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
+        self.threshold = config.redundancy_similarity_threshold
+        self.n_gram = config.redundancy_ngram
 
     def _tokenize(self, text: str) -> List[str]:
         """保留单词字符，小写化"""
@@ -223,7 +182,7 @@ class ProgrammaticRedundancyCritic(BaseTool):
         (best, freq), = Counter(ng).most_common(1)
         return best, freq
 
-    def _run(self, paper_content: dict):
+    def __call__(self, paper_content: dict):
         """
         1. n-gram overlap
         2. 段落之间的相似性
@@ -256,27 +215,24 @@ class ProgrammaticRedundancyCritic(BaseTool):
             "high_sim_sentences_count": high_sim_sentences,
         }
 
-    async def _arun(self, paper_content: dict):
-        return await self._run(paper_content)
 
-
-class QualityCritic(BaseTool):
+class QualityCritic:
     """
     Runs Clarity, Readability, Redundancy in one node
     """
 
-    def __init__(self, llm, sbert, threshold, n_gram):
+    def __init__(self, config: ToolConfig):
         # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.redundancy_tool = ProgrammaticRedundancyCritic(sbert, threshold, n_gram)
+        self.redundancy_tool = ProgrammaticRedundancyCritic(config)
         self.readability_tool = ProgrammaticReadabilityCritic()
-        self.clarity_tool = ClarityCritic(llm)
+        self.clarity_tool = ClarityCritic(config)
 
-    def _run(self, review_paper):
+    async def _run(self, review_paper):
         # 1. Create Async Tasks
         # Note: segment_tool only needs the review_text, not the parsed papers!
-        task_redundancy = self.redundancy_tool.ainvoke(review_paper)
-        task_readability = self.readability_tool.ainvoke(review_paper) 
-        task_clarity = self.clarity_tool.ainvoke(review_paper)
+        task_redundancy = self.redundancy_tool(review_paper)
+        task_readability = self.readability_tool(review_paper) 
+        task_clarity = self.clarity_tool(review_paper)
 
         # 2. Run them all at once
         redundancy_res, readability_res, clarity_res = asyncio.gather(
@@ -284,8 +240,8 @@ class QualityCritic(BaseTool):
         )
 
         # 3. Return combined state updates
-        return {
+        return {"quality_evals": {
             "redundancy_evals": redundancy_res,
             "readability_evals": readability_res,
             "clarity_evals": clarity_res,
-        }
+        }}

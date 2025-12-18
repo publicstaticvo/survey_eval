@@ -1,22 +1,15 @@
 import asyncio
 import logging
-import operator
-from typing import Annotated, TypedDict, List, Dict, Any
+from typing import Dict, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from langgraph.types import Send
-from langgraph.prebuilt import ToolNode
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain.tools import BaseTool
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import BaseMessage
 from langchain_core.language_models import BaseChatModel
-from langgraph.prebuilt import tools_condition
 
 from tools import (
     AgentState,
-    InputState,
     ClaimSegmentation,
     DynamicOracleGenerator,
     FactualCorrectnessCritic,
@@ -25,13 +18,7 @@ from tools import (
     SourceSelectionCritic,
     SynthesisCorrectnessCritic,
     TopicCoverageCritic,
-    SentenceTransformerClient,
     ToolConfig,
-    FactualLLMClient,
-    QualityLLMClient,
-    SubtopicLLMClient,
-    SynthesisLLMClient,
-    ClaimSegmentationLLMClient,
 )
 
 
@@ -45,25 +32,17 @@ class ParallelDataPreperation:
 
     def __init__(self, config: ToolConfig):
         # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        sbert = SentenceTransformerClient(config.sbert_server_url)
-        self.oracle_tool = DynamicOracleGenerator(
-            num_oracle_papers=config.num_oracle_papers, 
-            llm_model=SubtopicLLMClient(config.llm_server_info, config.sampling_params),
-            sentence_transformer=sbert,
-            eval_date=config.evaluation_date,
-        )
-        self.parser_tool = CitationParser(grobid_url=config.grobid_url, n_workers=config.grobid_num_workers)
-        self.segment_tool = ClaimSegmentation(
-            llm=ClaimSegmentationLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers)
-        )
+        self.oracle_tool = DynamicOracleGenerator(config)
+        self.parser_tool = CitationParser(config)
+        self.segment_tool = ClaimSegmentation(config)
 
     async def __call__(self, state: AgentState):
         logging.info("--- Starting Parallel Data Prep ---")
         # 1. Create Async Tasks
         # Note: segment_tool only needs the review_text, not the parsed papers!
-        task_oracle = self.oracle_tool.ainvoke(state.query)
-        task_parse = self.parser_tool.ainvoke(state.review_paper['citations']) 
-        task_segment = self.segment_tool.ainvoke(state.review_paper['content'])
+        task_oracle = self.oracle_tool(state.query)
+        task_parse = self.parser_tool(state.review_paper['citations']) 
+        task_segment = self.segment_tool(state.review_paper['content'])
 
         # 2. Run them all at once
         oracle_res, parse_res, segment_res = await asyncio.gather(task_oracle, task_parse, task_segment)
@@ -72,100 +51,9 @@ class ParallelDataPreperation:
         return {
             "oracle_data": oracle_res,
             "paper_content_map": parse_res,
-            "claims": segment_res,
+            "claims": segment_res['claims'],
+            "errors": {"claim_segmentation": segment_res['errors']}
         }
-
-
-# --- 2. Document-Level Critics (Standard Nodes) ---
-class RunSourceCritic:
-
-    def __init__(self, config: ToolConfig):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.tool = SourceSelectionCritic(
-            sentence_transformer=SentenceTransformerClient(config.sbert_server_url),
-            letor_model=...,
-            eval_date=config.evaluation_date,
-            topn=config.topn
-        )
-
-    async def __call__(self, state: AgentState):
-        score = await self.tool.ainvoke(state.review_paper['citations'], state.query, state.oracle_data)
-        return {"source_evals": score}
-
-
-class RunTopicCritic:
-
-    def __init__(self, config: ToolConfig):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.tool = TopicCoverageCritic(
-            sentence_transformer=SentenceTransformerClient(config.sbert_server_url),
-            threshold=config.topic_similarity_threshold,
-        )
-
-    async def __call__(self, state: AgentState):
-        score = await self.tool.ainvoke(state.review_paper['content'], state.oracle_data)
-        return {"topic_evals": score}
-
-
-class QualityEvaluation:
-    """
-    Runs Clarity, Readability, Redundancy in one node
-    """
-
-    def __init__(self, config: ToolConfig):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.tool = QualityCritic(
-            llm=QualityLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers),
-            sentence_transformer=SentenceTransformerClient(config.sbert_server_url), 
-            threshold=config.redundancy_similarity_threshold, 
-            n_gram=config.redundancy_ngram,
-        )
-
-    async def __call__(self, state: AgentState):
-        results = await self.tool.ainvoke(state.review_paper)
-        return {"quality_evals": results}
-
-
-# --- 3. Fact-Checking Critics (Map-Reduce Workers) ---
-
-# Define a tiny state just for the worker payload
-class FactCheckPayload(TypedDict):
-    claim: str
-    cited_paper: str
-
-
-class SynthesisPayload(TypedDict):
-    claim: str
-    cited_papers: Dict[str, str]
-
-
-class RunFactualCritic:
-
-    def __init__(self, config: ToolConfig):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        llm = FactualLLMClient(
-            critic_llm=config.llm_server_info, 
-            rerank_llm=config.rerank_server_info,
-            sampling_params=config.sampling_params, 
-            num_selected_documents=config.n_documents,
-        )
-        self.tool = FactualCorrectnessCritic(llm)
-
-    async def __call__(self, payload: FactCheckPayload):
-        score = await self.tool.ainvoke(payload.claim, payload.cited_paper)
-        return {"topic_evals": score}
-    
-
-class RunSynthesisCritic:
-
-    def __init__(self, config: ToolConfig):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        llm = SynthesisLLMClient(config.llm_server_info, config.sampling_params, True)
-        self.tool = SynthesisCorrectnessCritic(llm)
-
-    async def __call__(self, payload: SynthesisPayload):
-        score = await self.tool.ainvoke(payload.claim, payload.cited_papers)
-        return {"topic_evals": score}
 
 
 def map_all_critics(state: AgentState):
@@ -201,18 +89,18 @@ def map_all_critics(state: AgentState):
             match claim['type'].upper():
                 case "SINGLE_FACTUAL":
                     cid = claim['citations'][0]
-                    sends.append(Send("factual_critic", {
+                    sends.append(Send("factual", {
                         "claim": claim['claim_text'],
                         "cited_paper": state.paper_content_map[cid]
                     }))            
                 case "SERIAL_FACTUAL":
                     for cid in claim['citations']:
-                        sends.append(Send("factual_critic", {
+                        sends.append(Send("factual", {
                             "claim": claim['claim_text'],
                             "cited_paper": state.paper_content_map[cid]
                         }))            
                 case "SYNTHESIS":
-                    sends.append(Send("synthesis_critic", {
+                    sends.append(Send("synthesis", {
                         "claim": claim['claim_text'],
                         "cited_papers": {cid: state.paper_content_map[cid] for cid in claim['citations']}
                     }))            
@@ -223,16 +111,16 @@ def map_all_critics(state: AgentState):
             state.invalid_claims += 1
 
     # B. Launch Document-Level Critics (Source, Topic, Quality) - Always run
-    sends.append(Send(node="source_critic", payload={
+    sends.append(Send("source", {
         "citations": state.review_paper['citations'], 
         "query": state.query,
         "oracle_data": state.oracle_data,
     }))
-    sends.append(Send(node="topic_critic", payload={
-        "paper_content": state.review_paper,
-        "oracle_data": state.oracle_data,
+    sends.append(Send("topic", {
+        "review_paper": state.review_paper['content'], 
+        "golden_subtopics": state.oracle_data['subtopics']
     }))
-    sends.append(Send(node="clarity_critic", payload={"review_paper": state.review_paper}))
+    sends.append(Send("clarity", {"review_paper": state.review_paper}))
     
     return sends
 
@@ -315,44 +203,30 @@ def build_agent(config: ToolConfig):
     )
 
     run_parallel_data_prep = ParallelDataPreperation(config)
-    run_quality_group = QualityEvaluation(config)
-    run_source_critic = RunSourceCritic(config)
-    run_topic_critic = RunTopicCritic(config)
-    run_factual_critic = RunFactualCritic(config)
-    run_synthesis_critic = RunSynthesisCritic(config)
+    run_quality_group = QualityCritic(config)
+    run_source_critic = SourceSelectionCritic(config)
+    run_topic_critic = TopicCoverageCritic(config)
+    run_factual_critic = FactualCorrectnessCritic(config)
+    run_synthesis_critic = SynthesisCorrectnessCritic(config)
     run_final_aggregation = FinalAggregation(llm)
-    
-    # tools = ToolNode(tools_to_bind)
 
-    workflow = StateGraph(AgentState, input_schema=InputState)
+    workflow = StateGraph(AgentState)
     workflow.add_node("data_prep", run_parallel_data_prep)
-    workflow.add_node("factual_critic", run_factual_critic)
-    workflow.add_node("synthesis_critic", run_synthesis_critic)
-    workflow.add_node("source_critic", run_source_critic)
-    workflow.add_node("topic_critic", run_topic_critic)
-    workflow.add_node("quality_critic", run_quality_group)
+    workflow.add_node("factual", run_factual_critic)
+    workflow.add_node("synthesis", run_synthesis_critic)
+    workflow.add_node("source", run_source_critic)
+    workflow.add_node("topic", run_topic_critic)
+    workflow.add_node("quality", run_quality_group)
     workflow.add_node("final_report_agent", run_final_aggregation)
 
     workflow.set_entry_point("data_prep")
-    workflow.add_conditional_edges(
-        "data_prep",
-        map_all_critics,
-        {
-            # The keys here must match the node names used in Send(node=...)
-            "factual_critic": "factual_critic",
-            "synthesis_critic": "synthesis_critic",
-            "source_critic": "source_critic",
-            "topic_critic": "topic_critic",
-            "quality_critic": "quality_critic",
-            # We don't need a fallback here, as the map_all_critics handles the Send logic
-        }
-    )
+    workflow.add_conditional_edges("data_prep", map_all_critics)
 
-    workflow.add_edge("factual_worker", "aggregator")
-    workflow.add_edge("synthesis_worker", "aggregator")
-    workflow.add_edge("source_critic", "aggregator")
-    workflow.add_edge("topic_critic", "aggregator")
-    workflow.add_edge("quality_critic", "aggregator")
+    workflow.add_edge("factual", "aggregator")
+    workflow.add_edge("synthesis", "aggregator")
+    workflow.add_edge("source", "aggregator")
+    workflow.add_edge("topic", "aggregator")
+    workflow.add_edge("quality", "aggregator")
 
     # Phase 5: Aggregator -> Final Report Agent -> END
     workflow.add_edge("aggregator", "final_report_agent")

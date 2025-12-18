@@ -14,8 +14,7 @@ def main():
     paper = PDFParser().parse_pdf(config.paper_path).get_skeleton()
     tool_config = ToolConfig.from_yaml(config.tool_config)
     # Initialize the agent
-    agent = build_agent(tool_config)
-    result_state = agent.invoke({"query": config.query, "review_paper": paper})
+    build_agent(tool_config).invoke({"query": config.query, "review_paper": paper})
     # Post process
 
 if __name__ == "__main__":
