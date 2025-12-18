@@ -7,7 +7,6 @@ from .quality import QualityCritic
 from .source_critic import SourceSelectionCritic
 from .topic_coverage import TopicCoverageCritic
 from .tool_config import ToolConfig
-from .paper_parser import GROBIDParser as PDFParser
 
 tools = [
     ClaimSegmentation,
@@ -20,4 +19,4 @@ tools = [
     TopicCoverageCritic,
 ]
 
-__all__ = ["SentenceTransformerClient", "ToolConfig", "AgentState", "PDFParser"] + [x.__name__ for x in tools]
+__all__ = ["SentenceTransformerClient", "ToolConfig", "AgentState"] + [x.__name__ for x in tools]

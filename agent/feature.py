@@ -8,7 +8,6 @@ import asyncio
 import itertools
 import numpy as np
 import networkx as nx
-from bertopic import BERTopic
 from datetime import datetime
 from sentence_transformers import util
 from typing import Dict, List, Optional, Any
@@ -53,7 +52,7 @@ async def search_paper_from_api(paper_title: str) -> Dict[str, Any]:
     on_target = None
     try:
         async with RATELIMIT:
-            results = await openalex_search_paper("works", {"default.search": paper_title})
+            results = await openalex_search_paper("works", {"default.search": paper_title}, add_email=False)
     except Exception as e:
         return paper_title, str(e)
 
@@ -288,25 +287,6 @@ class DynamicOracleGenerator:
                 self.negatives[paper_id]["feature"][1] = score
             elif paper_id in self.hard_negatives:
                 self.hard_negatives[paper_id]["feature"][1] = score
-
-    def _cluster_with_bertopic(self):
-        paper_titles = [x['display_name'] for x in self.oracle.values()]
-        vectorizer_model = CountVectorizer(stop_words='english', min_df=2, ngram_range=(1, 2))
-        topic_model = BERTopic(
-            embedding_model=self.sentence_transformer,
-            vectorizer_model=vectorizer_model,
-            min_topic_size=10,  # Minimum papers per topic
-            nr_topics='auto',  # Automatically determine number of topics
-            calculate_probabilities=True,
-            verbose=True
-        )
-        topics_of_papers, _ = topic_model.fit_transform(paper_titles)
-        topics = {-1: {"keywords": ["N/A"], "paper_titles": []}}
-        for topic_id, title in zip(topics_of_papers, paper_titles):
-            if topic_id not in topics:
-                topics[topic_id] = {"keywords": topic_model.get_topic(topic_id), "paper_titles": []}
-            topics[topic_id]['paper_titles'].append(title)
-        return topics
     
     def _calculate_features_for_citations(self, citations: List[Dict[str, Any]], query: str):
         """
@@ -403,15 +383,15 @@ def print_json(d, fn):
             f.write(json.dumps(x, ensure_ascii=False) + "\n")
 
 
-with open("/data/tsyu/api_key.json") as f: json_key = json.load(f)
-key = {}
-for k in ['cstcloud', 'deepseek']:
-    for m in json_key[k]['models']:
-        key[m] = {"base_url": json_key[k]['domain'], "api_key": json_key[k]['key']}
+# with open("/data/tsyu/api_key.json") as f: json_key = json.load(f)
+# key = {}
+# for k in ['cstcloud', 'deepseek']:
+#     for m in json_key[k]['models']:
+#         key[m] = {"base_url": json_key[k]['domain'], "api_key": json_key[k]['key']}
 
-model = "gpt-oss-120b"
-llm_info = LLMServerInfo(base_url=key[model]['base_url'], api_key=key[model]['api_key'], model=model)
-st = SentenceTransformerClient("http://localhost:8030/encode", 32)
+# model = "gpt-oss-120b"
+# llm_info = LLMServerInfo(base_url=key[model]['base_url'], api_key=key[model]['api_key'], model=model)
+# st = SentenceTransformerClient("http://localhost:8030/encode", 32)
 
 if os.path.exists("metadata.jsonl"):
     metadatas = load_local("metadata.jsonl")
@@ -442,7 +422,7 @@ async def main():
                 with open("metadata.jsonl", "a+") as f:
                     f.write(json.dumps(info, ensure_ascii=False) + "\n")
             except Exception as e:
-                with open("missing.txt", "a+") as f: f.write(f"{info}\n")
+                with open("missing.txt", "a+", encoding='utf-8') as f: f.write(f"{info}\n")
         # TODO: Metadata找key的时候需要re.sub一下，否则找不着
         # with open("metadata.json", "w+") as f:
         #     json.dump(metadata_map, f, indent=2, ensure_ascii=False)

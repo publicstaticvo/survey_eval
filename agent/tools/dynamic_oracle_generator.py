@@ -4,7 +4,7 @@ import json
 import logging
 import asyncio
 import networkx as nx
-from bertopic import BERTopic
+# from bertopic import BERTopic
 from datetime import datetime
 from sentence_transformers.util import cos_sim
 from sklearn.feature_extraction.text import CountVectorizer
