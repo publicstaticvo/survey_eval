@@ -1,3 +1,26 @@
+QUERY_EXPANSION_PROMPT = '''You are a Senior Research Librarian specializing in Systematic Literature Reviews. 
+Your goal is to generate 5 distinct, high-recall search queries for the topic: "{query}"
+
+### CONTEXT
+- **Goal**: We need to build a candidate pool of ~4000 papers to identify foundational "hubs" and specific research papers.
+- **Previous Attempts**: {prev_query}
+- **Constraint**: Do not repeat previous queries. If previous queries yielded low results, broaden the terminology (e.g., use "Deep Learning" instead of "ResNet50").
+
+### SEARCH INTENTS
+Each of the 5 queries must target a different perspective:
+1. **The Technical Core**: Precise technical terminology.
+2. **The Methodology/Intervention**: Focus on the "how" (algorithms, treatments, or tools).
+3. **The Condition/Context**: Focus on the "where/who" (application domain, specific patient groups, or environment).
+4. **The Broad Category**: Use hypernyms or parent fields to ensure we capture foundational "Adam/PyTorch" style papers.
+5. **The Synonym/Alternative**: Use alternative naming conventions (e.g., "transformer-based" vs "attention mechanisms").
+
+### OUTPUT FORMAT
+Provide a JSON object with a brief strategy for the expansion and the 5 queries.
+{
+  "strategy": "Analysis of why previous queries failed and how these 5 will broaden the search.",
+  "queries": ["query 1", "query 2", "query 3", "query 4", "query 5"]
+}'''
+
 SUBTOPIC_GENERATION_PROMPT = '''
 You are an expert academic editor and research strategist. Your task is to define a set of distinct, non-overlapping subtopic names for a literature review, based on clusters of research papers.
 

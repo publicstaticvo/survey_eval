@@ -408,7 +408,8 @@ class DynamicOracleGenerator:
         prev_queries = []
         while len(self.oracle) < self.num_oracle_papers:
             # 1. fetch 5 queries
-            queries = await self.query_llm.call(inputs={"query": query, "prev_queries": prev_queries})
+            queries = await self.query_llm.call(inputs={"query": query, "prev_queries": ", ".join(prev_queries) if prev_queries else "No"})
+            if not prev_queries: queries.append(query)
             if not (queries := [q for q in queries if q not in prev_queries]): continue
             prev_queries.extend(queries)
             print(f"Get {len(queries)} queries: {queries}")

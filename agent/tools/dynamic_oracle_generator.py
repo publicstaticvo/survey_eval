@@ -11,8 +11,8 @@ from sklearn.feature_extraction.text import CountVectorizer
 from concurrent.futures import ThreadPoolExecutor as TPE
 
 from .request_utils import AsyncLLMClient, openalex_search_paper, URL_DOMAIN, RateLimit
+from .prompts import SUBTOPIC_GENERATION_PROMPT, QUERY_EXPANSION_PROMPT
 from .sbert_client import SentenceTransformerClient
-from .prompts import SUBTOPIC_GENERATION_PROMPT
 from .utils import index_to_abstract, extract_json
 from .tool_config import ToolConfig
 
@@ -24,6 +24,7 @@ class SubtopicLLMClient(AsyncLLMClient):
     
 
 class QueryExpansionLLMClient(AsyncLLMClient):
+    PROMPT: str = QUERY_EXPANSION_PROMPT
     def _availability(self, response):
         queries = extract_json(response)
         return [re.sub(r"[:.,!?&]", "", query) for query in queries['queries']]
