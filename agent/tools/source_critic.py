@@ -91,18 +91,15 @@ class SourceSelectionCritic:
         citation_graph = oracle_data['adjacent_graph']
         num_oracles, num_citations = len(oracle_data), len(citations)
         self.topn = min(num_citations, num_oracles)
-        min_relevance, max_citations, max_local_citations = 10, 0, 0
+        max_citations, max_local_citations = 0, 0
         for x in oracle_data.values():
-            min_relevance = min(min_relevance, x['feature'][0])
-            max_citations = max(max_citations, x['feature'][2])
-            max_citations = max(max_local_citations, x['feature'][3])
+            max_citations = max(max_citations, x['features'][1])
+            max_citations = max(max_local_citations, x['features'][2])
         max_citations = math.log(1 + max_citations)
         max_local_citations = math.log(1 + max_local_citations)
-        query_embedding = normalize(self.sentence_transformer.embed([query])[0])
         # try to search in oracle papers
         oracle_citation_feature_map, not_oracle_citation_feature_map = {}, {}  # citation key -> feature
-        # TODO: Should we change the citation key from "b123" to "Yu et al."?
-        unfound_papers = []
+        not_oracle_papers, not_oracle_paper_abstracts, unfound_papers = [], [], []
         # normalization
         for citation_key, citation in citations.items():
             if citation['status'] == 3:
@@ -113,36 +110,50 @@ class SourceSelectionCritic:
             for i in metadata['id']:
                 if i in oracle_data: 
                     # The cited paper is in oracle papers
-                    oracle_citation_feature_map[citation_key] = oracle_data[i]['feature']
+                    oracle_citation_feature_map[citation_key] = oracle_data[i]['features']
                     oracle_data[i]['citation_key'] = citation_key
                     break
             else:
                 # Not in
-                feature = [min_relevance / 2, 0, 0, 0, 0, 0]
-                feature[1] = cos_sim(query_embedding, self.sentence_transformer.embed([citation['abstract']])[0])
+                # feature 0: cosine similarity (-1~1)
+                # feature 1: citation count == global prestige (regularized to 0~1)
+                # feature 2: local citation count == local_prestige (regularized to 0~1)
+                # feature 3: local pagerank (regularized to 0~1)
+                # feature 4: citation velocity == emengence
+                feature = [0, 0, 0, 0, 0]
+                not_oracle_papers.append(citation_key)
+                abstract = f"{citation['title']}. {citation['abstract']}" if citation['abstract'] else citation['title']
+                not_oracle_paper_abstracts.append(abstract)
                 # feature 2: global citations
-                feature[2] = math.log(1 + self._citation_count_by_eval_date(metadata))
-                if max_citations > 0: feature[2] /= max_citations
+                feature[1] = math.log(1 + self._citation_count_by_eval_date(metadata))
+                if max_citations > 0: feature[1] /= max_citations
                 # local co-citation: calcultate number of oracle papers cites this paper
                 # local_pagerank = average(pageranks of oracle papers cites this paper)
                 ids_set = set(metadata['id'])
                 for n in citation_graph:
                     if set(ids_set) - set(citation_graph[n]):
-                        feature[3] += 1
-                        feature[4] += oracle_data[n]['feature'][4]
-                if feature[3] > 0: feature[4] /= feature[3]
-                feature[3] = math.log(1 + feature[3])
-                if max_local_citations > 0: feature[3] /= max_local_citations
+                        feature[2] += 1
+                        feature[3] += oracle_data[n]['features'][3]
+                if feature[2] > 0: feature[3] /= feature[2]
+                feature[2] = math.log(1 + feature[2])
+                if max_local_citations > 0: feature[2] /= max_local_citations
                 # feature 5: 
-                feature[5] = feature[2] / math.log(1 + self._paper_age(metadata))
-                not_oracle_citation_feature_map[citation_key] = feature
+                feature[4] = feature[1] / math.log(1 + self._paper_age(metadata))                
+        # embed together
+        if not_oracle_papers:
+            not_oracle_paper_abstracts.append(query)
+            not_oracle_paper_embeddings = self.sentence_transformer.embed(not_oracle_paper_abstracts)
+            not_oracle_cossims = cos_sim(not_oracle_paper_embeddings[-1:], not_oracle_paper_embeddings[:-1])[0].tolist()
+            for citation_key, s in zip(not_oracle_papers, not_oracle_cossims):
+                citations[citation_key]['features'][0] = s
+                not_oracle_citation_feature_map[citation_key] = citations[citation_key]['features']
         # rank all oracle papers and non-oracle cited papers
         paper_features, paper_ids = [], []
         for paper_id, paper in oracle_data.items():
-            paper_features.append(paper['feature'])
+            paper_features.append(paper['features'])
             paper_ids.append(paper_id)
         for citation_key, citation in not_oracle_citation_feature_map.items():
-            paper_features.append(citation['feature'])
+            paper_features.append(citation['features'])
             paper_ids.append(citation_key)
         ranks = self.letor_model.rank(paper_features)
         # calculate metrics, incorrect papers and missing papers

@@ -10,50 +10,40 @@ from .tool_config import ToolConfig
 from .prompts import CLARITY_EVAL_PROMPT
 from .request_utils import AsyncLLMClient
 from .sbert_client import SentenceTransformerClient
-from .utils import split_content_to_paragraph, prepare_paragraphs_for_clarity
+from .utils import split_content_to_paragraph, prepare_paragraphs_for_clarity, extract_json
 
 
 class QualityLLMClient(AsyncLLMClient):
 
-    format_pattern: re.Pattern = re.compile(r"\[\[([0-9]+)\]\]", re.DOTALL | re.IGNORECASE)
     PROMPT: str = CLARITY_EVAL_PROMPT
 
-    def __init__(self, llm, sampling_params, n_workers, retry = 5):
-        super().__init__(llm, sampling_params, n_workers, retry)
-
-    def _pattern_check(self, output):
-        try:
-            return int(self.format_pattern.findall(output)[-1])
-        except:
-            return
-
-    def run_llm(self, inputs) -> str:
-        retry = 5
-        message = self.PROMPT.format(**inputs)
-        while retry:
-            text = super().run_llm(message)
-            pattern = self._pattern_check(text)
-            if pattern is not None:
-                return {"score": pattern, "think": text}
-            time.sleep(10)
-            retry -= 1
-        return {"score": "Invalid format or Evaluation server error", "think": ""}
+    def _availability(self, response):
+        # TODO: 修改输出方式为json，包含score和简短评估。
+        evaluation = extract_json(response)
+        score = evaluation['score']
+        if isinstance(score, str): 
+            score = int(score)
+            evaluation['score'] = score
+        return evaluation
 
 
 class ClarityCritic:
     
     def __init__(self, config: ToolConfig):
-        self.prompt = """None"""
         self.llm = QualityLLMClient(config.llm_server_info, config.sampling_params, config.llm_num_workers)
     
-    def __call__(self, paper_content: dict):
+    async def __call__(self, paper_content: dict):
         """
         每次给出本段和前一段。
         """
         paragraphs = prepare_paragraphs_for_clarity(paper_content)
         if not paragraphs: return {"status": "no content", "mean_score": 0, "detailed_results": []}
-        results = self.llm.run_parallel(paragraphs)
-        scores = [x['score'] for x in results if isinstance(x['score'], int)]
+
+        tasks = [asyncio.create_task(self.llm.call(inputs=p)) for p in paragraphs]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        results = [x for x in results if isinstance(x, dict) and 'score' in x]
+        scores = [x['score'] for x in results]
         if not scores: return {"status": "request error", "mean_score": 0, "detailed_results": []}
         return {"status": "ok", "mean_score": sum(scores) / len(scores), "detailed_results": results}
 
@@ -136,7 +126,7 @@ class ProgrammaticReadabilityCritic:
         fog = 0.4 * ((total_words / total_sentences) + percent_complex)
         return round(fog, 2)
 
-    def __call__(self, paper_content: dict):
+    async def __call__(self, paper_content: dict):
         paragraphs = split_content_to_paragraph(paper_content)
         paragraph_contents = [" ".join(x['text'] for x in p) for p in paragraphs]
         full_content = "\n".join(paragraph_contents)
@@ -182,7 +172,7 @@ class ProgrammaticRedundancyCritic:
         (best, freq), = Counter(ng).most_common(1)
         return best, freq
 
-    def __call__(self, paper_content: dict):
+    async def __call__(self, paper_content: dict):
         """
         1. n-gram overlap
         2. 段落之间的相似性

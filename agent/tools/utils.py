@@ -79,7 +79,7 @@ def paragraph_to_text(content: list[dict]):
     return " ".join([s['text'] for s in content])
 
 
-def prepare_paragraphs_for_clarity_2(paper_content: dict):
+def prepare_paragraphs_for_clarity(paper_content: dict):
     paragraphs = []
     for i, p in enumerate(paper_content['paragraphs']):
         current = " ".join(x['text'] for x in p)
@@ -90,18 +90,4 @@ def prepare_paragraphs_for_clarity_2(paper_content: dict):
         if sub_paragraphs and s['title']: 
             sub_paragraphs[0]['text'] = f"{s['title']}\n\n" + sub_paragraphs[0]['text']
         paragraphs.extend(sub_paragraphs)
-    return paragraphs
-
-
-def prepare_paragraphs_for_clarity(paper_content: dict):
-    paragraphs = [" ".join(x['text'] for x in p) for p in paper_content['paragraphs']]
-    for s in paper_content['sections']:
-        sub_paragraphs = prepare_paragraphs_for_clarity(s)
-        if sub_paragraphs and s['title']: 
-            sub_paragraphs[0] = f"{s['title']}\n\n" + sub_paragraphs[0]
-        paragraphs.extend(sub_paragraphs)
-    paragraph_inputs = []
-    for i, p in paragraphs:
-        if i == 0: paragraph_inputs.append({"text": p, "pre_text": "This is the first paragraph in this section."})
-        else: paragraph_inputs.append({"text": p, "pre_text": paragraphs[i - 1]})
     return paragraphs

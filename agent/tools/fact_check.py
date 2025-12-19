@@ -8,6 +8,9 @@ from .prompts import FACTUAL_CORRECTNESS_PROMPT, SYNTHESIS_CORRECTNESS_PROMPT
 
 
 class FactualReranker(AsyncLLMClient):
+
+    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+
     def _availability(self, response):
         return [x['document']['text'] for x in response['results']]
 
@@ -24,7 +27,6 @@ class FactualLLMClient(AsyncLLMClient):
 class FactualCorrectnessCritic:
     
     def __init__(self, config: ToolConfig):
-        self.prompt = """None"""
         self.reranker = FactualReranker(config.rerank_server_info)
         self.llm = FactualLLMClient(config.llm_server_info, config.sampling_params)
         self.rerank_n_documents = config.n_documents
@@ -48,11 +50,9 @@ class FactualCorrectnessCritic:
         # 2. Select related paragraphs from each evidence
         documents = list(set(documents))
         parameters = {"query": claim, "documents": documents, "top_n": self.rerank_n_documents}
-        with RateLimit.AGENT_SEMAPHORE:
-            rerank_results = await self.reranker.call("rerank", **parameters, return_documents=True)
-            # 3. Judge
-            message = FACTUAL_CORRECTNESS_PROMPT.format(claim=claim, text="\n\n".join(rerank_results))
-            result = await self.llm.call(messages=message)
+        rerank_results = await self.reranker.call("rerank", **parameters, return_documents=True)
+        # 3. Judge            
+        result = await self.llm.call(inputs={"claim": claim, "text": "\n\n".join(rerank_results)})
         inputs = {"claim": claim, "documents": documents}
         if result == "supported": inputs['result'] = "SUPPORTED"
         elif result == "refuted": inputs['result'] = "REFUTED"
@@ -63,13 +63,9 @@ class FactualCorrectnessCritic:
 class SynthesisCorrectnessCritic:
     
     def __init__(self, config: ToolConfig):
-        self.prompt = """None"""
-        self.llm = FactualLLMClient(
-            critic_llm=config.llm_server_info, 
-            rerank_llm=config.rerank_server_info,
-            sampling_params=config.sampling_params, 
-            num_selected_documents=config.n_documents,
-        )
+        self.reranker = FactualReranker(config.rerank_server_info)
+        self.llm = FactualLLMClient(config.llm_server_info, config.sampling_params)
+        self.rerank_n_documents = config.n_documents
 
     async def __call__(self, claim: str, cited_papers: Dict[str, Any]) -> Dict[str, List]:
         """
@@ -95,12 +91,10 @@ class SynthesisCorrectnessCritic:
         # 2. Select related paragraphs from each evidence
         # TODO: cited_split是个dict，要如何变成list？
         parameters = {"query": claim, "documents": cited_split, "top_n": self.rerank_n_documents}
-        with RateLimit.AGENT_SEMAPHORE:
-            rerank_results = await self.reranker.call("rerank", **parameters, return_documents=True)
-            # 3. Judge
-            message = SYNTHESIS_CORRECTNESS_PROMPT.format(claim=claim, text="\n\n".join(rerank_results))
-            result = await self.llm.call(messages=message)
-        inputs = {"claim": claim, "cited_papers": cited_split}
+        rerank_results = await self.reranker.call("rerank", **parameters, return_documents=True)
+        # 3. Judge            
+        result = await self.llm.call(inputs={"claim": claim, "text": "\n\n".join(rerank_results)})
+        inputs = {"claim": claim, "documents": cited_split}
         if result == "supported": inputs['result'] = "SUPPORTED"
         elif result == "refuted": inputs['result'] = "REFUTED"
         else: inputs['result'] = "NEUTRAL"

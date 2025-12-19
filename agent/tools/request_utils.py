@@ -47,7 +47,7 @@ GROBID_URL = "https://localhost:8070"
 class RateLimit:
     OPENALEX_SEMAPHORE = asyncio.Semaphore(20)              # 搜索 API
     AGENT_SEMAPHORE = asyncio.Semaphore(100)                # LLM
-    SBERT_SEMAPHORE = asyncio.Semaphore(50)                 # LLM
+    SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(50)                 # GROBID docker镜像本地解析
 
 
@@ -58,7 +58,7 @@ class SessionManager:
     async def init(cls):
         """进入上下文时调用"""
         if cls._global_session is None:
-            connector = aiohttp.TCPConnector(limit=250, limit_per_host=100, ttl_dns_cache=300)
+            connector = aiohttp.TCPConnector(limit=200, limit_per_host=100, ttl_dns_cache=300)
             cls._global_session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=aiohttp.ClientTimeout(total=60)
@@ -152,6 +152,8 @@ def llm_should_retry(exception: BaseException) -> bool:
 
 class AsyncLLMClient(ABC):
 
+    PROMPT: str = ""
+
     def __init__(
             self, 
             llm: LLMServerInfo, 
@@ -163,6 +165,9 @@ class AsyncLLMClient(ABC):
     @abstractmethod
     def _availability(self, response):
         raise NotImplementedError
+    
+    def _organize_inputs(self, inputs: dict):
+        return self.PROMPT.format(**inputs)
 
     @retry(
         stop=stop_after_attempt(5),
@@ -176,7 +181,9 @@ class AsyncLLMClient(ABC):
         if endpoint == "chat/completions":
             payload.update(self.sampling_params)
             if "messages" not in kwargs:
-                raise ValueError("Must have messages for chat/completions")
+                if "inputs" not in kwargs:
+                    raise AttributeError("Must have messages or inputs for chat/completions")
+                kwargs['messages'] = self._organize_inputs(kwargs['inputs'])
             messages = kwargs['messages']
             if isinstance(messages, str):
                 messages = [{'role': 'user', "content": messages}]
@@ -185,8 +192,13 @@ class AsyncLLMClient(ABC):
         payload.update({k: v for k, v in kwargs.items() if k not in ["context", 'messages']})  
 
         url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
-        data = await async_request_template("post", url, headers, payload)
-        # content = data["choices"][0]["message"]["content"]
+        async with RateLimit.AGENT_SEMAPHORE:
+            data = await async_request_template("post", url, headers, payload)
+        
+        if not data: return
+        if endpoint == "chat/completions":
+            data = data["choices"][0]["message"]["content"]
+
         return self._availability(data)
     
 

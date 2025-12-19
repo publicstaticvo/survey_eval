@@ -26,10 +26,9 @@ class ClaimSegmentationLLMClient(AsyncLLMClient):
             # 默认为FULL_TEXT
             else: claim['requires'][x] = 0
         return claim
-
-    async def format_and_call(self, inputs):
-        message = self.PROMPT.format(text=inputs['text'], range=inputs['range'])
-        return await self.call(messages=message, citations=input['citations'])
+    
+    def _organize_inputs(self, inputs):
+        return self.PROMPT.format(text=inputs['text'], range=inputs['range'])
 
 
 class ClaimSegmentation:
@@ -41,19 +40,20 @@ class ClaimSegmentation:
         # 第一步：分割成段落
         paragraphs = split_content_to_paragraph(paper_content)
         # 第二步：提取段落中的引用及句子
-        citations = []
+        tasks = []
         for p in paragraphs:
             p_text = " ".join(s['text'] for s in p)
             for s in p: 
                 inputs = {"text": s['text'], "citations": s['citations'], "range": p_text}
-                citations.append(asyncio.create_task(self.llm.format_and_call(inputs)))
+                tasks.append(asyncio.create_task(self.llm.call(inputs=inputs, citations=input['citations'])))
         # 第三步：并行调用
-        results = await asyncio.gather(*citations, return_exceptions=True)
         claims = []
         count = 0
-        for x in results:
-            if isinstance(x, BaseException):
+        for task in asyncio.as_completed(tasks):
+            try:
+                x = await task
+                if isinstance(x, dict): claims.append(x)
+                else: count += 1
+            except Exception as e:
                 count += 1
-            elif isinstance(x, dict):
-                claims.append(x)
         return {"claims": claims, "errors": count}
