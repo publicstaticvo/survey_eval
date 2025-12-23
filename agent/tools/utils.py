@@ -46,6 +46,20 @@ def extract_json(text: str) -> dict:
         return json.loads(candidate)
     except Exception:
         return {}
+    
+
+def clean_token(text: str) -> str:
+    text = text.replace("\\", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    punct = r"\":.,!?&'()[]{}"
+    head_tail_pat = re.compile(f'^[{re.escape(punct)}]+|[{re.escape(punct)}]+$')
+    inner_pat = re.compile(f'[{re.escape(punct)}]')
+    cleaned_tokens = []
+    for t in text.split():
+        t = head_tail_pat.sub('', t)
+        if inner_pat.search(t): continue
+        if t: cleaned_tokens.append(t)
+    return ' '.join(cleaned_tokens)
 
 
 def index_to_abstract(indexes: dict | None):
@@ -58,13 +72,13 @@ def index_to_abstract(indexes: dict | None):
     return " ".join(abstract)
 
 
-def valid_check(query: str, target: str) -> bool:
+def valid_check(query: str, target: str, ratio: float = 0.1) -> bool:
     if not target: return False
     query = normalize_text(query)
     target = normalize_text(target)
     if query in target: return True
     distance = Levenshtein.distance(query, target)
-    return distance <= 0.1 * len(query)
+    return distance <= ratio * len(query)
 
 
 def split_content_to_paragraph(content: dict | list):

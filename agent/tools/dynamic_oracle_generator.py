@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor as TPE
 
 from .request_utils import AsyncLLMClient, openalex_search_paper, URL_DOMAIN, RateLimit
 from .prompts import SUBTOPIC_GENERATION_PROMPT, QUERY_EXPANSION_PROMPT
-from .sbert_client import SentenceTransformerClient
 from .utils import index_to_abstract, extract_json
+from .sbert_client import SentenceTransformerClient
 from .tool_config import ToolConfig
 
 
@@ -26,8 +26,8 @@ class SubtopicLLMClient(AsyncLLMClient):
 class QueryExpansionLLMClient(AsyncLLMClient):
     PROMPT: str = QUERY_EXPANSION_PROMPT
     def _availability(self, response):
-        queries = extract_json(response)
-        return [re.sub(r"[:.,!?&]", "", query) for query in queries['queries']]
+        queries = extract_json(response)        
+        return queries['queries']
 
 
 class DynamicOracleGenerator:
@@ -101,7 +101,7 @@ class DynamicOracleGenerator:
                 previous_length = len(oracle)
         return query, oracle, oracle_ids
     
-    async def _get_high_corefs(self, threshold: float = 0.15):
+    async def _get_high_corefs(self, threshold: float = 0.1):
         corefs = {}
         for x in self.library.values():
             for y in x['referenced_works']:
@@ -118,7 +118,10 @@ class DynamicOracleGenerator:
         
         async def get_paper_by_workid(work_id):
             async with RateLimit.OPENALEX_SEMAPHORE:
-                x = await openalex_search_paper(f"works/{work_id}")
+                try:
+                    x = await openalex_search_paper(f"works/{work_id}")
+                except Exception as e:
+                    x = None
 
             if not x: return
             x['id'] = x['id'].replace(URL_DOMAIN, "")
@@ -130,7 +133,7 @@ class DynamicOracleGenerator:
             return x
         
         new_oracles = {}
-        tasks = [asyncio.create_task(get_paper_by_workid(x)) for x in high_corefs and x not in self.library]
+        tasks = [asyncio.create_task(get_paper_by_workid(x)) for x in high_corefs if x not in self.library]
         for task in asyncio.as_completed(tasks):
             x = await task
             if not x: continue
@@ -199,7 +202,7 @@ class DynamicOracleGenerator:
         embeddings = self.sentence_transformer.embed(sentences)
         cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
         for paper_id, score in zip(self.oracle, cosine_scores):
-            self.oracle[paper_id]["feature"][1] = score
+            self.oracle[paper_id]["features"][0] = score
 
     def _cluster_with_bertopic(self):
         paper_titles = [x['display_name'] for x in self.oracle.values()]
@@ -239,24 +242,30 @@ class DynamicOracleGenerator:
             for i, v in zip(remain_idx, add): result[i] += v
             return result
             
-        prev_queries = []
+        prev_queries, oracles = [], []
+        papers_for_each_query = 100
         while len(self.oracle) < self.num_oracle_papers:
             # 1. fetch 5 queries
-            queries = await self.query_llm.call(inputs={"query": query, "prev_queries": prev_queries})
+            inputs = {"query": query, "prev_query": ("".join([f"\n   - {q}" for q in prev_queries[1:]])) if prev_queries else "No"}
+            try:
+                queries = await self.query_llm.call(inputs=inputs)
+            except Exception as e:
+                queries = []
+            if not prev_queries: queries = [query] + queries
             if not (queries := [q for q in queries if q not in prev_queries]): continue
-            prev_queries.extend(queries)
             # 2 request papers
-            tasks = [self._request_for_papers(q, self.num_oracle_papers) for q in queries]
+            tasks = [self._request_for_papers(q, papers_for_each_query) for q in queries]
             for task in asyncio.as_completed(tasks):
                 try:
-                    query, oracle, oracle_ids = await task
+                    query, oracle = await task
                     if oracle:
-                        self.register_key[query] = oracle_ids
+                        prev_queries.append(query)
+                        oracles.append(oracle)  # oracles中的顺序应该与prev_queries中的query一一对应
                         for k in oracle:
-                            if k not in self.library:
-                                self.library[k] = oracle[k]
-                except:
-                    pass
+                            if k['id'] not in self.library:
+                                self.library[k['id']] = k
+                except Exception as e:
+                    logging.info(f"Query {query} has an {e}")  
             # 3 get high_refs
             high_refs = await self._get_high_corefs()
             self.library.update(high_refs)
@@ -290,14 +299,14 @@ class DynamicOracleGenerator:
         # 2.3 local citation count == local_prestige && 2.4 local pagerank
         citation_graph = self._local_citation_and_pagerank()
         # regularization
-        max_citation_count = math.log(1 + max(x['features'][1] for x in self.oracle.values()))
-        max_local_citation_count = math.log(1 + max(x['features'][2] for x in self.oracle.values()))
+        max_citation_count = math.log1p(max(x['features'][1] for x in self.oracle.values()))
+        max_local_citation_count = math.log1p(max(x['features'][2] for x in self.oracle.values()))
         for x in self.oracle.values():
             if max_citation_count > 0:
-                x['features'][1] = math.log(1 + x['features'][1]) / max_citation_count
+                x['features'][1] = math.log1p(x['features'][1]) / max_citation_count
             if max_local_citation_count > 0:
-                x['features'][2] = math.log(1 + x['features'][2]) / max_local_citation_count
-            x['features'][4] = x['features'][1] / math.log(1 + self._paper_age(x))
+                x['features'][2] = math.log1p(x['features'][2]) / max_local_citation_count
+            x['features'][4] = x['features'][1] / math.log1p(self._paper_age(x))
         # 3. Get subtopics
         logging.info(f"DynamicOracleGenerator::Get subtopics")
         # 3.1 Cluster with BERTopic

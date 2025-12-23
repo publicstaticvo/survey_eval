@@ -3,26 +3,33 @@ import os
 import math
 import json
 import tqdm
+import logging
 import asyncio
 import aiofiles
 import itertools
-import numpy as np
 import networkx as nx
 from datetime import datetime
-from sentence_transformers import util
-from typing import Dict, List, Optional, Any
-from concurrent.futures import ThreadPoolExecutor as TPE
-from sklearn.feature_extraction.text import CountVectorizer
+from typing import Dict, List, Any
+from sentence_transformers.util import cos_sim
+from dateutil.relativedelta import relativedelta
 
+from tools.to_openalex import to_openalex
 from tools.tool_config import LLMServerInfo
-from tools.utils import index_to_abstract, valid_check
+from tools.utils import valid_check, clean_token
 from tools.sbert_client import SentenceTransformerClient
 from tools.dynamic_oracle_generator import QueryExpansionLLMClient
-from tools.request_utils import openalex_search_paper, URL_DOMAIN, SessionManager
+from tools.request_utils import openalex_search_paper, OPENALEX_SELECT, SessionManager
 
 
-RATELIMIT = asyncio.Semaphore(10)
+debug = False
+output = "tests.jsonl" if debug else "final.jsonl"
+logging.basicConfig(
+    filename="test.log" if debug else "feature.log", 
+    level=logging.INFO, 
+    format="%(asctime)s-%(levelname)s-%(message)s",
+)
 FILELOCK = asyncio.Lock()
+TASK_LEVEL_SEMAPHORE = asyncio.Semaphore(7)
 
 with open("/data/tsyu/api_key.json") as f: json_key = json.load(f)
 key = {}
@@ -32,55 +39,19 @@ for k in ['cstcloud', 'deepseek']:
 
 model = "gpt-oss-120b"
 llm_info = LLMServerInfo(base_url=key[model]['base_url'], api_key=key[model]['api_key'], model=model)
-st = SentenceTransformerClient("http://localhost:8030/encode", 32)
+st = SentenceTransformerClient("http://172.18.36.90:8030/encode", 32)
 
 
-def normalize(a: np.ndarray) -> np.ndarray:
-    norm = np.sum(a * a)
-    if norm == 0: return a
-    return a / np.sqrt(norm)
-
-
-def cos_sim(a: np.ndarray, b: np.ndarray) -> float:
-    b = normalize(b)
-    return float(np.sum(a * b))
-
-
-def get_metadata(paper: Dict[str, Any]):
-    # The following information to get:
-    return {
-        "id": paper['id'].replace(URL_DOMAIN, ""),
-        "ids": paper['ids'],
-        "title": paper['display_name'],
-        "locations": [x['source'] for x in paper['locations']],
-        "cited_by_count": paper['cited_by_count'],
-        "counts_by_year": paper['counts_by_year'],
-        "publication_date": paper['publication_date'],
-        "referenced_works": [x.replace(URL_DOMAIN, "") for x in paper['referenced_works']]
-    }
-
-
-async def search_paper_from_api(paper_title: str) -> Dict[str, Any]:
-    on_target = None
+async def search_paper_from_api(paper_title: str) -> tuple[str, dict]:
     try:
-        async with RATELIMIT:
-            results = await openalex_search_paper("works", {"default.search": paper_title}, add_email=False)
+        results = await openalex_search_paper("works", {"title.search": clean_token(paper_title)}, add_email=False)
     except Exception as e:
         return paper_title, str(e)
 
-    for paper_info in results.get("results", []):
-        if valid_check(paper_title, paper_info['display_name']): 
-            paper_info['id'] = paper_info['id'].replace(URL_DOMAIN, "")
-            on_target = paper_info
-            break
-        # else:
-        #     print(f"{paper_title}+{paper_info['display_name']}")
-    if not on_target: return paper_title, [x['title'] for x in results.get("results", [])], len(results.get("results", []))
-    return {
-        "metadata": get_metadata(on_target), 
-        "title": paper_title,
-        "abstract": index_to_abstract(on_target['abstract_inverted_index']),
-    }
+    for x in results['results']:
+        if valid_check(paper_title, x['title']): 
+            return paper_title, x
+    return paper_title, None
 
 
 class DynamicOracleGenerator:
@@ -95,13 +66,12 @@ class DynamicOracleGenerator:
         super().__init__(**kwargs)
         self.oracle = {}
         self.library = {}  # All papers searched by oracle
-        self.register_key = {"high_ref": []}  # register which paper belongs to which query
         self.negatives = {}
         self.hard_negatives = {}
         self.eval_date = eval_date
         self.num_oracle_papers = num_oracle_papers
         self.sentence_transformer = sentence_transformer
-        self.query_llm = QueryExpansionLLMClient(llm_info, {"temperature": 0.6, "max_tokens": 16384})
+        self.query_llm = QueryExpansionLLMClient(llm_info, {"temperature": 0, "max_tokens": 16384})
 
     def _citation_count_by_eval_date(self, paper: dict):
         """
@@ -120,128 +90,360 @@ class DynamicOracleGenerator:
         return citation_count
 
     def _paper_age(self, paper):
-        return (self.eval_date - datetime.strptime(paper['publication_date'], "%Y-%m-%d")).days + 1
+        year = int(self.eval_date.strftime("%Y-%m-%d")[:4]) - int(paper['publication_date'][:4])
+        assert year >= 0, (self.eval_date, paper['publication_date'])
+        return year + 1
 
-    async def _request_for_papers(self, query, uplimit):
+    async def _request_for_papers(self, query, uplimit) -> List[Dict[str, Any]]:
         filter_params = {
-            "default.search": query,
+            "default.search": to_openalex(query),
             "to_publication_date": self.eval_date.strftime("%Y-%m-%d"), 
         }
-        oracle, oracle_ids = {}, []
-        page, previous_length = 1, 0
-        async with RATELIMIT:
-            while len(self.oracle) < uplimit:
-                results = await openalex_search_paper("works", filter_params, per_page=200, page=page)
-                if not results:
-                    print(f"An network issue cause oracle data miss in query {query}.")
-                    break
-                for x in results['results']:
-                    x['id'] = x['id'].replace(URL_DOMAIN, "")
-                    if valid_check(self.target, x['display_name']): continue
-                    if (paper_id := x['id']) not in self.oracle and paper_id not in oracle:
-                        # abstract
-                        x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
-                        del x['abstract_inverted_index']
-                        # referenced_works
-                        x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
-                        # store
-                        oracle[paper_id] = x
-                        oracle_ids.append(paper_id)
-                    if len(oracle) == uplimit: break
-                # {"results": []} case
-                if len(oracle) == previous_length: break
-                page += 1 
-                previous_length = len(oracle)
-        return query, oracle, oracle_ids
+        select = f"{OPENALEX_SELECT},relevance_score"
+        oracle = []
+        # first query
+        for page in range(1, (uplimit - 1) // 200 + 2):
+            try:
+                results = await openalex_search_paper("works", filter_params, per_page=200, select=select, page=page)
+            except Exception as e:
+                logging.info(f"An {e} cause oracle data miss in query {query}.")
+                return []
+            uplimit = results['count']
+            oracle.extend(results['results'])
+
+        return oracle
     
-    async def _get_high_corefs(self, threshold: float = 0.15):
+    async def _get_high_refs(self, num_high_refs: int = 100) -> list:
         corefs = {}
         for x in self.library.values():
             for y in x['referenced_works']:
                 corefs[y] = corefs.get(y, 0) + 1
 
-        # get information of high co-citations
-        threshold = int(threshold * len(self.library))
-        high_corefs = [x for x, y in corefs.items() if y >= threshold]
-        for x in high_corefs:
-            if x in self.library: self.register_key['high_ref'].append(x['id'])
-        high_corefs = set(high_corefs)
-        for q in self.register_key:
-            self.register_key[q] = [x for x in self.register_key[q] if x not in high_corefs]
-        print(f"We found {len(self.register_key['high_ref'])} high cited papers in library.")
+        # get information of top local-cited papers
+        new_oracles = []
+        high_refs = sorted(list(corefs.items()), key=lambda x: x[1], reverse=True)[:num_high_refs]
+        high_refs_to_search = set()
+        for x, _ in high_refs:
+            if x in self.library: 
+                self.library[x]['query'] = 'high+ref'
+                new_oracles.append(x)
+            else:
+                high_refs_to_search.add(x)
+        if debug:
+            logging.info(f"{len(new_oracles)} high_refs already collected and {len(high_refs_to_search)} high_refs to be requested")
         
-        async def get_paper_by_workid(work_id):
-            async with RATELIMIT:
-                x = await openalex_search_paper(f"works/{work_id}")
-
-            if not x: return
-            x['id'] = x['id'].replace(URL_DOMAIN, "")
-            # abstract
-            x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
-            del x['abstract_inverted_index']
-            # referenced_works
-            x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
-            return x
-        
-        new_oracles = {}
-        tasks = [asyncio.create_task(get_paper_by_workid(x)) for x in high_corefs and x not in self.library]
-        for task in asyncio.as_completed(tasks):
-            x = await task
-            if not x or valid_check(self.target, x['display_name']): continue
-            new_oracles[x['id']] = x
-            self.register_key['high_ref'].append(x['id'])
-        print(f"We added {len(self.register_key['high_ref'])} high cited papers.")
+        if high_refs_to_search:
+            try:
+                results = await openalex_search_paper("works", filter={"openalex": "|".join(high_refs_to_search)}, per_page=200)
+                for x in results['results']:
+                    if valid_check(self.target, x['title']): continue
+                    if not x['publication_date'] or self.eval_date.strftime("%Y-%M-%d") < x['publication_date']: continue
+                    x['query'] = 'high+ref'
+                    self.library[x['id']] = x    
+                    new_oracles.append(x['id'])                
+            except Exception as e:
+                logging.error(f"get_high_refs {e}")
         return new_oracles
+    
+    async def _get_neighbors(self, prev_queries: List[str], query: str, num_top_seeds: int, batch_size: int = 50) -> list:
+
+        async def _get_cites(work_ids, keyword, cited_by_threshold: int = 0) -> dict:
+            paper_count = -1
+            filters = {keyword: '|'.join(work_ids), "to_publication_date": self.eval_date.strftime("%Y-%m-%d")}
+            if cited_by_threshold > 0:
+                filters['cited_by_count'] = f">{cited_by_threshold}"
+            papers = {}
+            for page in range(1, 51):
+                try:                  
+                    results = await openalex_search_paper("works", filters, per_page=200, page=page, sort="cited_by_count")
+                    if paper_count == -1: paper_count = results['count']
+                    for x in results['results']:
+                        if valid_check(self.target, x['title']): continue
+                        papers[x['id']] = x
+                except Exception as e:
+                    logging.info(f"_request_papers {e}") 
+                if paper_count >= 0 and page * 200 >= paper_count: break
+            return papers
+            
+        # 1. 用self.register_key选出每个子领域的TOP论文; 用相似性选出跟query最像的论文
+        paper_ids, sentences = [], []
+        for q in prev_queries:
+            for x, _ in self.register_key[q]:
+                paper_ids.append(x)
+                x = self.library[x]
+                title = x['title']
+                abstract = x.get("abstract", None)
+                sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
+        sentences.append(query)
+        if len(sentences) > num_top_seeds:
+            embeddings = self.sentence_transformer.embed(sentences)
+            cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
+            top_papers = sorted([(i, s) for i, s in zip(paper_ids, cosine_scores)], key=lambda x: x[1], reverse=True)[:num_top_seeds]
+            top_papers = [x for x, _ in top_papers]
+        else:
+            top_papers = paper_ids
+        # 2. 获取他们的邻居的metadata
+        if debug:
+            logging.info(f"query {query.lower()} Top papers {len(top_papers)}")
+        # as_batch
+        citation_hub = {}
+        for i in range(0, len(top_papers), batch_size):
+            citation_hub |= await _get_cites(top_papers[i:i + batch_size], "cites", 10)
+            citation_hub |= await _get_cites(top_papers[i:i + batch_size], "cited_by", 10)
+        if debug:
+            logging.info(f"query {query.lower()} Get {len(citation_hub)} neighbors.")
+
+        # 3. 统计同时出现在多个metadata的论文。由于batch请求自带去重，所以要手动计算。
+        neighbors_count = {}
+        top_papers = set(top_papers)
+        # 对应cited_by：top_papers -> citation_hub
+        for x in top_papers:
+            for y in self.library[x]['referenced_works']:
+                if y in citation_hub:
+                    neighbors_count[y] = neighbors_count.get(y, 0) + 1
+        # 对应cites：citation_hub -> top_papers
+        for pid, x in citation_hub.items():
+            for y in x['referenced_works']:
+                if y in top_papers:
+                    neighbors_count[pid] = neighbors_count.get(pid, 0) + 1
+        
+        # --- CRITICAL FIX STARTS HERE ---        
+        # Separate neighbors into "High Confidence" (Co-cited) and "Long Tail" (Single citation)
+        high_confidence, longtail_ids = [], []
+        
+        for x, count in neighbors_count.items():
+            if count >= 2:
+                # Structural Priority: These are connected to multiple seeds.
+                # Boost score significantly so they appear at the top.
+                score = count * 100 + math.log1p(self._citation_count_by_eval_date(citation_hub[x]))
+                high_confidence.append((x, score))
+                if debug: citation_hub[x]['score'] = score
+            else:
+                longtail_ids.append(x)
+            if debug: citation_hub[x]['neighbors_count'] = count
+        
+        high_confidence.sort(key=lambda x: x[1], reverse=True)
+        final_results = []
+        # Filter existing library
+        for x, _ in high_confidence:
+            if x not in self.library:
+                self.library[x] = citation_hub[x]
+            final_results.append(x)
+
+        # if not enough, process long tails
+        longtail_results, sentences = [], []
+        for paper_id in longtail_ids:
+            x = citation_hub[paper_id]
+            title = x['title']
+            abstract = x.get("abstract", None)
+            sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
+
+        if sentences:
+            sentences.append(query)
+            embeddings = self.sentence_transformer.embed(sentences)
+            cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
+            for x, sim in zip(longtail_ids, cosine_scores):
+                global_cites = math.log1p(self._citation_count_by_eval_date(citation_hub[x]))
+                final_score = (sim * 10) + (global_cites * 0.1) 
+                longtail_results.append((x, final_score))
+                if debug:
+                    citation_hub[x]['sim'] = sim
+                    citation_hub[x]['score'] = final_score
+    
+        longtail_results.sort(key=lambda x: x[1], reverse=True)
+        for x, _ in longtail_results:
+            if x not in self.library:
+                self.library[x] = citation_hub[x]
+            final_results.append(x)
+
+        if debug:
+            logging.info(f"query {query.lower()} Neighbors: {len(high_confidence)} co-cited, {len(longtail_results)} semantic rescue.")
+        
+        return final_results
+
+    async def _collect_oracles(self, query: str):
+        """
+            Get self.num_oracle_papers selected queries. 
+        """
+        targets = {"high_ref": 50, "top_seed": 50, "total": self.num_oracle_papers}
+        prev_queries, oracles = [], []  # 以便后面按顺序取
+        prev_length = 0
+        papers_for_each_query = 50
+        while len(self.oracle) < self.num_oracle_papers:
+            self.register_key = {}  # register which paper belongs to which query
+            # 1. fetch 5 queries
+            inputs = {"query": query, "prev_query": ("".join([f"\n   - {q}" for q in prev_queries[1:]])) if prev_queries else "No"}
+            try:
+                queries = await self.query_llm.call(inputs=inputs)
+            except Exception as e:
+                logging.info(f"QueryExpansion {e}")
+                queries = []
+            if not prev_queries: queries = [query] + queries
+            logging.info(f"Get {len(queries)} queries: {queries}")
+            if not (queries := [q for q in queries if q not in prev_queries]): continue
+            # 2 request papers 要串行
+            for q in queries:                
+                try:
+                    oracle = await self._request_for_papers(q, papers_for_each_query)
+                    if oracle:
+                        prev_queries.append(q)
+                        oracles.append(oracle)  # oracles中的顺序应该与prev_queries中的query一一对应
+                        for k in oracle:
+                            if k['id'] not in self.library:
+                                self.library[k['id']] = k
+                except Exception as e:
+                    logging.info(f"Query {q} has an {e}")
+            # register paper to query
+            register_key_reverse_map = {}
+            for q, oracle in zip(prev_queries, oracles):
+                for x in oracle:
+                    if x['id'] in register_key_reverse_map:
+                        # compare openalex relevance score to decide which query it belongs to
+                        if x['relevance_score'] > register_key_reverse_map[x['id']]['relevance']:
+                            register_key_reverse_map[x['id']]['query'] = q
+                            register_key_reverse_map[x['id']]['relevance'] = x['relevance_score']
+                    else:
+                        # new paper
+                        register_key_reverse_map[x['id']] = {'query': q, "relevance": x['relevance_score']}
+            for q in prev_queries: self.register_key[q] = []
+            for i, x in register_key_reverse_map.items():
+                self.register_key[x['query']].append((i, x['relevance']))
+            for q in prev_queries: 
+                self.register_key[q] = sorted(self.register_key[q], key=lambda x: x[1], reverse=True)  
+            if debug: 
+                stat = {q: len(v) for q, v in self.register_key.items()}
+                logging.info(f"query {query.lower()} Get papers distribution: {stat}, library_size: {len(self.library)}")
+            # 3 get neighbors
+            neighbors = await self._get_neighbors(prev_queries, query, targets['top_seed'])
+            # 4 get high_ref foundations
+            high_refs = await self._get_high_refs(targets['high_ref'])
+            if debug:
+                logging.info(f"query {query.lower()} Has {len(self.library)} papers in library.")    
+            # 5 先检查这一轮一共找到多少不重复文献。若数量足够就组装并返回，否则重新循环。
+            if len(self.library) >= self.num_oracle_papers:
+                # 5.1 先选择high_corefs。
+                selected = set(high_refs)
+                if debug:
+                    logging.info(f"query {query.lower()} Has {len(selected)} high_refs")
+
+                # 5.2 queries_per_paper降到50后，可以直接包括所有搜到的论文。
+                for q in self.register_key:
+                    for x, _ in self.register_key[q]:
+                        if x not in selected:
+                            selected.add(x)
+                            self.library[x]['query'] = q
+
+                # 5.3 最后用neighbors填满。
+                remain_target = self.num_oracle_papers - len(selected)
+                if debug:
+                    logging.info(f"query {query.lower()} Has {remain_target} papers remain")
+                
+                # 处理特殊的情况：邻居太少，query papers太多，常见于remain target先变成了负数的情况。
+                if 2 * remain_target < self.num_oracle_papers - len(high_refs):
+                    # 此时，令query和neighbors各占一半。做法是大重排。
+                    max_num_neighbors = max(remain_target, 0) + len([x for x in neighbors if x not in selected])  # 一共可以有这么多neighbors
+                    max_num_queries = self.num_oracle_papers - len(high_refs) - remain_target
+                    num_neighbors = num_queries = (self.num_oracle_papers - len(high_refs)) // 2
+                    if num_neighbors + num_queries + len(high_refs) != self.num_oracle_papers:
+                        num_neighbors += 1
+                    if max_num_neighbors < num_neighbors:
+                        num_queries += (num_neighbors - max_num_neighbors)
+                        num_neighbors = max_num_neighbors
+                    elif max_num_queries < num_queries:
+                        num_neighbors += (num_queries - max_num_queries)
+                        num_queries = max_num_queries
+                    
+                    # 按照顺序先queries后neighbors
+                    if num_queries + len(high_refs) < len(selected):
+                        selected = set(high_refs)
+                        paper_ids, sentences = [], []
+                        for q in self.register_key:
+                            for x, _ in self.register_key[q]:
+                                if x not in selected:
+                                    paper_ids.append(x)
+                                    title = self.library[x]['title']
+                                    abstract = self.library[x].get("abstract", None)
+                                    sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
+                        sentences.append(query)
+                        embeddings = self.sentence_transformer.embed(sentences)
+                        cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
+                        sorted_query_papers = sorted(zip(paper_ids, cosine_scores), key=lambda x: x[1], reverse=True)
+                        selected.update(x for x, _ in sorted_query_papers[:num_queries])
+
+                    for x in neighbors:
+                        if num_neighbors <= 0: break
+                        if x not in selected:
+                            selected.add(x)
+                            num_neighbors -= 1
+                            self.library[x]['query'] = "co+neighbor"
+                else:
+                    # 不需要修改query论文的数量。
+                    for x in neighbors:
+                        if remain_target <= 0: break
+                        if x not in selected:
+                            selected.add(x)
+                            remain_target -= 1
+                            self.library[x]['query'] = "co+neighbor"
+                    
+                for x in selected:
+                    self.oracle[x] = self.library[x]
+                assert len(self.oracle) == self.num_oracle_papers, (len(self.oracle), self.num_oracle_papers)
+            if prev_length == len(self.library): 
+                raise ValueError("No new papers. Perhaps you hit the OpenAlex rate limit.")
+            prev_length = len(self.library)
     
     async def _negative_sampling(self, number: int, margin_citation_count: int):
         # corefs by oracle paper
         corefs = set()
         for x in self.library.values():
-            corefs += set(x['referenced_works'])
-        # 2 kind of negative samples: 1. Easy negatives that has 0 local prestige
-        while len(self.negatives) < number:
-            async with RATELIMIT:
-                results = await openalex_search_paper(
-                    "works", 
-                    filter={"to_publication_date": self.eval_date.strftime("%Y-%m-%d")}, 
-                    do_sample=True, 
-                    per_page=200
-                )
-            for x in results.get('results', []):
-                if valid_check(self.target, x['display_name']): continue
-                x['id'] = x['id'].replace(URL_DOMAIN, "")
-                if all((paper_id := x['id']) not in y for y in [self.oracle, corefs, self.positive_ids, self.negatives]):
-                    x = get_metadata(x)
-                    # feature - no local prestige and pagerank
-                    x['features'] = [x['relevance_score'], 0, 0, 0, 0, 0]
-                    x['features'][2] = math.log(1 + self._citation_count_by_eval_date(x))
-                    # store
-                    self.negatives[paper_id] = x
-                    if len(self.negatives) == number: break
-            print(f"Get {len(self.negatives)} Easy Negatives")
-        # 2. Hard negatives with high global prestige but 0 relevancy
-        M = int(margin_citation_count * 1.5)
-        while len(self.hard_negatives) < number:
-            async with RATELIMIT:
+            corefs.update(x['referenced_works'])
+        # 2 kind of negative samples: 1. Hard negatives with high global prestige but 0 relevancy
+        M = margin_citation_count
+        if debug: logging.info(f"The margin citation count is {M} and we have {len(corefs)} references to avoid")
+        for i in range(50):
+            try:
                 results = await openalex_search_paper(
                     "works", 
                     filter={"cited_by_count": f">{M}", "to_publication_date": self.eval_date.strftime("%Y-%m-%d")}, 
                     do_sample=True, 
-                    per_page=200
+                    per_page=200,
                 )
-            for x in results.get('results', []):
-                if valid_check(self.target, x['display_name']): continue
-                x['id'] = x['id'].replace(URL_DOMAIN, "")
-                if all((paper_id := x['id']) not in y for y in [self.oracle, corefs, self.positive_ids, self.negatives, self.hard_negatives]):
-                    x = get_metadata(x)
+            except Exception as e:
+                logging.info(f"hard negatives {e}")
+                continue
+            for x in results['results']:
+                if valid_check(self.target, x['title']): continue
+                if all((paper_id := x['id']) not in y for y in [self.oracle, self.library, self.positive_ids, self.hard_negatives]):
                     # store
                     if (real_citation_count := self._citation_count_by_eval_date(x)) >= margin_citation_count:
                         # feature - no local prestige and pagerank
-                        x['features'] = [x['relevance_score'], 0, 0, 0, 0, 0]
-                        x['features'][2] = math.log(1 + real_citation_count)
+                        x['features'] = [0, 0, 0, 0, 0]
+                        x['features'][1] = math.log1p(real_citation_count)
                         self.hard_negatives[paper_id] = x
-                        if len(self.hard_negatives) == number: break
-            print(f"Get {len(self.hard_negatives)} Hard Negatives")
+            if debug: logging.info(f"Hard negative sampling round {i + 1} get {len(self.hard_negatives)} papers")
+            if len(self.hard_negatives) >= number: break
+        # 2. Easy negatives that has 0 local prestige
+        for i in range(50):
+            try:
+                results = await openalex_search_paper(
+                    "works", 
+                    filter={"to_publication_date": self.eval_date.strftime("%Y-%m-%d")}, 
+                    do_sample=True, 
+                    per_page=200,
+                )
+            except Exception as e:
+                logging.info(f"negatives {e}")
+                continue
+            for x in results.get('results', []):
+                if valid_check(self.target, x['title']): continue
+                if all((paper_id := x['id']) not in y for y in [self.oracle, self.library, self.positive_ids, self.negatives, self.hard_negatives]):
+                    # feature - no local prestige and pagerank
+                    x['features'] = [0, 0, 0, 0, 0]
+                    x['features'][1] = math.log1p(self._citation_count_by_eval_date(x))
+                    # store
+                    self.negatives[paper_id] = x
+            if debug: logging.info(f"Easy negative sampling round {i + 1} get {len(self.negatives)} papers")
+            if len(self.negatives) >= number: break
 
     def _local_citation_and_pagerank(self):
         """
@@ -298,36 +500,36 @@ class DynamicOracleGenerator:
         for paper_id in self.oracle:
             paper_ids.append(paper_id)
             x = self.oracle[paper_id]
-            title = x['display_name']
+            title = x['title']
             abstract = x.get("abstract", None)
             sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
 
         for paper_id in self.negatives:
-            paper_ids.append(paper_ids)
+            paper_ids.append(paper_id)
             x = self.negatives[paper_id]
-            title = x['display_name']
+            title = x['title']
             abstract = x.get("abstract", None)
             sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
 
         for paper_id in self.hard_negatives:
-            paper_ids.append(paper_ids)
+            paper_ids.append(paper_id)
             x = self.hard_negatives[paper_id]
-            title = x['display_name']
+            title = x['title']
             abstract = x.get("abstract", None)
             sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
 
         sentences.append(query)
         embeddings = self.sentence_transformer.embed(sentences)
-        cosine_scores = util.cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
+        cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
         for paper_id, score in zip(paper_ids, cosine_scores):
             if paper_id in self.oracle:
-                self.oracle[paper_id]["feature"][1] = score
+                self.oracle[paper_id]["features"][0] = score
             elif paper_id in self.negatives:
-                self.negatives[paper_id]["feature"][1] = score
+                self.negatives[paper_id]["features"][0] = score
             elif paper_id in self.hard_negatives:
-                self.hard_negatives[paper_id]["feature"][1] = score
+                self.hard_negatives[paper_id]["features"][0] = score
     
-    def _calculate_features_for_citations(self, citations: List[Dict[str, Any]], query: str):
+    def _calculate_features_for_citations(self, citations: List[Dict[str, Any]], query: str, normalize_params: List[float]):
         """
         The format of param citations is:
         [{
@@ -337,45 +539,43 @@ class DynamicOracleGenerator:
         }, ...]
         """
         # preparation
+        self.citation_graph = {k: set(v) for k, v in self.citation_graph.items()}
         num_oracles, num_citations = len(self.oracle), len(citations)
         self.topn = min(num_citations, num_oracles)
-        max_citations, max_local_citations = 0, 0
-        for x in self.oracle.values:
-            max_citations = max(max_citations, x['features'][1])
-            max_local_citations = max(max_local_citations, x['features'][2])
-        max_citations = math.log(1 + max_citations)
-        max_local_citations = math.log(1 + max_local_citations)
         not_oracle_papers, not_oracle_paper_abstract = [], []
         # normalization
         for i, citation in enumerate(citations):
-            metadata = citation['metadata']
-            j = metadata['id']
+            j = citation['id']
             if j in self.oracle: 
                 # The cited paper is in oracle papers
                 feature = self.oracle[j]['features']
+                citation['query'] = self.oracle[j]['query']
             else:
                 # Not in
                 feature = [0, 0, 0, 0, 0]
                 not_oracle_papers.append(i)
-                title = metadata['title'] if metadata['title'] else citation['title']
+                title = citation['title']
                 not_oracle_paper_abstract.append(f"{title}. {citation['abstract']}" if citation['abstract'] else title)
                 # feature 2: global citations
-                feature[1] = math.log(1 + self._citation_count_by_eval_date(metadata))
-                if max_citations > 0: feature[1] /= max_citations
+                feature[1] = math.log1p(self._citation_count_by_eval_date(citation))
+                if normalize_params['max_citations'] > 0: feature[1] /= normalize_params['max_citations']
                 # local co-citation: calcultate number of oracle papers cites this paper
                 # local_pagerank = average(pageranks of oracle papers cites this paper)
-                ids_set = set(metadata['id'])
-                for n in self.citation_graph:
-                    if set(ids_set) - set(self.citation_graph[n]):
+                for k in self.citation_graph:
+                    if j in self.citation_graph[k]:
                         feature[2] += 1
-                        feature[3] += self.oracle[n]['features'][4]
+                        feature[3] += self.oracle[k]['features'][3]
                 if feature[2] > 0: feature[3] /= feature[2]
-                feature[2] = math.log(1 + feature[2])
-                if max_local_citations > 0: feature[2] /= max_local_citations
+                feature[2] = math.log1p(feature[2])
+                if normalize_params['max_local_citations'] > 0: feature[2] /= normalize_params['max_local_citations']
                 # feature 5: 
-                feature[4] = feature[1] / math.log(1 + self._paper_age(metadata))
+                try:
+                    feature[4] = feature[1] / math.log1p(self._paper_age(citation))
+                except AssertionError:
+                    # 超时间的了
+                    citation['avail'] = False
             citation['features'] = feature
-        print(f"We have {len(not_oracle_papers)} not oracle references out of {num_citations} references")
+        logging.info(f"For query {query.lower()}, We have {len(not_oracle_papers)} not oracle references out of {num_citations} references")
 
         # embed together
         if not_oracle_papers:
@@ -384,106 +584,48 @@ class DynamicOracleGenerator:
             not_oracle_cossims = cos_sim(not_oracle_paper_embeddings[-1:], not_oracle_paper_embeddings[:-1])[0].tolist()
             for i, s in zip(not_oracle_papers, not_oracle_cossims):
                 citations[i]['features'][0] = s
+                citations[i]['query'] = None
         return citations
-    
-    async def _collect_oracles(self, query: str):
-        """
-            Get self.num_oracle_papers selected queries. 
-        """
-        def _average_cut(values: list, target: int):
-            min_size = min(values)
-            if min_size * len(values) >= target:
-                result = [target // len(values) for _ in values]
-                for i in range(target - sum(result)): result[i] += 1
-                return result
-            
-            result = [min_size for _ in values]
-            for i in range(len(values)): values[i] -= min_size
-            remain_idx = [i for i, l in values if l > 0]
-            values = [v for v in values if v > 0]
-            add = _average_cut(values, target - sum(result))
-            for i, v in zip(remain_idx, add): result[i] += v
-            return result
-            
-        prev_queries = []
-        while len(self.oracle) < self.num_oracle_papers:
-            # 1. fetch 5 queries
-            queries = await self.query_llm.call(inputs={"query": query, "prev_queries": ", ".join(prev_queries) if prev_queries else "No"})
-            if not prev_queries: queries.append(query)
-            if not (queries := [q for q in queries if q not in prev_queries]): continue
-            prev_queries.extend(queries)
-            print(f"Get {len(queries)} queries: {queries}")
-            # 2 request papers
-            tasks = [self._request_for_papers(q, self.num_oracle_papers) for q in queries]
-            for task in asyncio.as_completed(tasks):
-                try:
-                    query, oracle, oracle_ids = await task
-                    if oracle:
-                        self.register_key[query] = oracle_ids
-                        for k in oracle:
-                            if k not in self.library:
-                                self.library[k] = oracle[k]
-                    print(f"Get {len(self.library)} papers in library by query {query}")
-                except Exception as e:
-                    print(f"Query {query} has an {e}")              
-            # 3 get high_refs
-            high_refs = await self._get_high_corefs()
-            self.library.update(high_refs)
-            # 4 select oracle papers
-            if len(self.library) >= self.num_oracle_papers:
-                # fill in self.library
-                selected = self.register_key['high_ref']
-                print(f"The distribution of oracle paper is: high cited papers {len(selected)}", end=" ")
-                lengths = [len(self.register_key[q]) for q in prev_queries]
-                amount = _average_cut(lengths, self.num_oracle_papers - len(selected))
-                for q, a in zip(prev_queries, amount):
-                    selected.extend(self.register_key[q][:a])
-                    print(f"{a} papers from query {q}", end=" ")
-                print()
-                assert len(selected) == self.num_oracle_papers, (len(selected), self.num_oracle_papers)
     
     async def run(self, query: Dict[str, Any], metadata_map: Dict[str, Any]) -> dict:
         """
         metadata_map: title(re.sub) -> paper metadata
         """
-        print(f"DynamicOracleGenerator::Request for oracle paper with query {query['query']}")
         avail_references, citations = set(), []
         for x in query['references']:
-            x = re.sub(r"[:,.!?&]", "", x)
             if x in metadata_map and x not in avail_references:
                 avail_references.add(x)
                 citations.append(metadata_map[x])
-        print(f"Get {len(avail_references)} avail positive examples from total {len(query['references'])} references")
-        if not avail_references: return
+        if debug:
+            logging.info(f"query {query['query'].lower()} Get {len(avail_references)} avail positive examples")
+        if not avail_references: return []
         self.target = query['title']
-        self.positive_ids = [x['metadata']['id'] for x in citations]
-        
+        self.positive_ids = [x['id'] for x in citations]
+
         # 1. Request for papers
         await self._collect_oracles(query['query'])
         # 2. Get post-calculate features
-        print(f"DynamicOracleGenerator::Get features 1 3 4")
         # 2.1 sentence transformer cosine similarity
-        self._calculate_similarity(query['query'])
         for x in self.oracle.values():
             x['features'] = [0, 0, 0, 0, 0]
             x['features'][1] = self._citation_count_by_eval_date(x)
         # 2.3 local citation count == local_prestige && 2.4 local pagerank
         self._local_citation_and_pagerank()
-        print(f"DynamicOracleGenerator::Negative Sampling")
         # negative sampling
-        mid_citation_count = sorted([x['features'][1] for x in self.oracle.values()])[len(self.oracle) // 2]
-        await self._negative_sampling(len(avail_references), mid_citation_count)
+        await self._negative_sampling(len(avail_references), margin_citation_count=1000)
+        self._calculate_similarity(query['query'])
         # regularization
-        max_citation_count = math.log(1 + max(x['features'][1] for x in self.oracle.values()))
-        max_local_citation_count = math.log(1 + max(x['features'][2] for x in self.oracle.values()))
+        max_citation_count = math.log1p(max(x['features'][1] for x in self.oracle.values()))
+        max_local_citation_count = math.log1p(max(x['features'][2] for x in self.oracle.values()))
+        # z-score regularization
+        normalize_params = {"max_citations": max_citation_count, "max_local_citations": max_local_citation_count}
+        citations = self._calculate_features_for_citations(citations, query['query'], normalize_params)
         for x in itertools.chain(self.oracle.values(), self.negatives.values(), self.hard_negatives.values()):
             if max_citation_count > 0:
-                x['features'][1] = math.log(1 + x['features'][1]) / max_citation_count
+                x['features'][1] = math.log1p(x['features'][1]) / max_citation_count
             if max_local_citation_count > 0:
-                x['features'][2] = math.log(1 + x['features'][2]) / max_local_citation_count
-            x['features'][4] = x['features'][1] / math.log(1 + self._paper_age(x))
-        print("DynamicOracleGenerator::Calculate Citation Feature")  
-        citations = self._calculate_features_for_citations(citations, query['query'])
+                x['features'][2] = math.log1p(x['features'][2]) / max_local_citation_count
+            x['features'][4] = x['features'][1] / math.log1p(self._paper_age(x))
         return citations
 
 
@@ -491,6 +633,7 @@ def load_local(fn):
     with open(fn, "r+", encoding="utf-8") as f:
         d = [json.loads(line.strip()) for line in f if line.strip()]
     return d
+
 
 def print_json(d, fn):
     with open(fn, "w+", encoding="utf-8") as f:
@@ -515,7 +658,6 @@ async def get_metas():
         pending_jobs.extend([re.sub(r"[:,.!?&]", "", y) for y in x['references']])
     pending_jobs = list(set(x for x in pending_jobs if x not in metadata_map))
     tasks = [asyncio.create_task(search_paper_from_api(x)) for x in pending_jobs]
-    print(f"DynamicOracleGenerator::Get Citation Information {len(pending_jobs)}")
     for task in tqdm.tqdm(asyncio.as_completed(tasks)):
         try:
             info = await task
@@ -532,37 +674,138 @@ async def get_oracle(query, metadata_map):
         # The following information to get:
         return {
             "id": paper['id'],
-            "title": paper['display_name'],
+            "title": paper['title'],
             "cited_by_count": paper['cited_by_count'],
             "counts_by_year": paper['counts_by_year'],
             "publication_date": paper['publication_date'],
-            "features": paper['features'] if 'features' in paper else None
+            "query": paper.get('query', None),
+            "features": paper.get('features', None),
+            "neighbors": paper.get('neighbors_count', None),
+            "score": paper.get('score', None),
+            "sim": paper.get('sim', None),
         }
     
-    engine = DynamicOracleGenerator(1000, st, datetime.strptime(query['date'], "%Y-%m-%d"))
-    citations = await engine.run(query, metadata_map)
-    citations = [{"id": p['metadata']['id'], "title": p['title'], "features": p['features']} for p in citations]
+    engine = DynamicOracleGenerator(1000, st, datetime.strptime(query['date'], "%Y-%m-%d") + relativedelta(years=1))
+    async with TASK_LEVEL_SEMAPHORE:
+        citations = await engine.run(query, metadata_map)
+    citations = [{"id": p['id'], "title": p['title'], "features": p['features'], "query": p['query']} for p in citations]
     oracle = {k: _get_metadata(v) for k, v in engine.oracle.items()}
     negatives = {k: _get_metadata(v) for k, v in engine.negatives.items()}
     hard_negatives = {k: _get_metadata(v) for k, v in engine.hard_negatives.items()}
-    return {"citations": citations, "oracle": oracle, "easy_negatives": negatives, "hard_negatives": hard_negatives}
+    if debug:
+        database = {k: _get_metadata(v) for k, v in engine.library.items()}
+        return {"query": query['query'], 'title': query['title'], "citations": citations, "oracle": oracle, "database": database, "easy_negatives": negatives, "hard_negatives": hard_negatives}
+    return {"query": query['query'], 'title': query['title'], "citations": citations, "oracle": oracle, "easy_negatives": negatives, "hard_negatives": hard_negatives}
 
 
 async def main():
     try:
         await SessionManager.init()
         metadatas = load_local("metadata.jsonl")
-        metadata_map = {x['title']: x for x in metadatas}
-        queries = load_local("queries.jsonl")[:1]
+        metadata_map = {x['id']: x for x in metadatas}
+        queries = load_local("rests.jsonl")[2:1000]
         tasks = [asyncio.create_task(get_oracle(q, metadata_map)) for q in queries]
-        for task in asyncio.as_completed(tasks):
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks)):            
+            try:
+                result = await task
+                if result:
+                    async with FILELOCK:
+                        async with aiofiles.open(output, 'a+', encoding='utf-8') as f: 
+                            await f.write(json.dumps(result, ensure_ascii=False) + "\n")
+                else:
+                    logging.info("No result")
+            except asyncio.exceptions.CancelledError:
+                pass
+            except Exception as e:
+                logging.error(f"result error {e}")
+    finally:
+        await SessionManager.close()
+
+
+async def search_a_survey(query: dict):
+    _, survey_meta = await search_paper_from_api(clean_token(query['title']))
+    if not survey_meta: return query, "no match", None
+    if not survey_meta['referenced_works']: return query, "no ref", None
+    if not survey_meta['publication_date']: 
+        survey_meta['publication_date'] = query['date']
+        if not survey_meta['publication_date']: return query, "no date", None
+    # get reference information
+    batch_size = 100
+    tasks = []
+    for i in range(0, len(survey_meta['referenced_works']), batch_size):
+        batch = survey_meta['referenced_works'][i:i + batch_size]
+        task = openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=100)
+        tasks.append(asyncio.create_task(task))
+    logging.info(f"{len(survey_meta['referenced_works'])} golden references for survey {query['title']}")
+        
+    metadata = {}
+    for task in asyncio.as_completed(tasks):
+        try:
             result = await task
-            if result:
+        except Exception as e:
+            continue
+
+        for x in result['results']:
+            metadata[x['id']] = x
+
+    return query, survey_meta, metadata
+
+
+async def dataset_relabel():
+    metadatas = {}
+    try:
+        await SessionManager.init()
+        queries = load_local("rest.jsonl")
+        tasks = [asyncio.create_task(search_a_survey(x)) for x in queries]
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks)):
+            try:
+                query, survey, papers = await task
+                if isinstance(survey, dict):
+                    metadatas |= papers
+                    query['id'] = survey['id']
+                    query['date'] = survey['publication_date']
+                    query['references'] = survey['referenced_works']
+                    async with FILELOCK:
+                        async with aiofiles.open("requeries.jsonl", "a+") as f:
+                            await f.write(json.dumps(query, ensure_ascii=False) + "\n")
+                else:
+                    logging.error(f"{query['title']} {survey}")
+            except KeyError:
+                raise
+            except Exception as e:
+                logging.error(f"{e}")
+        logging.info(f"Collected {len(metadatas)} References")
+        print_json(list(metadatas.values()), "metadata.jsonl")
+    finally:
+        await SessionManager.close()
+
+
+async def get_redirect():   
+    try:
+        await SessionManager.init()
+        with open("rest.json") as f:
+            works = json.load(f)
+        tasks = []
+        for i in works:
+            task = openalex_search_paper(f"works/{i}")
+            tasks.append(asyncio.create_task(task))
+
+        redirect = {}
+        for work, task in tqdm.tqdm(zip(works, asyncio.as_completed(tasks)), total=len(tasks)):
+            try:
+                x = await task
+            except Exception as e:
+                logging.error(f"Get metadata {e}")
+                continue
+
+            if x:
+                redirect[work] = x['id']
                 async with FILELOCK:
-                    async with aiofiles.open("results.jsonl", 'a+', encoding='utf-8') as f: 
-                        await f.write(json.dumps(result, ensure_ascii=False) + "\n")
-            else:
-                print("No result")
+                    async with aiofiles.open("metadata1.jsonl", "a+") as f:
+                        await f.write(json.dumps(x, ensure_ascii=False) + "\n")
+        logging.info(f"We have {len(redirect)} redirects")
+        with open("redirect.json", "w+") as f:
+            json.dump(redirect, f, indent=2)
     finally:
         await SessionManager.close()
 
@@ -570,14 +813,16 @@ async def main():
 async def test():
     try:
         await SessionManager.init()
-        y = "Influence of Bisphenol A on Type 2 Diabetes Mellitus"
-        y = re.sub(r"[:,.!?&]", "", y)
-        print(y)
+        y = "Detecting and Managing Mental Health Issues within Young Adults. A Systematic Review on College Counselling in Italy"
+        logging.info(clean_token(y))
         results = await search_paper_from_api(y)
-        print(results)
+        logging.info(results)
     finally:
         await SessionManager.close()    
 
 
 if __name__ == "__main__":
+    # TODO: 删除所有外面的async with ratelimit，都放到openalex_search_paper中。
+    # TODO: 删除所有openalex_search_paper之后get_metadata的过程。
+    # TODO: pass normalized params to SourceCritic,传入oracle_data即可。
     asyncio.run(main())

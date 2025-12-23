@@ -10,14 +10,18 @@ from sklearn.preprocessing import StandardScaler
 # -------------------------------------------------
 np.random.seed(42)
 n_total = 1000
-n_pos = 400
-dim = 32
+n_groups = 200
+dim = 5
+per_group = 5
+group = np.array([per_group] * n_groups, dtype=np.int32)
 
-X = np.random.randn(n_total, dim)
+X = np.random.randn(n_groups, per_group, dim)
 # 简单构造：被引用论文在第一个维度上均值更大
-X[:n_pos, 0] += 2.0
-y = np.zeros(n_total, dtype=int)
-y[:n_pos] = 1
+X[:, 1, 0] += 2
+y = np.zeros((n_groups, per_group), dtype=int)
+y[:, 0] = 1
+X = X.reshape((n_total, dim))
+y = y.reshape((n_total,))
 
 df = pd.DataFrame(X, columns=[f'f{i}' for i in range(dim)])
 df['label'] = y
@@ -48,14 +52,13 @@ print('Pairwise 样本维度:', pair_matrix.shape)  # (1600, 64)
 # -------------------------------------------------
 X_pair = pair_matrix
 y_pair = np.ones(len(X_pair))  # 正例在前，负例在后，label 全 1
-X_tr, X_va, y_tr, y_va = train_test_split(X_pair, y_pair,
-                                            test_size=0.2, random_state=42)
+X_tr, X_va, y_tr, y_va = train_test_split(X_pair, y_pair, test_size=0.2, random_state=42)
 
 # -------------------------------------------------
 # 4. 训练 LambdaMART（LightGBM LambdaRank）
 # -------------------------------------------------
-def train_lambdamart():
-    train_data = lgb.Dataset(X_tr, label=y_tr)
+def train_lambdamart() -> lgb.Booster:
+    train_data = lgb.Dataset(X_tr, label=y_tr, group=group)
     valid_data = lgb.Dataset(X_va, label=y_va, reference=train_data)
 
     params = {
@@ -72,12 +75,12 @@ def train_lambdamart():
         train_data,
         valid_sets=[valid_data],
         num_boost_round=300,
-        early_stopping_rounds=20,
-        verbose_eval=10
+        callbacks=[lgb.early_stopping(20, verbose=True), lgb.log_evaluation(10)]
     )
     return model
 
 model = train_lambdamart()
+model.save_model("model.txt")
 
 # -------------------------------------------------
 # 5. 预测：对单篇论文打分

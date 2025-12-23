@@ -1,6 +1,7 @@
 import numpy as np
 import requests
 import logging
+import time
 
 
 class SentenceTransformerClient:
@@ -19,18 +20,22 @@ class SentenceTransformerClient:
             if verbose:
                 logging.info(f"Processing batch {i//self.batch_size + 1}/{(len(documents)-1)//self.batch_size + 1}")
             
-            try:
-                response = requests.post(
-                    self.api_url,
-                    json={"texts": batch, "normalize": True},
-                    headers={"Content-Type": "application/json"},
-                    timeout=60
-                )
-                response.raise_for_status()
-                batch_embeddings = response.json()
-                embeddings.extend(batch_embeddings)
-            except Exception as e:
-                logging.error(f"Error embedding batch: {e}")
-                raise
+            retry = 5
+            while retry:
+                try:
+                    response = requests.post(
+                        self.api_url,
+                        json={"texts": batch, "normalize": True},
+                        headers={"Content-Type": "application/json"},
+                        timeout=60
+                    )
+                    response.raise_for_status()
+                    batch_embeddings = response.json()
+                    embeddings.extend(batch_embeddings['embeddings'])
+                    break
+                except Exception as e:
+                    logging.error(f"Error embedding batch: {e}")
+                    time.sleep(5)
+                    retry -= 1
         
         return np.array(embeddings)

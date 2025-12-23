@@ -1,25 +1,41 @@
 QUERY_EXPANSION_PROMPT = '''You are a Senior Research Librarian specializing in Systematic Literature Reviews. 
-Your goal is to generate 5 distinct, high-recall search queries for the topic: "{query}"
+Your goal is to generate 4 distinct, high-recall search queries for the topic: "{query}"
 
 ### CONTEXT
 - **Goal**: We need to build a candidate pool of ~4000 papers to identify foundational "hubs" and specific research papers.
 - **Previous Attempts**: {prev_query}
 - **Constraint**: Do not repeat previous queries. If previous queries yielded low results, broaden the terminology (e.g., use "Deep Learning" instead of "ResNet50").
+- **Constraint**: Do not use wildcards ('*' or '?') in query, your search engine does not support them.
 
-### SEARCH INTENTS
-Each of the 5 queries must target a different perspective:
-1. **The Technical Core**: Precise technical terminology.
-2. **The Methodology/Intervention**: Focus on the "how" (algorithms, treatments, or tools).
-3. **The Condition/Context**: Focus on the "where/who" (application domain, specific patient groups, or environment).
-4. **The Broad Category**: Use hypernyms or parent fields to ensure we capture foundational "Adam/PyTorch" style papers.
-5. **The Synonym/Alternative**: Use alternative naming conventions (e.g., "transformer-based" vs "attention mechanisms").
+### SEARCH STRATEGY: "CORE + BRIDGES"
+Generate exactly 4 search queries to cover the topic's core evidence and its disconnected theoretical foundations.
+
+1. **The Core Anchor (2 Queries)**
+   - Target the intersection of the **Subject** AND the **Population/Context**.
+   - Use standard synonyms for both.
+   - **Goal:** Find the dense cluster of applied research papers.
+   - *Constraint:* MUST include both Subject and Population terms.
+
+2. **The Theoretical Bridge (1 Query)**
+   - Target the **Parent Discipline** or **Mechanism** that explains *why* the intervention works.
+   - **Goal:** Find broad theoretical papers (e.g., "Health Promotion," "Behavioral Theory") that may not mention the specific population.
+   - *Constraint:* You MAY drop the "Population" term. You MUST keep the "Subject" or "Parent Field" term.
+
+3. **The Methodological Bridge (1 Query)**
+   - Target the **Tools**, **Designs**, or **Evaluation Standards** used.
+   - **Goal:** Find protocols, validation studies, or general tools (e.g., "MMAT", "Consolidated Framework").
+   - *Constraint:* You MAY drop the "Subject" term if focusing on a tool used in this Population.
+
+### PROHIBITED:
+- Do NOT generate "Ghost Queries" that have NO anchor (e.g., just "Policy" AND "Evaluation").
+- Do NOT use specific publication years or "Recent".
 
 ### OUTPUT FORMAT
-Provide a JSON object with a brief strategy for the expansion and the 5 queries.
-{
-  "strategy": "Analysis of why previous queries failed and how these 5 will broaden the search.",
-  "queries": ["query 1", "query 2", "query 3", "query 4", "query 5"]
-}'''
+Provide a JSON object with a brief strategy for the expansion and the queries.
+{{
+  "strategy": "Analysis of why previous queries failed and how these queries will broaden the search.",
+  "queries": ["query 1", "query 2", "query 3", "query 4"]
+}}'''
 
 SUBTOPIC_GENERATION_PROMPT = '''
 You are an expert academic editor and research strategist. Your task is to define a set of distinct, non-overlapping subtopic names for a literature review, based on clusters of research papers.

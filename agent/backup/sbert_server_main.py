@@ -7,7 +7,6 @@ from typing import List, Union
 import uvicorn
 import numpy as np
 import os
-import sys
 
 # 全局加载模型（只加载一次）
 model = None
@@ -63,13 +62,6 @@ class SimilarityResponse(BaseModel):
     similarity: float
     text1: str
     text2: str
-
-
-# @app.on_event("startup")
-# async def load_model():
-#     print("正在加载模型...")
-#     model = SentenceTransformer('sentence-transformers/msmarco-MiniLM-L-12-v3')
-#     print("模型加载完成！")
 
 
 @app.get("/")

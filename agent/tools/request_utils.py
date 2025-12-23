@@ -1,7 +1,8 @@
 import io
 import json
 import random
-import asyncio, aiohttp, aiofiles
+import logging
+import asyncio, aiohttp
 from tenacity import (
     retry,
     stop_after_attempt,           # 最大重试次数
@@ -14,11 +15,12 @@ from abc import ABC, abstractmethod
 
 from .tool_config import LLMServerInfo
 from .paper_parser import PaperParser
+from .utils import index_to_abstract
 
-headers = {
+HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
 }
-email_pool = [
+EMAIL_POOL = [
     "dailyyulun@gmail.com",
     "fqpcvtjj@hotmail.com",
     "ts.yu@siat.ac.cn",
@@ -30,7 +32,6 @@ email_pool = [
     "lundufiles@163.com",
     "lundufiles123@163.com"
 ]
-parser = PaperParser()
 RETRY_EXCEPTION_TYPES = [
     aiohttp.ClientError, 
     asyncio.TimeoutError, 
@@ -39,15 +40,18 @@ RETRY_EXCEPTION_TYPES = [
     AssertionError,
     KeyError,
 ]
+OPENALEX_SELECT = 'id,cited_by_count,counts_by_year,referenced_works,publication_date,created_date,abstract_inverted_index,title'
 URL_DOMAIN = "https://openalex.org/"
 GROBID_URL = "https://localhost:8070"
+parser = PaperParser()
+with open("redirect.json") as f: redirect = json.load(f)
 
 
 # =============== Global Semaphore ===============
 class RateLimit:
-    OPENALEX_SEMAPHORE = asyncio.Semaphore(20)              # 搜索 API
+    OPENALEX_SEMAPHORE = asyncio.Semaphore(5)              # 搜索 API
     AGENT_SEMAPHORE = asyncio.Semaphore(100)                # LLM
-    SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
+    # SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(50)                 # GROBID docker镜像本地解析
 
 
@@ -80,18 +84,42 @@ class SessionManager:
 
 
 # =============== Openalex ===============
+
+
+class OpenAlexRedirect:
+
+    redirect_file: str = "redirect.json"
+    REDIRECT_LOCK = asyncio.Lock()
+    redirect: dict = {}
+
+    @classmethod
+    async def init(cls, redirect_file="redirect.json"):
+        async with cls.REDIRECT_LOCK:
+            with open(redirect_file) as f: cls.redirect = json.load(f)
+        cls.redirect_file = redirect_file
+
+    @classmethod
+    async def close(cls):
+        async with cls.REDIRECT_LOCK:
+            with open(cls.redirect_file, "w+") as f: json.dump(cls.redirect, f, indent=2)
+
+    @classmethod
+    async def get(cls, old, default=None):
+        async with cls.REDIRECT_LOCK:
+            return cls.redirect.get(old, default)
+
+    @classmethod
+    async def update(cls, old, new):
+        async with cls.REDIRECT_LOCK:
+            cls.redirect[old] = new
+
+
 def openalex_should_retry(exception: BaseException) -> bool:
     if any(isinstance(exception, x) for x in RETRY_EXCEPTION_TYPES): return True
     if isinstance(exception, aiohttp.ClientResponseError) and exception.status not in [400, 401, 403, 404]: return True
     return False
 
 
-@retry(
-    stop=stop_after_attempt(10),
-    wait=wait_exponential(multiplier=2, exp_base=2, min=1, max=30),
-    retry=retry_if_exception(openalex_should_retry),
-    reraise=True
-)
 async def async_request_template(
     method: str,
     url: str,
@@ -115,12 +143,19 @@ async def async_request_template(
             return await resp.json()
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, exp_base=2, min=1, max=10),
+    retry=retry_if_exception(openalex_should_retry),
+    reraise=True
+)
 async def openalex_search_paper(
         endpoint: str,
         filter: dict = None,
         do_sample: bool = False,
         per_page: int = 1,
         add_email: bool | str = True,
+        select: str = OPENALEX_SELECT,
         **request_kwargs
     ) -> dict:
     """使用 async_request_template，间接使用全局 session"""
@@ -136,11 +171,33 @@ async def openalex_search_paper(
         request_kwargs['sample'] = per_page
         request_kwargs['seed'] = random.randint(0, 32767)        
     if add_email:
-        request_kwargs['mailto'] = add_email if isinstance(add_email, str) else random.choice(email_pool)
+        request_kwargs['mailto'] = add_email if isinstance(add_email, str) else random.choice(EMAIL_POOL)
     if per_page > 25: 
         request_kwargs['per-page'] = per_page
+    if select: request_kwargs['select'] = select
     # Go!
-    return await async_request_template("get", url, headers, request_kwargs)
+    async with RateLimit.OPENALEX_SEMAPHORE:
+        results = await async_request_template("get", url, HEADERS, request_kwargs)
+    
+    if endpoint != "works": results = {"results": [results]}
+    papers = []
+    for x in results['results']:
+        x['id'] = x['id'].replace(URL_DOMAIN, "")
+        x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
+        if not x['publication_date']: x['publication_date'] = x['created_date']
+        del x['abstract_inverted_index'], x['created_date']
+        # referenced_works
+        x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
+        x['referenced_works'] = [redirect[y] if y in redirect else y for y in x['referenced_works']]
+        # new_references = []
+        # for y in x['referenced_works']:
+        #     y = y.replace(URL_DOMAIN, "")
+        #     async with OpenAlexRedirect.read_lock():
+        #         new_id = await OpenAlexRedirect.get(y)
+        #     new_references.append(new_id if new_id else y)
+        # x['referenced_works'] = new_references
+        papers.append(x)
+    return {"count": results['meta']['count'], "results": papers}
 
 
 # =============== LLM client ===============
@@ -172,10 +229,11 @@ class AsyncLLMClient(ABC):
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
-        retry=retry_if_exception(llm_should_retry) | retry_if_result(bool)
+        retry=retry_if_exception(llm_should_retry) | retry_if_result(lambda x: not x)
     )
     async def call(self, endpoint: str = "chat/completions", **kwargs) -> dict | None:
-        self._context = kwargs.get("context", None)
+        self._context = kwargs.get("context", {})
+        # if "inputs" in kwargs: self._context["inputs"] = kwargs["inputs"]
         payload = {"model": self.llm.model}
 
         if endpoint == "chat/completions":
@@ -188,12 +246,14 @@ class AsyncLLMClient(ABC):
             if isinstance(messages, str):
                 messages = [{'role': 'user', "content": messages}]
             payload['messages'] = messages
-
+        
         payload.update({k: v for k, v in kwargs.items() if k not in ["context", 'messages']})  
 
         url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
+        headers = {"Authorization": f"Bearer {self.llm.api_key}"} | HEADERS
         async with RateLimit.AGENT_SEMAPHORE:
             data = await async_request_template("post", url, headers, payload)
+        assert data
         
         if not data: return
         if endpoint == "chat/completions":
