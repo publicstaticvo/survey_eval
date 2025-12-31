@@ -17,64 +17,18 @@ def cos_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sum(a * b))
 
 
-class SourceSelectionCritic:
+class MissingPaperCheck:
 
     def __init__(self, config: ToolConfig):
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
-        self.letor_model = ...
         self.eval_date = config.evaluation_date
         self.topn = config.topn
 
-    def _paper_age(self, paper):
-        return (self.eval_date - datetime.strptime(paper['publication_date'], "%Y-%m-%d")).days
-
-    def _citation_count_by_eval_date(self, paper: dict):
-        eval_year = int(self.eval_date.year)
-        if (citation_count := paper.get("cited_by_count", 0)):
-            for x in paper.get("counts_by_year", []):
-                if x['year'] > eval_year:
-                    citation_count -= x['cited_by_count']
-            return citation_count
-        citation_count = 0
-        for x in paper.get("counts_by_year", []):
-            if x['year'] <= eval_year:
-                citation_count += x['cited_by_count']
-        return citation_count
-    
-    def calculate_rank_biased_recall(self, agent_paper_ids, oracle_ranked_list):
-        """
-        Calculates Rank-Biased Recall @ Top-N.
-        
-        :param agent_paper_ids: Set of paper IDs cited by the agent.
-        :param oracle_ranked_list: List of paper IDs from LETOR, sorted by score (desc).
-        :param self.topn: The cutoff for the 'Essential' list (e.g., 100).
-        :return: Float (0.0 to 1.0)
-        """
-        topn = self.topn if self.topn else len(oracle_ranked_list)
-
-        # 1. Slice the Oracle to just the Top-N essential papers
-        oracle_topn = oracle_ranked_list[:topn]
-        
-        # 2. Calculate the Ideal Discounted Cumulative Gain (IDCG)
-        # This is the max score if the agent found ALL Top-N papers.
-        idcg = sum([1.0 / math.log2(rank + 2) for rank in range(len(oracle_topn))])
-        
-        # 3. Calculate Actual Discounted Cumulative Gain (DCG)
-        dcg = 0.0
-        for rank, paper_id in enumerate(oracle_topn):
-            if paper_id in agent_paper_ids:
-                # Agent found this important paper! Add its weight.
-                dcg += 1.0 / math.log2(rank + 2)
-                
-        # 4. Normalize
-        if idcg == 0: return 0.0
-        return dcg / idcg
-
-    def __call__(self, citations: dict, query: str, oracle_data: dict):
+    def __call__(self, citations: dict, oracle_data: dict, anchor_papers: dict):
         """
         The format of param citations is:
         {
-            "metadatas": list of metadatas [{"id": ., "year": ., "citation_count": .,}]
+            "metadata": {"id": ., "year": ., "citation_count": .,}
             "title": "title",
             "abstract": "abstract", 
             "full_content": "full_content" or "abstract" or "title",
@@ -86,105 +40,20 @@ class SourceSelectionCritic:
         status == 3 -> fail to get information of the citation. Please check its existance.
         The key of oracle_data['oracle_papers'] has changed back to work_id.
         """
-        # preparation
+        # check what are the missing citations.
         oracle_data = oracle_data['oracle_papers']
-        citation_graph = oracle_data['adjacent_graph']
-        num_oracles, num_citations = len(oracle_data), len(citations)
-        self.topn = min(num_citations, num_oracles)
-        max_citations, max_local_citations = 0, 0
+        cited_id_set = set(x['metadata'] for x in citations)
+        missing_anchors_set = set()
+        missing_anchors, missing_oracles = [], []
+        for x in anchor_papers.values():
+            if x['id'] not in cited_id_set:
+                missing_anchors.append(x)
+                missing_anchors_set.add(x['id'])
         for x in oracle_data.values():
-            max_citations = max(max_citations, x['features'][1])
-            max_citations = max(max_local_citations, x['features'][2])
-        max_citations = math.log(1 + max_citations)
-        max_local_citations = math.log(1 + max_local_citations)
-        # try to search in oracle papers
-        oracle_citation_feature_map, not_oracle_citation_feature_map = {}, {}  # citation key -> feature
-        not_oracle_papers, not_oracle_paper_abstracts, unfound_papers = [], [], []
-        # normalization
-        for citation_key, citation in citations.items():
-            if citation['status'] == 3:
-                # process unfound papers
-                unfound_papers.append(citation['full_content'])
-                continue
-            metadata = citation['metadata']
-            for i in metadata['id']:
-                if i in oracle_data: 
-                    # The cited paper is in oracle papers
-                    oracle_citation_feature_map[citation_key] = oracle_data[i]['features']
-                    oracle_data[i]['citation_key'] = citation_key
-                    break
-            else:
-                # Not in
-                # feature 0: cosine similarity (-1~1)
-                # feature 1: citation count == global prestige (regularized to 0~1)
-                # feature 2: local citation count == local_prestige (regularized to 0~1)
-                # feature 3: local pagerank (regularized to 0~1)
-                # feature 4: citation velocity == emengence
-                feature = [0, 0, 0, 0, 0]
-                not_oracle_papers.append(citation_key)
-                abstract = f"{citation['title']}. {citation['abstract']}" if citation['abstract'] else citation['title']
-                not_oracle_paper_abstracts.append(abstract)
-                # feature 2: global citations
-                feature[1] = math.log(1 + self._citation_count_by_eval_date(metadata))
-                if max_citations > 0: feature[1] /= max_citations
-                # local co-citation: calcultate number of oracle papers cites this paper
-                # local_pagerank = average(pageranks of oracle papers cites this paper)
-                ids_set = set(metadata['id'])
-                for n in citation_graph:
-                    if set(ids_set) - set(citation_graph[n]):
-                        feature[2] += 1
-                        feature[3] += oracle_data[n]['features'][3]
-                if feature[2] > 0: feature[3] /= feature[2]
-                feature[2] = math.log(1 + feature[2])
-                if max_local_citations > 0: feature[2] /= max_local_citations
-                # feature 5: 
-                feature[4] = feature[1] / math.log(1 + self._paper_age(metadata))                
-        # embed together
-        if not_oracle_papers:
-            not_oracle_paper_abstracts.append(query)
-            not_oracle_paper_embeddings = self.sentence_transformer.embed(not_oracle_paper_abstracts)
-            not_oracle_cossims = cos_sim(not_oracle_paper_embeddings[-1:], not_oracle_paper_embeddings[:-1])[0].tolist()
-            for citation_key, s in zip(not_oracle_papers, not_oracle_cossims):
-                citations[citation_key]['features'][0] = s
-                not_oracle_citation_feature_map[citation_key] = citations[citation_key]['features']
-        # rank all oracle papers and non-oracle cited papers
-        paper_features, paper_ids = [], []
-        for paper_id, paper in oracle_data.items():
-            paper_features.append(paper['features'])
-            paper_ids.append(paper_id)
-        for citation_key, citation in not_oracle_citation_feature_map.items():
-            paper_features.append(citation['features'])
-            paper_ids.append(citation_key)
-        ranks = self.letor_model.rank(paper_features)
-        # calculate metrics, incorrect papers and missing papers
-        # ranked based recall
-        oracle_ranked_list = sorted(range(num_oracles), key=lambda i: ranks[i], reverse=True)
-        cited_paper_ranked_list = list(range(num_oracles, len(ranks)))
-        cited_paper_ranks = ranks[num_oracles:]
-        for i in range(num_oracles):
-            if "citation_key" in oracle_data[paper_ids[i]]:  # cited oracle paper
-                cited_paper_ranked_list.append(i)
-                cited_paper_ranks.append(ranks[i])
-        cited_paper_ranked_list = sorted(cited_paper_ranked_list, key=lambda i: ranks[i], reverse=True)
-        ranked_based_recall = self.calculate_rank_biased_recall(cited_paper_ranked_list, oracle_ranked_list)
-        # weighted precision
-        weighted_precision = sum(cited_paper_ranks) / num_citations
-        # missing papers: Papers that are not cited in top N of the oracle list.
-        missing = []
-        for i in range(num_oracles):
-            if "citation_key" in oracle_data[paper_ids[i]]:
-                missing.append([oracle_data[paper_ids[i]], ranks[i]])
-        missing = sorted(missing, key=lambda x: x[1], reverse=True)
-        missing = {x[0]: x[1] for x in missing if x[1] > oracle_ranked_list[self.topn]}
-        # false positives: All papers that has low ranks and are not in the oracle list.
-        incorrect = [[not_oracle_citation_feature_map[paper_ids[i]], ranks[i]] for i in range(num_oracles, len(ranks))]
-        incorrect = sorted(incorrect, key=lambda x: x[1], reverse=True)
-        incorrect = {x[0]: x[1] for x in incorrect if x[1] < oracle_ranked_list[self.topn]}
-        for m in unfound_papers:
-            incorrect[m] = "paper not found"
+            if x['id'] not in cited_id_set and x['id'] not in missing_anchors_set:  # add threshold
+                missing_oracles.append(x)
+        missing_oracles.sort(key=lambda x: x['rank'], reverse=True)
         return {"source_evals": {
-            "ranked_based_recall": ranked_based_recall,
-            "weighted_precision": weighted_precision,
-            "missing_important_papers": missing,
-            "incorrect_papers": incorrect,
+            "missing_oracles": missing_oracles[:3],
+            "missing_anchors": missing_anchors,
         }}

@@ -44,7 +44,7 @@ OPENALEX_SELECT = 'id,cited_by_count,counts_by_year,referenced_works,publication
 URL_DOMAIN = "https://openalex.org/"
 GROBID_URL = "https://localhost:8070"
 parser = PaperParser()
-with open("redirect.json") as f: redirect = json.load(f)
+# with open("redirect.json") as f: redirect = json.load(f)
 
 
 # =============== Global Semaphore ===============
@@ -183,19 +183,14 @@ async def openalex_search_paper(
     papers = []
     for x in results['results']:
         x['id'] = x['id'].replace(URL_DOMAIN, "")
-        x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
-        if not x['publication_date']: x['publication_date'] = x['created_date']
-        del x['abstract_inverted_index'], x['created_date']
-        # referenced_works
+        if 'abstract_inverted_index' in x:
+            x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
+            del x['abstract_inverted_index']
+        if 'publication_date' in x and 'created_date' in x and not x['publication_date']:
+            x['publication_date'] = x['created_date']
+            del x['created_date']
         x['referenced_works'] = [y.replace(URL_DOMAIN, "") for y in x['referenced_works']]
-        x['referenced_works'] = [redirect[y] if y in redirect else y for y in x['referenced_works']]
-        # new_references = []
-        # for y in x['referenced_works']:
-        #     y = y.replace(URL_DOMAIN, "")
-        #     async with OpenAlexRedirect.read_lock():
-        #         new_id = await OpenAlexRedirect.get(y)
-        #     new_references.append(new_id if new_id else y)
-        # x['referenced_works'] = new_references
+        # x['referenced_works'] = [redirect[y] if y in redirect else y for y in x['referenced_works']]
         papers.append(x)
     return {"count": results['meta']['count'], "results": papers}
 

@@ -3,6 +3,7 @@ nature
 logs
 *.txt
 *.log
+*.npz
 *.out
 *.pdf
 *.zip

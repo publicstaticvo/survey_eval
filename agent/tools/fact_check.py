@@ -2,7 +2,7 @@ import re
 from typing import List, Dict, Any
 
 from .tool_config import ToolConfig
-from .request_utils import AsyncLLMClient, RateLimit
+from .request_utils import AsyncLLMClient
 from .utils import split_content_to_paragraph, paragraph_to_text
 from .prompts import FACTUAL_CORRECTNESS_PROMPT, SYNTHESIS_CORRECTNESS_PROMPT
 

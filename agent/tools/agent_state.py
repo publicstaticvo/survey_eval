@@ -1,5 +1,4 @@
 import operator
-from langchain_core.messages import BaseMessage
 from typing import Annotated, List, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -23,6 +22,7 @@ class AgentState(BaseModel):
     paper_content_map: Dict[str, str] = Field(default_factory=dict)     # From Retriever (Map: ID -> Text)
     oracle_data: Dict[str, Any] = Field(default_factory=dict)           # From Oracle
     claims: List[Dict] = Field(default_factory=list)                    # From Segmentation
+    anchor_papers: List[str] = Field(default_factory=list) 
 
     # REQUIRED for standard tool calling:
     # messages: Annotated[List[BaseMessage], operator.add]

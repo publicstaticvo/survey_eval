@@ -66,8 +66,6 @@ class DynamicOracleGenerator:
         super().__init__(**kwargs)
         self.oracle = {}
         self.library = {}  # All papers searched by oracle
-        self.negatives = {}
-        self.hard_negatives = {}
         self.eval_date = eval_date
         self.num_oracle_papers = num_oracle_papers
         self.sentence_transformer = sentence_transformer
@@ -391,59 +389,6 @@ class DynamicOracleGenerator:
             if prev_length == len(self.library): 
                 raise ValueError("No new papers. Perhaps you hit the OpenAlex rate limit.")
             prev_length = len(self.library)
-    
-    async def _negative_sampling(self, number: int, margin_citation_count: int):
-        # corefs by oracle paper
-        corefs = set()
-        for x in self.library.values():
-            corefs.update(x['referenced_works'])
-        # 2 kind of negative samples: 1. Hard negatives with high global prestige but 0 relevancy
-        M = margin_citation_count
-        if debug: logging.info(f"The margin citation count is {M} and we have {len(corefs)} references to avoid")
-        for i in range(50):
-            try:
-                results = await openalex_search_paper(
-                    "works", 
-                    filter={"cited_by_count": f">{M}", "to_publication_date": self.eval_date.strftime("%Y-%m-%d")}, 
-                    do_sample=True, 
-                    per_page=200,
-                )
-            except Exception as e:
-                logging.info(f"hard negatives {e}")
-                continue
-            for x in results['results']:
-                if valid_check(self.target, x['title']): continue
-                if all((paper_id := x['id']) not in y for y in [self.oracle, self.library, self.positive_ids, self.hard_negatives]):
-                    # store
-                    if (real_citation_count := self._citation_count_by_eval_date(x)) >= margin_citation_count:
-                        # feature - no local prestige and pagerank
-                        x['features'] = [0, 0, 0, 0, 0]
-                        x['features'][1] = math.log1p(real_citation_count)
-                        self.hard_negatives[paper_id] = x
-            if debug: logging.info(f"Hard negative sampling round {i + 1} get {len(self.hard_negatives)} papers")
-            if len(self.hard_negatives) >= number: break
-        # 2. Easy negatives that has 0 local prestige
-        for i in range(50):
-            try:
-                results = await openalex_search_paper(
-                    "works", 
-                    filter={"to_publication_date": self.eval_date.strftime("%Y-%m-%d")}, 
-                    do_sample=True, 
-                    per_page=200,
-                )
-            except Exception as e:
-                logging.info(f"negatives {e}")
-                continue
-            for x in results.get('results', []):
-                if valid_check(self.target, x['title']): continue
-                if all((paper_id := x['id']) not in y for y in [self.oracle, self.library, self.positive_ids, self.negatives, self.hard_negatives]):
-                    # feature - no local prestige and pagerank
-                    x['features'] = [0, 0, 0, 0, 0]
-                    x['features'][1] = math.log1p(self._citation_count_by_eval_date(x))
-                    # store
-                    self.negatives[paper_id] = x
-            if debug: logging.info(f"Easy negative sampling round {i + 1} get {len(self.negatives)} papers")
-            if len(self.negatives) >= number: break
 
     def _local_citation_and_pagerank(self):
         """
@@ -504,30 +449,11 @@ class DynamicOracleGenerator:
             abstract = x.get("abstract", None)
             sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
 
-        for paper_id in self.negatives:
-            paper_ids.append(paper_id)
-            x = self.negatives[paper_id]
-            title = x['title']
-            abstract = x.get("abstract", None)
-            sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-
-        for paper_id in self.hard_negatives:
-            paper_ids.append(paper_id)
-            x = self.hard_negatives[paper_id]
-            title = x['title']
-            abstract = x.get("abstract", None)
-            sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-
         sentences.append(query)
         embeddings = self.sentence_transformer.embed(sentences)
         cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
         for paper_id, score in zip(paper_ids, cosine_scores):
-            if paper_id in self.oracle:
-                self.oracle[paper_id]["features"][0] = score
-            elif paper_id in self.negatives:
-                self.negatives[paper_id]["features"][0] = score
-            elif paper_id in self.hard_negatives:
-                self.hard_negatives[paper_id]["features"][0] = score
+            self.oracle[paper_id]["features"][0] = score
     
     def _calculate_features_for_citations(self, citations: List[Dict[str, Any]], query: str, normalize_params: List[float]):
         """
@@ -540,51 +466,16 @@ class DynamicOracleGenerator:
         """
         # preparation
         self.citation_graph = {k: set(v) for k, v in self.citation_graph.items()}
-        num_oracles, num_citations = len(self.oracle), len(citations)
-        self.topn = min(num_citations, num_oracles)
-        not_oracle_papers, not_oracle_paper_abstract = [], []
         # normalization
-        for i, citation in enumerate(citations):
+        for citation in citations:
             j = citation['id']
             if j in self.oracle: 
                 # The cited paper is in oracle papers
                 feature = self.oracle[j]['features']
                 citation['query'] = self.oracle[j]['query']
-            else:
-                # Not in
-                feature = [0, 0, 0, 0, 0]
-                not_oracle_papers.append(i)
-                title = citation['title']
-                not_oracle_paper_abstract.append(f"{title}. {citation['abstract']}" if citation['abstract'] else title)
-                # feature 2: global citations
-                feature[1] = math.log1p(self._citation_count_by_eval_date(citation))
-                if normalize_params['max_citations'] > 0: feature[1] /= normalize_params['max_citations']
-                # local co-citation: calcultate number of oracle papers cites this paper
-                # local_pagerank = average(pageranks of oracle papers cites this paper)
-                for k in self.citation_graph:
-                    if j in self.citation_graph[k]:
-                        feature[2] += 1
-                        feature[3] += self.oracle[k]['features'][3]
-                if feature[2] > 0: feature[3] /= feature[2]
-                feature[2] = math.log1p(feature[2])
-                if normalize_params['max_local_citations'] > 0: feature[2] /= normalize_params['max_local_citations']
-                # feature 5: 
-                try:
-                    feature[4] = feature[1] / math.log1p(self._paper_age(citation))
-                except AssertionError:
-                    # 超时间的了
-                    citation['avail'] = False
             citation['features'] = feature
-        logging.info(f"For query {query.lower()}, We have {len(not_oracle_papers)} not oracle references out of {num_citations} references")
-
-        # embed together
-        if not_oracle_papers:
-            not_oracle_paper_abstract.append(query)
-            not_oracle_paper_embeddings = self.sentence_transformer.embed(not_oracle_paper_abstract)
-            not_oracle_cossims = cos_sim(not_oracle_paper_embeddings[-1:], not_oracle_paper_embeddings[:-1])[0].tolist()
-            for i, s in zip(not_oracle_papers, not_oracle_cossims):
-                citations[i]['features'][0] = s
-                citations[i]['query'] = None
+        citations = [x for x in citations if 'query' in citation]
+        logging.info(f"For query {query.lower()}, We have {len(citation)} oracle references")
         return citations
     
     async def run(self, query: Dict[str, Any], metadata_map: Dict[str, Any]) -> dict:
@@ -612,7 +503,6 @@ class DynamicOracleGenerator:
         # 2.3 local citation count == local_prestige && 2.4 local pagerank
         self._local_citation_and_pagerank()
         # negative sampling
-        await self._negative_sampling(len(avail_references), margin_citation_count=1000)
         self._calculate_similarity(query['query'])
         # regularization
         max_citation_count = math.log1p(max(x['features'][1] for x in self.oracle.values()))
@@ -690,12 +580,10 @@ async def get_oracle(query, metadata_map):
         citations = await engine.run(query, metadata_map)
     citations = [{"id": p['id'], "title": p['title'], "features": p['features'], "query": p['query']} for p in citations]
     oracle = {k: _get_metadata(v) for k, v in engine.oracle.items()}
-    negatives = {k: _get_metadata(v) for k, v in engine.negatives.items()}
-    hard_negatives = {k: _get_metadata(v) for k, v in engine.hard_negatives.items()}
     if debug:
         database = {k: _get_metadata(v) for k, v in engine.library.items()}
-        return {"query": query['query'], 'title': query['title'], "citations": citations, "oracle": oracle, "database": database, "easy_negatives": negatives, "hard_negatives": hard_negatives}
-    return {"query": query['query'], 'title': query['title'], "citations": citations, "oracle": oracle, "easy_negatives": negatives, "hard_negatives": hard_negatives}
+        return {"query": query['query'], 'title': query['title'], "citations": citations, "oracle": oracle, "database": database}
+    return {"query": query['query'], 'title': query['title'], "citations": citations, "oracle": oracle}
 
 
 async def main():

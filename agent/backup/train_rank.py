@@ -1,95 +1,95 @@
+import json
 import numpy as np
-import pandas as pd
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 
-# -------------------------------------------------
-# 1. 人造数据：1000 篇论文，每篇 32 维特征
-#    400 篇被引用（label=1），600 篇未被引用（label=0）
-# -------------------------------------------------
-np.random.seed(42)
-n_total = 1000
-n_groups = 200
-dim = 5
-per_group = 5
-group = np.array([per_group] * n_groups, dtype=np.int32)
 
-X = np.random.randn(n_groups, per_group, dim)
-# 简单构造：被引用论文在第一个维度上均值更大
-X[:, 1, 0] += 2
-y = np.zeros((n_groups, per_group), dtype=int)
-y[:, 0] = 1
-X = X.reshape((n_total, dim))
-y = y.reshape((n_total,))
+def load_local(fn):
+    with open(fn, encoding="utf-8") as f:
+        d = [json.loads(line.strip()) for line in f if line.strip()]
+    return d
 
-df = pd.DataFrame(X, columns=[f'f{i}' for i in range(dim)])
-df['label'] = y
-df['pid'] = np.arange(n_total)  # 论文 id，方便后续配对
 
-# -------------------------------------------------
-# 2. 构造 pairwise 样本
-#    每个正例随机配 4 个负例，生成 (pos, neg) 对
-# -------------------------------------------------
-pos_df = df[df.label == 1]
-neg_df = df[df.label == 0]
+# ---------- 1. 读取 JSONL ----------
+jsonl_path = 'train_letor.jsonl'          # 换成你的文件
+group = []                         # 每个 query 的 doc 数
+X, y, qid_map = [], [], []         # 特征、label、query_id（从 0 开始连续）
+dataset = load_local(jsonl_path)
+for i, js in enumerate(dataset):
+    chosen = js['chosen']
+    rejected = js['rejected']
+    n_pos, n_neg = len(chosen), len(rejected)
+    # 特征 & label
+    X.extend(chosen)
+    y.extend([1] * n_pos)
+    X.extend(rejected)
+    y.extend([0] * n_neg)
+    group.append(n_pos + n_neg)        # 这个 query 的 doc 总数
+    qid_map.extend([i] * (n_pos + n_neg))
 
-pairs = []
-n_neg_per_pos = 4
-for _, pos_row in pos_df.iterrows():
-    neg_sample = neg_df.sample(n_neg_per_pos, replace=False, random_state=int(pos_row.pid))
-    for _, neg_row in neg_sample.iterrows():
-        # 把 (正例特征, 负例特征) 横向拼成一条样本
-        pair_feats = np.concatenate([pos_row.drop(['label','pid']),
-                                     neg_row.drop(['label','pid'])])
-        pairs.append(pair_feats)
+X = np.array(X, dtype=np.float32)
+y = np.array(y, dtype=np.int32)
+group = np.array(group, dtype=np.int32)
+print('总综述数:', len(group), '总论文数:', len(X))
 
-pair_matrix = np.vstack(pairs)
-print('Pairwise 样本维度:', pair_matrix.shape)  # (1600, 64)
+# ---------- 2. 训练/验证划分（按 query 切，防止泄漏） ----------
+n_query = len(group)
+qid_train, qid_val = train_test_split(range(n_query), test_size=0.2, random_state=42)
 
-# -------------------------------------------------
-# 3. 训练集 / 验证集划分
-# -------------------------------------------------
-X_pair = pair_matrix
-y_pair = np.ones(len(X_pair))  # 正例在前，负例在后，label 全 1
-X_tr, X_va, y_tr, y_va = train_test_split(X_pair, y_pair, test_size=0.2, random_state=42)
 
-# -------------------------------------------------
-# 4. 训练 LambdaMART（LightGBM LambdaRank）
-# -------------------------------------------------
-def train_lambdamart() -> lgb.Booster:
-    train_data = lgb.Dataset(X_tr, label=y_tr, group=group)
-    valid_data = lgb.Dataset(X_va, label=y_va, reference=train_data)
+def slice_by_qid(qids):
+    mask = np.isin(qid_map, qids)
+    return X[mask], y[mask]
 
-    params = {
-        'objective': 'lambdarank',   # LambdaMART
-        'metric': 'ndcg',            # 可选
-        'learning_rate': 0.05,
-        'num_leaves': 31,
-        'max_depth': 6,
-        'verbose': 0
-    }
 
-    model = lgb.train(
-        params,
-        train_data,
-        valid_sets=[valid_data],
-        num_boost_round=300,
-        callbacks=[lgb.early_stopping(20, verbose=True), lgb.log_evaluation(10)]
-    )
-    return model
+X_tr, y_tr = slice_by_qid(qid_train)
+X_va, y_va = slice_by_qid(qid_val)
 
-model = train_lambdamart()
-model.save_model("model.txt")
 
-# -------------------------------------------------
-# 5. 预测：对单篇论文打分
-#    把原始单论文特征喂给模型，取前半段 32 维即可
-# -------------------------------------------------
-single_feat = df.drop(['label','pid'], axis=1).values
-scores = model.predict(single_feat, num_iteration=model.best_iteration)
+group_tr = group[qid_train]
+group_va = group[qid_val]
 
-df['score'] = scores
-# 按得分降序，取 Top-20 作为「应被引用」论文
-top_papers = df.sort_values('score', ascending=False).head(20)
-print('Top-20 应被引用论文 pid：', top_papers['pid'].tolist())
+# ---------- 3. 构造 LightGBM Dataset ----------
+train_data = lgb.Dataset(X_tr, label=y_tr, group=group_tr)
+valid_data = lgb.Dataset(X_va, label=y_va, group=group_va, reference=train_data)
+
+# ---------- 4. 训练 ----------
+params = {
+    'objective': 'lambdarank',
+    'metric': 'ndcg',
+    'learning_rate': 0.05,
+    'num_leaves': 31,
+    'max_depth': 6,
+    'verbose': 0
+}
+
+model = lgb.train(
+    params,
+    train_data,
+    valid_sets=[valid_data],
+    num_boost_round=300,
+    callbacks=[
+        lgb.early_stopping(20),
+        lgb.log_evaluation(10)
+    ]
+)
+
+# ---------- 5. 保存 ----------
+model.save_model('ranker.txt')
+np.savez('split_info.npz', qid_train=qid_train, qid_val=qid_val, group=group)
+print('模型已保存')
+
+# ---------- 6. 预测示例：对一篇新综述打分 ----------
+# def predict_one_review(model, chosen_list, rejected_list):
+#     """输入特征列表，返回 (得分列表, 对应索引列表)"""
+#     feats = np.array(chosen_list + rejected_list, dtype=np.float32)
+#     scores = model.predict(feats)
+#     idx = list(range(len(chosen_list))) + list(range(len(rejected_list)))
+#     return scores, idx
+
+# # 人造一篇新综述
+# new_chosen = [[random.gauss(2, 1) for _ in range(5)] for _ in range(4)]
+# new_rejected = [[random.gauss(0, 1) for _ in range(5)] for _ in range(6)]
+# scores, idx = predict_one_review(model, new_chosen, new_rejected)
+# ranked = sorted(zip(scores, idx), key=lambda x: x[0], reverse=True)
+# print('推荐引用顺序（索引）:', [i for _, i in ranked])

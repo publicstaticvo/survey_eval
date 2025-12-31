@@ -10,12 +10,13 @@ from langchain_core.language_models import BaseChatModel
 
 from tools import (
     AgentState,
+    AnchorSurveyFetch,
     ClaimSegmentation,
     DynamicOracleGenerator,
     FactualCorrectnessCritic,
     CitationParser,
     QualityCritic,
-    SourceSelectionCritic,
+    MissingPaperCheck,
     SynthesisCorrectnessCritic,
     TopicCoverageCritic,
     ToolConfig,
@@ -35,6 +36,7 @@ class ParallelDataPreperation:
         self.oracle_tool = DynamicOracleGenerator(config)
         self.parser_tool = CitationParser(config)
         self.segment_tool = ClaimSegmentation(config)
+        self.anchor_tool = AnchorSurveyFetch(config)
 
     async def __call__(self, state: AgentState):
         logging.info("--- Starting Parallel Data Prep ---")
@@ -43,15 +45,17 @@ class ParallelDataPreperation:
         task_oracle = self.oracle_tool(state.query)
         task_parse = self.parser_tool(state.review_paper['citations']) 
         task_segment = self.segment_tool(state.review_paper['content'])
+        task_anchor = self.anchor_tool(state.query)
 
         # 2. Run them all at once
-        oracle_res, parse_res, segment_res = await asyncio.gather(task_oracle, task_parse, task_segment)
+        oracle_res, parse_res, segment_res, anchor_res = await asyncio.gather(task_oracle, task_parse, task_segment, task_anchor)
 
         # 3. Return combined state updates
         return {
             "oracle_data": oracle_res,
             "paper_content_map": parse_res,
             "claims": segment_res['claims'],
+            "anchor_papers": anchor_res,
             "errors": {"claim_segmentation": segment_res['errors']}
         }
 
@@ -204,7 +208,7 @@ def build_agent(config: ToolConfig):
 
     run_parallel_data_prep = ParallelDataPreperation(config)
     run_quality_group = QualityCritic(config)
-    run_source_critic = SourceSelectionCritic(config)
+    run_source_critic = AnchorSurveyFetch(config)
     run_topic_critic = TopicCoverageCritic(config)
     run_factual_critic = FactualCorrectnessCritic(config)
     run_synthesis_critic = SynthesisCorrectnessCritic(config)

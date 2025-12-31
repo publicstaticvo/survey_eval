@@ -5,7 +5,7 @@ from typing import Dict, Optional, Any
 from .tool_config import ToolConfig
 from .paper_parser import PaperParser
 from .utils import valid_check, index_to_abstract
-from .request_utils import openalex_search_paper, URL_DOMAIN, RateLimit, try_one_url, SessionManager
+from .request_utils import openalex_search_paper, URL_DOMAIN, try_one_url, SessionManager
 
 
 def yield_location(x):
@@ -76,8 +76,7 @@ class CitationParser:
             "full_content": {}
         }
         
-        async with RateLimit.OPENALEX_SEMAPHORE:
-            results = await openalex_search_paper("works", {"default.search": paper_title})
+        results = await openalex_search_paper("works", {"title.search": paper_title})
 
         session = SessionManager.get()        
         for paper_info in results.get("results", []):
@@ -124,7 +123,6 @@ class CitationParser:
         # The following information to get:
         return {
             "id": paper['id'].replace(URL_DOMAIN, ""),
-            "ids": paper['ids'],
             "title": paper['display_name'],
             "locations": [x['source'] for x in paper['locations']],
             "cited_by_count": paper['cited_by_count'],

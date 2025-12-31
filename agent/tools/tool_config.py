@@ -27,6 +27,7 @@ class ToolConfig:
     sampling_params: Mapping[str, Any] = field(default_factory=lambda: {'temperature': 0.0, "max_tokens": 16384})
     # dynamic oracle
     num_oracle_papers: int = 1000
+    letor_path: str = "letor.txt"
     # citation parser
     grobid_url: str = "http://localhost:8070"
     grobid_num_workers: int = 10
@@ -54,6 +55,7 @@ class ToolConfig:
             agent_max_tokens=config['agent']['max_tokens'],
             evaluation_date=datetime.strftime(config['general']['evaluation_date']),
             num_oracle_papers=config['dynamic_oracle']['num_oracle_papers'],
+            letor_path=config['dynamic_oracle']['letor_path'],
             llm_server_info=LLMServerInfo(
                 base_url=config['external_llm']['base_url'],
                 api_key=config['external_llm']['api_key'],

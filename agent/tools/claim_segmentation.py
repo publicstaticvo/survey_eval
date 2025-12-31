@@ -25,6 +25,7 @@ class ClaimSegmentationLLMClient(AsyncLLMClient):
             elif claim['requires'][x].upper() == "TITLE_AND_ABSTRACT": claim['requires'][x] = 1
             # 默认为FULL_TEXT
             else: claim['requires'][x] = 0
+        claim['paragraph_id'] = self._context['paragraph_id']
         return claim
     
     def _organize_inputs(self, inputs):
@@ -41,11 +42,11 @@ class ClaimSegmentation:
         paragraphs = split_content_to_paragraph(paper_content)
         # 第二步：提取段落中的引用及句子
         tasks = []
-        for p in paragraphs:
+        for i, p in enumerate(paragraphs):
             p_text = " ".join(s['text'] for s in p)
             for s in p: 
                 inputs = {"text": s['text'], "citations": s['citations'], "range": p_text}
-                tasks.append(asyncio.create_task(self.llm.call(inputs=inputs, citations=input['citations'])))
+                tasks.append(asyncio.create_task(self.llm.call(inputs=inputs, citations=input['citations'], context={"paragraph_id": i})))
         # 第三步：并行调用
         claims = []
         count = 0
@@ -56,4 +57,10 @@ class ClaimSegmentation:
                 else: count += 1
             except Exception as e:
                 count += 1
+        # 第四步：选择没有引用的句子并自动聚类
+        # claims_in_paragraph = [[] for _ in paragraphs]
+        # for claim in claims:
+        #     claims_in_paragraph[claim['paragraph_id']].append(claim)
+        # for p, cs in zip(paragraphs, claims_in_paragraph):
+        #     p_text = " ".join(s['text'] for s in p)
         return {"claims": claims, "errors": count}
