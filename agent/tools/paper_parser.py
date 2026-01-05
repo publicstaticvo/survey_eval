@@ -282,6 +282,18 @@ class PaperParser:
                     'year': year
                 }
 
+    def get_titles(self, xml_content: str) -> List[str]:
+        root = ET.fromstring(xml_content)
+        body = root.find('.//tei:text/tei:body', self.NS)
+        if body is None:
+            return
+        
+        heads = []
+        for head in body.findall('./tei:head', self.NS):
+            heads.append(' '.join(head.itertext()))
+        
+        return heads
+
 
 # Example usage
 if __name__ == "__main__":

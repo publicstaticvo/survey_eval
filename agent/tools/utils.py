@@ -48,6 +48,28 @@ def extract_json(text: str) -> dict:
         return {}
     
 
+def extract_list(text: str) -> dict:
+    """从文本中提取 JSON 列表"""
+    if not text:
+        return []
+    
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    
+    try:
+        candidate = text[start:end+1].replace("'", '"')
+        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+        return json.loads(candidate)
+    except Exception:
+        return []
+    
+
 def clean_token(text: str) -> str:
     text = text.replace("\\", " ").replace("\n", " ")
     text = re.sub(r"\s+", " ", text)

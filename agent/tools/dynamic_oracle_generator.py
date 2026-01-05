@@ -6,18 +6,16 @@ import asyncio
 import lightgbm
 import numpy as np
 import networkx as nx
-from bertopic import BERTopic
 from datetime import datetime
 from typing import List, Dict, Any
 from sentence_transformers.util import cos_sim
-from sklearn.feature_extraction.text import CountVectorizer
 
-from .request_utils import AsyncLLMClient, openalex_search_paper, OPENALEX_SELECT, URL_DOMAIN, RateLimit
-from .prompts import QUERY_EXPANSION_PROMPT
-from .utils import index_to_abstract, extract_json
+from .openalex import to_openalex, openalex_search_paper, OPENALEX_SELECT
 from .sbert_client import SentenceTransformerClient
-from .to_openalex import to_openalex
+from .llmclient import AsyncLLMClient
+from .prompts import QUERY_EXPANSION_PROMPT
 from .tool_config import ToolConfig
+from .utils import extract_json
 
 debug = False
     
@@ -453,7 +451,20 @@ class DynamicOracleGenerator:
             if max_local_citation_count > 0:
                 x['features'][2] = math.log1p(x['features'][2]) / max_local_citation_count
             x['features'][4] = x['features'][1] / math.log1p(self._paper_age(x))
+            x['features'][3] *= 100
         # 3. Get rank
         logging.info(f"DynamicOracleGenerator::Get rank")
         self._predict_paper_rank()
         return {"oracle_papers": self.oracle}
+
+
+async def main():
+    config = ToolConfig()
+    query = ""
+    oracles = await DynamicOracleGenerator(config)(query)['oracle_papers']
+    with open("debug/oracles.json") as f:
+        json.dump(oracles, f, ensure_ascii=False)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

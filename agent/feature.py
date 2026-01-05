@@ -13,12 +13,12 @@ from typing import Dict, List, Any
 from sentence_transformers.util import cos_sim
 from dateutil.relativedelta import relativedelta
 
-from tools.to_openalex import to_openalex
 from tools.tool_config import LLMServerInfo
 from tools.utils import valid_check, clean_token
 from tools.sbert_client import SentenceTransformerClient
 from tools.dynamic_oracle_generator import QueryExpansionLLMClient
-from tools.request_utils import openalex_search_paper, OPENALEX_SELECT, SessionManager
+from tools.openalex import to_openalex, openalex_search_paper, OPENALEX_SELECT
+from tools.request_utils import SessionManager
 
 
 debug = False

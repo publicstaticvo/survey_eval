@@ -11,8 +11,7 @@ class ClaimSegmentationLLMClient(AsyncLLMClient):
 
     PROMPT: str = CLAIM_SEGMENTATION_PROMPT
 
-    def _availability(self, response: json):
-        response = response["choices"][0]["message"]["content"]
+    def _availability(self, response: str):
         claim = extract_json(response)
         assert all(x in claim for x in ['claim', 'claim_type', 'requires'])
         
@@ -57,10 +56,4 @@ class ClaimSegmentation:
                 else: count += 1
             except Exception as e:
                 count += 1
-        # 第四步：选择没有引用的句子并自动聚类
-        # claims_in_paragraph = [[] for _ in paragraphs]
-        # for claim in claims:
-        #     claims_in_paragraph[claim['paragraph_id']].append(claim)
-        # for p, cs in zip(paragraphs, claims_in_paragraph):
-        #     p_text = " ".join(s['text'] for s in p)
         return {"claims": claims, "errors": count}

@@ -18,27 +18,26 @@ class ToolConfig:
     agent_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     agent_max_tokens: int = 16384
     # General
-    evaluation_date: datetime = field(default_factory=lambda: datetime.now())
+    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2025-1-1", "%Y-%m-%d"))
     # Sentence Transformer
-    sbert_server_url: str = "http://localhost:8000"
+    sbert_server_url: str = "http://localhost:8030"
     # external LLM
-    llm_num_workers: int = 20
     llm_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     sampling_params: Mapping[str, Any] = field(default_factory=lambda: {'temperature': 0.0, "max_tokens": 16384})
     # dynamic oracle
     num_oracle_papers: int = 1000
-    letor_path: str = "letor.txt"
+    letor_path: str = "backup/letor.txt"
     # citation parser
     grobid_url: str = "http://localhost:8070"
     grobid_num_workers: int = 10
     # factual correctness - reranking
     rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
-    n_documents: int = 5
-    synthesis_n_documents: int = 5
+    rerank_n_documents: int = 5
     # source selection
     topn: int = 0
     # topic coverage
-    topic_similarity_threshold: float = 0.
+    topic_weak_sim_threshold: float = 0.45
+    topic_sim_threshold: float = 0.55
     # quality
     redundancy_similarity_threshold: float = 0.95
     redundancy_ngram: int = 5
@@ -61,19 +60,17 @@ class ToolConfig:
                 api_key=config['external_llm']['api_key'],
                 model=config['external_llm']['model'],
             ),
-            llm_num_workers=config['llm']['n_workers'],
             sbert_server_url=config['sbert']['base_url'],
             grobid_url=config['citation_parser']['grobid_url'],
-            grobid_num_workers=config['citation_parser']['n_workers'],
             rerank_server_info=LLMServerInfo(
                 base_url=config['rerank']['base_url'],
                 api_key=config['rerank']['api_key'],
                 model=config['rerank']['model'],
             ),
-            n_documents=config['rerank']['num_documents'],
-            synthesis_n_documents=config['synthesis']['num_documents'],
+            rerank_n_documents=config['rerank']['num_documents'],
             topn=config['source_selection']['topn'],
-            topic_similarity_threshold=config['topic_coverage']['topic_similarity_threshold'],
+            topic_weak_sim_threshold=config['topic_coverage']['topic_weak_sim_threshold'],
+            topic_sim_threshold=config['topic_coverage']['topic_sim_threshold'],
             redundancy_similarity_threshold=config['quality']['redundancy_similarity_threshold'],
             redundancy_ngram=config['quality']['redundancy_ngram'],
         )

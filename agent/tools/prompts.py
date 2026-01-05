@@ -37,38 +37,6 @@ Provide a JSON object with a brief strategy for the expansion and the queries.
   "queries": ["query 1", "query 2", "query 3", "query 4"]
 }}'''
 
-SUBTOPIC_GENERATION_PROMPT = '''
-You are an expert academic editor and research strategist. Your task is to define a set of distinct, non-overlapping subtopic names for a literature review, based on clusters of research papers.
-
-**Context:**
-The overall research topic (User Query) is: "{query}"
-
-**Input Clusters:**
-Below is a JSON object containing lists of keywords/titles extracted from clusters of papers. Each cluster represents a potential section of the review.
-
-```json
-{clusters}
-```
-
-**Requirements:**
-1. **Distinctiveness**: Each subtopic name must be unique and clearly distinguishable from the others. Avoid generic terms that could apply to any cluster (e.g., "Methods," "Applications").
-2. **Cohesion**: The set of subtopics should form a logical narrative structure for a scientific survey on "{query}".
-3. **Precision**: The name must accurately reflect the specific theme of the keywords in that cluster.
-4. **Formatting**: Output the result as a strictly formatted JSON list of strings.
-
-**Output Format:**
-Return strictly a JSON object with a single key "subtopics" containing the names mapped with the input clusters. Example:
-```json
-{{
-    "subtopics": {{
-        "Cluster 1": "Privacy-Preserving Optimization",
-        "Cluster 2": "Communication-Efficient Aggregation",
-        "Cluster 3": "Byzantine Fault Tolerance"
-    }}
-}}
-```
-'''
-
 CLAIM_SEGMENTATION_PROMPT = '''
 You are a rigorous scientific fact-checker. Your task is to extract a specific claim from a text segment and classify its requirements for verification.
 
@@ -105,16 +73,91 @@ Target Sentence (containing citations): """{target_sentence}"""
 Return strictly a JSON object. Do not output markdown code blocks.
 
 {{
-    "claim": "<The full, self-contained text of the extracted claim>",
-    "claim_type": "<SINGLE_FACTUAL | SERIAL_FACTUAL | SYNTHESIS>",
+    "claim": "<The full, self-contained text of the extracted claim",
+    "claim_type": "<SINGLE_FACTUAL | SERIAL_FACTUAL | SYNTHESIS",
     "requires": {{
-        "<citation_key_1>": "<FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY>",
-        "<citation_key_2>": "<FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY>"
+        "<citation_key_1": "<FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY",
+        "<citation_key_2": "<FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY"
     }}
 }}
 '''
 
-FACTUAL_CORRECTNESS_PROMPT = ''''''
+FACTUAL_CORRECTNESS_PROMPT = '''
+You are a factual correctness verifier for academic surveys. Given:
+
+- A claim extracted from a survey,
+- Evidence from a cited paper (title, abstract, retrieved related sentences),
+
+Determine whether the claim is supported by the cited paper. 
+
+Please first explain your judgment in 1–2 sentences, citing what is missing or incorrect. Finally, select and output your judgment from one of $\\boxed{{SUPPORTED}}$, $\\boxed{{REFUTED}}$ or $\\boxed{{NEUTRAL}}$, in a boxed format, where:
+
+- SUPPORTED: the claim is clearly supported by the evidence.
+- REFUTED: the claim is clearly contradicted by the evidence.
+- NEUTRAL: the claim is not mentioned in the evidence.
+
+### Claim
+{claim}
+
+### Evidence
+{text}
+'''
+
+TOPIC_AGGREGATION_PROMPT = """
+You are extracting and aggregating research sub-topics from multiple academic surveys with respect to main topic: {query}. Your task has two stages:
+
+---
+
+### Stage 1: Per-survey topic extraction
+
+For each survey paper with its titles set:
+
+* Extract **2–6 concise sub-topics** of the main topic that reflect substantive content from the titles set.
+* Exclude:
+
+  * generic survey phrases (e.g., "a review of", "an overview of"),
+  * generic structures of a paper (e.g., "introduction", "conclusion"),
+  * topics that are simply restatements of the query itself.
+
+Keep sub-topics short (5–8 words). Ensure that all sub-topics must be discussed in the survey.
+
+---
+
+### Stage 2: Cross-survey aggregation
+
+* Merge synonymous or highly overlapping topics across surveys.
+* For each merged topic, list the **survey_ids** in which it appears.
+* **Only keep topics that appear in at least 2 different surveys.**
+
+---
+
+### Output format (JSON only)
+
+```json
+{{
+  "topics": [
+    {{
+      "topic": "...",
+      "surveys": ["S1", "S3"]
+    }},
+    {{
+      "topic": "...",
+      "surveys": ["S2", "S4"]
+    }},
+    ...
+  ]
+}}
+```
+
+Do not include explanations.
+
+---
+
+### Input
+Main topic here: {query}
+Surveys:
+{titles}
+"""
 
 SYNTHESIS_CORRECTNESS_PROMPT = ''''''
 
@@ -141,7 +184,7 @@ You are a senior editor at a top-tier scientific journal (e.g., Nature, NeurIPS)
 
 **Output:**
 {{
-    "score": <Integer 1-5>,
-    "reason": ""<Specific critique. Mention if the transition from the previous paragraph was smooth or abrupt.>"
+    "score": <Integer 1-5,
+    "reason": ""<Specific critique. Mention if the transition from the previous paragraph was smooth or abrupt."
 }}
 '''

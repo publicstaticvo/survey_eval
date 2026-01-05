@@ -2,9 +2,9 @@ import re
 from typing import List, Dict, Any
 
 from .tool_config import ToolConfig
-from .request_utils import AsyncLLMClient
+from .llmclient import AsyncLLMClient
+from .prompts import FACTUAL_CORRECTNESS_PROMPT
 from .utils import split_content_to_paragraph, paragraph_to_text
-from .prompts import FACTUAL_CORRECTNESS_PROMPT, SYNTHESIS_CORRECTNESS_PROMPT
 
 
 class FactualReranker(AsyncLLMClient):
@@ -43,16 +43,22 @@ class FactualCorrectnessCritic:
         Implementation: 
         """
         # 1. Split cited_papers['full_content'] into paragraphs if it has
-        documents = [cited_paper['title'], cited_paper['abstract']]        
+        documents = [] 
         if isinstance(content := cited_paper['full_content'], dict):
             # Has full content
-            documents += [paragraph_to_text(x) for x in split_content_to_paragraph(content)]
-        # 2. Select related paragraphs from each evidence
-        documents = list(set(documents))
-        parameters = {"query": claim, "documents": documents, "top_n": self.rerank_n_documents}
-        rerank_results = await self.reranker.call("rerank", **parameters, return_documents=True)
-        # 3. Judge            
-        result = await self.llm.call(inputs={"claim": claim, "text": "\n\n".join(rerank_results)})
+            documents = [paragraph_to_text(x) for x in split_content_to_paragraph(content)]
+            # 2. Select related paragraphs from each evidence
+            documents = list(set(documents))
+            parameters = {"query": claim, "documents": documents, "top_n": self.rerank_n_documents}
+            rerank_results = await self.reranker.call("rerank", **parameters, return_documents=True)
+            # add: "This paper requires only *** to validate"
+        # 3. Judge        
+        text = f"Title: {cited_paper['title']}"
+        if cited_paper['abstract']:
+            text += f"\nAbstract: {cited_paper['abstract']}"
+        if isinstance(content, dict):
+            text += f"\nRetrieved related sentences: \n{'\n\n'.join(rerank_results)}"
+        result = await self.llm.call(inputs={"claim": claim, "text": text})
         inputs = {"claim": claim, "documents": documents}
         if result == "supported": inputs['result'] = "SUPPORTED"
         elif result == "refuted": inputs['result'] = "REFUTED"
