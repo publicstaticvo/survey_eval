@@ -113,17 +113,3 @@ def split_content_to_paragraph(content: dict | list):
 
 def paragraph_to_text(content: list[dict]):
     return " ".join([s['text'] for s in content])
-
-
-def prepare_paragraphs_for_clarity(paper_content: dict):
-    paragraphs = []
-    for i, p in enumerate(paper_content['paragraphs']):
-        current = " ".join(x['text'] for x in p)
-        if i >= 1: paragraphs.append({"text": current, "pre_text": paragraphs[-1]['text']})
-        else: paragraphs.append({"text": current, "pre_text": "This is the first paragraph in this section."})
-    for s in paper_content['sections']:
-        sub_paragraphs = prepare_paragraphs_for_clarity(s)
-        if sub_paragraphs and s['title']: 
-            sub_paragraphs[0]['text'] = f"{s['title']}\n\n" + sub_paragraphs[0]['text']
-        paragraphs.extend(sub_paragraphs)
-    return paragraphs

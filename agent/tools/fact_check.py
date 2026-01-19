@@ -29,7 +29,7 @@ class FactualCorrectnessCritic:
     def __init__(self, config: ToolConfig):
         self.reranker = FactualReranker(config.rerank_server_info)
         self.llm = FactualLLMClient(config.llm_server_info, config.sampling_params)
-        self.rerank_n_documents = config.n_documents
+        self.rerank_n_documents = config.rerank_n_documents
     
     async def __call__(self, claim: str, cited_paper: Dict[str, Any]) -> Dict[str, List]:
         """
@@ -71,7 +71,7 @@ class SynthesisCorrectnessCritic:
     def __init__(self, config: ToolConfig):
         self.reranker = FactualReranker(config.rerank_server_info)
         self.llm = FactualLLMClient(config.llm_server_info, config.sampling_params)
-        self.rerank_n_documents = config.n_documents
+        self.rerank_n_documents = config.rerank_n_documents
 
     async def __call__(self, claim: str, cited_papers: Dict[str, Any]) -> Dict[str, List]:
         """

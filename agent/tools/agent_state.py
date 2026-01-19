@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class AgentState(BaseModel):
     # Inputs
     query: str
+    survey_title: str
     review_paper: Dict[str, Any]
     
     # Shared Resources (Written once)
@@ -35,4 +36,3 @@ class AgentState(BaseModel):
     source_evals: Dict[str, Any] = Field(default_factory=dict)
     topic_evals: Dict[str, Any] = Field(default_factory=dict)
     quality_evals: Dict[str, Any] = Field(default_factory=dict)
-    summary_fact_check_metrics: Dict[str, Any] = Field(default_factory=dict)

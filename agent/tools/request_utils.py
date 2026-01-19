@@ -12,9 +12,9 @@ GROBID_URL = "https://localhost:8070"
 class RateLimit:
     OPENALEX_SEMAPHORE = asyncio.Semaphore(5)              # 搜索 API
     AGENT_SEMAPHORE = asyncio.Semaphore(100)                # LLM
-    HTTP_SEMAPHORE = asyncio.Semaphore(10)
+    HTTP_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
-    PARSE_SEMAPHORE = asyncio.Semaphore(10)                 # GROBID docker镜像本地解析
+    PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker镜像本地解析
 
 
 class SessionManager:
@@ -49,7 +49,8 @@ async def async_request_template(
     method: str,
     url: str,
     headers: dict = HEADERS,
-    parameters: dict = None
+    parameters: dict = None,
+    timeout: int = 30
 ) -> dict:
     """使用全局 session"""
     session = SessionManager.get()
@@ -59,10 +60,10 @@ async def async_request_template(
     
     if method.lower() == "post":
         headers.setdefault("Content-Type", "application/json")
-        async with session.post(url, headers=headers, json=parameters) as resp:
+        async with session.post(url, headers=headers, json=parameters, timeout=timeout) as resp:
             resp.raise_for_status()
             return await resp.json()
     else:
-        async with session.get(url, headers=headers, params=parameters) as resp:
+        async with session.get(url, headers=headers, params=parameters, timeout=timeout) as resp:
             resp.raise_for_status()
             return await resp.json()

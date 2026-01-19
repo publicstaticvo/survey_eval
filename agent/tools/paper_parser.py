@@ -7,10 +7,6 @@ from .paper_elements import Paper, Section, Paragraph, Sentence
 
 class PaperParser:
     NS = {'tei': 'http://www.tei-c.org/ns/1.0'}
-
-    # Regex patterns for section numbering
-    SECTION_PATTERN = re.compile(r'^((?:\d+\.)*\d+)\.?(?:\s+(.*?))?$')
-    SECTION_NUMBER_PATTERN = re.compile(r'^((?:\d+\.)*\d+)\.\s+')
     
     # Keywords that often indicate non-section headings
     NON_SECTION_KEYWORDS = [
@@ -18,10 +14,6 @@ class PaperParser:
         'corollary', 'definition', 'remark', 'example', 'proof',
         'algorithm', 'equation', 'appendix'
     ]
-    
-    def __init__(self):
-        self.citation_map = {}
-        self.current_section_hierarchy = []
             
     def parse(self, xml_content: str) -> Paper:
         root = ET.fromstring(xml_content)        
@@ -31,12 +23,12 @@ class PaperParser:
         paper.title = self._extract_title(root)
         paper.author = self._extract_authors_string(root)        
         # Extract references/bibliography
-        paper.references = self._extract_references(root)        
+        self._extract_references(root)       
         # Extract abstract
         paper.abstract = self._extract_abstract(root, paper)
         # Extract body sections
         self._extract_body_sections(root, paper)
-        paper.references = self.citation_map        
+        paper.references = {x['ref_text']: x['title'] for x in self._citation_map.values() if 'ref_text' in x}  
         return paper
     
     def _extract_title(self, root: ET.Element) -> str:
@@ -74,7 +66,7 @@ class PaperParser:
         for div in abstract_elem.findall('.//tei:div', self.NS):
             for p_elem in div.findall('.//tei:p', self.NS):
                 paragraph = Paragraph(father=abstract_section)
-                self._parse_paragraph_element(p_elem, paragraph, paper.references)
+                self._parse_paragraph_element(p_elem, paragraph)
                 if paragraph.sentences:
                     abstract_section.add_paragraph(paragraph)
         
@@ -82,7 +74,7 @@ class PaperParser:
         if not abstract_section.paragraphs:
             for p_elem in abstract_elem.findall('.//tei:p', self.NS):
                 paragraph = Paragraph(father=abstract_section)
-                self._parse_paragraph_element(p_elem, paragraph, paper.references)
+                self._parse_paragraph_element(p_elem, paragraph)
                 if paragraph.sentences:
                     abstract_section.add_paragraph(paragraph)
         
@@ -91,57 +83,27 @@ class PaperParser:
     def _extract_body_sections(self, root: ET.Element, paper: Paper):
         """Extract body sections with hierarchical structure."""
         body = root.find('.//tei:text/tei:body', self.NS)
-        if body is None:
-            return
-        
-        # GROBID返回的XML文件往往不会按照你所期望的那样分好head，那最好的方法就是先提取整段文本再分割。
-        pseudo_sections = []
+        if body is None: return
+        self._current_section_hierarchy = [paper]
         for div in body.findall('./tei:div', self.NS):
-            sections = self._parse_div_element(div, paper.references)
-            pseudo_sections.extend(sections)
-    
-    def _extract_text_from_element(self, element: ET.Element) -> str:
-        """从元素中提取文本内容"""
-        return ' '.join(element.itertext()).strip()
+            self._parse_div_element(div)
 
-    def _parse_div_element(self, div_element: ET.Element, father: Section):
-        """
-        Parse a div element that may contain multiple sections within paragraphs.
-        
-        Args:
-            div_elem: The div XML element
-            parent: Parent Section object
-            references: Dictionary of references for citation mapping
-            
-        Returns:
-            List of Section objects
-        """
-        sections = []       
-        # 和PDF parser中不同，处理明白段落和引用就行。
-        current_head = None
-        
+    def _parse_div_element(self, div_element: ET.Element):
         for child in div_element:
-            if child.tag.endswith("head"):
-                n_attr = child.get('n')
-                text = self._extract_text_from_element(child)
-                current_head = f"{n_attr} {text}" if n_attr else text
-                sections.append(Section(name=current_head, father=father))
+            if child.tag == f"{{{self.NS['tei']}}}head":
+                n_attr = child.get('n', "")
+                text = ' '.join(child.itertext()).strip()
+                while n_attr.count(".") + 1 < len(self._current_section_hierarchy):
+                    # 回退section层级以找到
+                    self._current_section_hierarchy.pop()
+                section = Section(name=text, father=self._current_section_hierarchy[-1])
+                self._current_section_hierarchy[-1].add_child(section)
+                self._current_section_hierarchy.append(section)
 
-            elif child.tag.endswith("div"):
-                self._parse_div_element(child, sections[-1])
-            
-            else:
-                paragraph = Paragraph(father=father)
-                if current_head:
-                    paragraph.add_sentence(Sentence(current_head, paragraph, []))
-                if not sections:
-                    sections.append(Section(name=current_head, father=father))
-                current_head = None
+            elif child.tag == f"{{{self.NS['tei']}}}p":
+                paragraph = Paragraph(father=self._current_section_hierarchy[-1])
                 self._parse_paragraph_element(child, paragraph)
-                sections[-1].add_paragraph(paragraph)
-
-        for section in sections:
-            father.add_child(section)
+                self._current_section_hierarchy[-1].add_paragraph(paragraph)
     
     def _parse_paragraph_element(self, p_element: ET.Element, paragraph: Paragraph):
         """
@@ -164,16 +126,16 @@ class PaperParser:
             # Handle citation references
             if element.tag == f"{{{self.NS['tei']}}}ref" and element.get('type') == 'bibr':
                 citation_id = element.get('target', '').replace('#', '')  # b1, b2, ..., b500
-                ref_text = ''.join(element.itertext()).strip()  # "Yu et al." or "[1]"
+                ref_text = re.sub(r'[^0-9]', '', ''.join(element.itertext()).strip())  # "Yu et al." or "[1]"
                 
                 # Add citation marker
                 if current_text:
                     text_parts.append(('text', ''.join(current_text)))
                     current_text.clear()
 
-                if citation_id in self.citation_map:
-                    self.citation_map[citation_id]['ref_text'] = ref_text
-                    text_parts.append(('citation', self.citation_map[citation_id]))
+                if citation_id in self._citation_map:
+                    self._citation_map[citation_id]['ref_text'] = ref_text
+                    text_parts.append(('citation', self._citation_map[citation_id]))
                 
             else:
                 # Recursively process child elements
@@ -235,52 +197,19 @@ class PaperParser:
             paragraph.add_sentence(sentence_obj)
     
     def _extract_references(self, root: ET.Element) -> dict:
-        """Extract bibliography/reference list as a dictionary."""
-        
+        """Extract bibliography/reference list as a dictionary."""        
+        self._citation_map = {}
         back = root.find('.//tei:text/tei:back', self.NS)
         if back is None: return
         
-        for biblstruct in back.findall('.//tei:listBibl/tei:biblStruct', self.NS):
-            ref_id = biblstruct.get('{http://www.w3.org/XML/1998/namespace}id', '')
-            
-            # Extract title
-            title_element = biblstruct.find('.//tei:analytic/tei:title', self.NS)
-            if title_element is None:
-                title_element = biblstruct.find('.//tei:monogr/tei:title', self.NS)
-            title = ''.join(title_element.itertext()).strip() if title_element is not None else ""
-            
-            # Extract authors
-            ref_authors = []
-            author_element = biblstruct.findall('.//tei:analytic/tei:author', self.NS)
-            if author_element is None:
-                author_element = biblstruct.findall('.//tei:monogr/tei:author', self.NS)
-            for author in author_element:
-                persname = author.find('.//tei:persName', self.NS)
-                if persname is not None:
-                    forename = persname.find('.//tei:forename', self.NS)
-                    surname = persname.find('.//tei:surname', self.NS)
-                    name = f"{forename.text if forename is not None else ''} {surname.text if surname is not None else ''}".strip()
-                    if name: ref_authors.append(name)
-            
-            # Extract publication info
-            monogr = biblstruct.find('.//tei:monogr', self.NS)
-            journal = ""
-            year = ""
-            
-            if monogr is not None:
-                journal_element = monogr.find('.//tei:title', self.NS)
-                if journal_element is not None: journal = ''.join(journal_element.itertext()).strip()
-                
-                date_element = monogr.find('.//tei:imprint/tei:date', self.NS)
-                if date_element is not None: year = date_element.get('when', '')
-            
-            if ref_id:
-                self.citation_map[ref_id] = {
-                    'title': title,
-                    'authors': ref_authors,
-                    'journal': journal,
-                    'year': year
-                }
+        for biblstruct in back.findall('.//tei:listBibl/tei:biblStruct', self.NS):   
+            if ref_id := biblstruct.get('{http://www.w3.org/XML/1998/namespace}id', ''):
+                # Extract title
+                title_element = biblstruct.find('.//tei:analytic/tei:title', self.NS)
+                if title_element is None:
+                    title_element = biblstruct.find('.//tei:monogr/tei:title', self.NS)
+                title = ''.join(title_element.itertext()).strip() if title_element is not None else ""
+                self._citation_map[ref_id] = {"title": title}
 
     def get_titles(self, xml_content: str) -> List[str]:
         root = ET.fromstring(xml_content)
@@ -289,21 +218,9 @@ class PaperParser:
             return
         
         heads = []
-        for head in body.findall('./tei:head', self.NS):
-            heads.append(' '.join(head.itertext()))
+        for div in body.findall('./tei:div', self.NS):
+            for child in div:
+                if child.tag == f"{{{self.NS['tei']}}}head":
+                    heads.append(' '.join(child.itertext()).lower())
         
         return heads
-
-
-# Example usage
-if __name__ == "__main__":
-    # Initialize parser (make sure GROBID is running on localhost:8070)
-    parser = PaperParser()
-    # with open("/data/tsyu/1710.03675.xml", encoding='utf-8') as f:
-    #     paper = f.read()
-    # paper = parser.parse_xml(paper)
-    paper = parser.parse("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
-    print(len(paper.children))
-    print("=" * 50 + "Skeletion" + "=" * 50)
-    x = paper.get_skeleton("all")
-    # filename = "../crawled_papers/pdf/1710.03675.pdf"

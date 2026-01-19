@@ -7,9 +7,9 @@ import yaml
 
 @dataclass(frozen=True)
 class LLMServerInfo:
-    base_url: str
-    api_key: str | None = None
-    model: str = "whatever"
+    base_url: str = "https://uni-api.cstcloud.cn"
+    api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
+    model: str = "gpt-oss-120b"
     
 
 @dataclass(frozen=True)
@@ -18,15 +18,15 @@ class ToolConfig:
     agent_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     agent_max_tokens: int = 16384
     # General
-    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2025-1-1", "%Y-%m-%d"))
+    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2024-12-31", "%Y-%m-%d"))
     # Sentence Transformer
-    sbert_server_url: str = "http://localhost:8030"
+    sbert_server_url: str = "http://172.18.36.90:8030"
     # external LLM
     llm_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     sampling_params: Mapping[str, Any] = field(default_factory=lambda: {'temperature': 0.0, "max_tokens": 16384})
     # dynamic oracle
     num_oracle_papers: int = 1000
-    letor_path: str = "backup/letor.txt"
+    letor_path: str = "backup/ranker.txt"
     # citation parser
     grobid_url: str = "http://localhost:8070"
     grobid_num_workers: int = 10
@@ -39,7 +39,8 @@ class ToolConfig:
     topic_weak_sim_threshold: float = 0.45
     topic_sim_threshold: float = 0.55
     # quality
-    redundancy_similarity_threshold: float = 0.95
+    sentence_similarity_threshold: float = 0.97
+    paragraph_similarity_threshold: float = 0.92
     redundancy_ngram: int = 5
 
     @classmethod
@@ -71,6 +72,7 @@ class ToolConfig:
             topn=config['source_selection']['topn'],
             topic_weak_sim_threshold=config['topic_coverage']['topic_weak_sim_threshold'],
             topic_sim_threshold=config['topic_coverage']['topic_sim_threshold'],
-            redundancy_similarity_threshold=config['quality']['redundancy_similarity_threshold'],
+            sentence_similarity_threshold=config['quality']['sentence_similarity_threshold'],
+            paragraph_similarity_threshold=config['quality']['paragraph_similarity_threshold'],
             redundancy_ngram=config['quality']['redundancy_ngram'],
         )

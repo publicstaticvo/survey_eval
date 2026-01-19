@@ -1,6 +1,9 @@
 crawled_papers
+dataset
 nature
+debug
 logs
+pdf
 *.txt
 *.log
 *.npz

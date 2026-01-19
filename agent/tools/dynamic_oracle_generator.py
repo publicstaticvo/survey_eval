@@ -405,7 +405,7 @@ class DynamicOracleGenerator:
         sentences = []
         for paper_id in self.oracle:
             x = self.oracle[paper_id]
-            title = x['display_name']
+            title = x['title']
             abstract = x.get("abstract", None)
             sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
         sentences.append(query)
@@ -456,15 +456,3 @@ class DynamicOracleGenerator:
         logging.info(f"DynamicOracleGenerator::Get rank")
         self._predict_paper_rank()
         return {"oracle_papers": self.oracle}
-
-
-async def main():
-    config = ToolConfig()
-    query = ""
-    oracles = await DynamicOracleGenerator(config)(query)['oracle_papers']
-    with open("debug/oracles.json") as f:
-        json.dump(oracles, f, ensure_ascii=False)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

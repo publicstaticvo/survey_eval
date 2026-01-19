@@ -8,6 +8,9 @@ from .quality import QualityCritic
 from .source_critic import MissingPaperCheck
 from .topic_coverage import TopicCoverageCritic
 from .tool_config import ToolConfig
+from .paper_parser import PaperParser
+from .sbert_client import SentenceTransformerClient
+from .request_utils import SessionManager
 
 tools = [
     AnchorSurveyFetch,
@@ -19,6 +22,11 @@ tools = [
     MissingPaperCheck,
     SynthesisCorrectnessCritic,
     TopicCoverageCritic,
+    SentenceTransformerClient,
+    ToolConfig,
+    AgentState,
+    PaperParser,
+    SessionManager
 ]
 
-__all__ = ["SentenceTransformerClient", "ToolConfig", "AgentState"] + [x.__name__ for x in tools]
+__all__ = [x.__name__ for x in tools]

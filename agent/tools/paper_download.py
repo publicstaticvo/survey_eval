@@ -12,7 +12,7 @@ from tenacity import (
 from .paper_parser import PaperParser
 from .request_utils import RateLimit, SessionManager
 
-GROBID_URL = "https://localhost:8070"
+GROBID_URL = "http://localhost:8070"
 parser = PaperParser()
 
 
@@ -52,10 +52,10 @@ async def parse_with_grobid(pdf_buffer: io.BytesIO) -> Optional[str]:
     except KeyboardInterrupt:
         raise
     except asyncio.TimeoutError:
-        # print("GROBID timeout, will retry")
+        print("GROBID timeout, will retry")
         raise  # 让 tenacity 处理重试
     except aiohttp.ClientError as e:
-        # print(f"GROBID client error: {e}, will retry")
+        print(f"GROBID client error: {e}, will retry")
         raise
     except Exception as e:
         # 其他错误不重试，直接返回 None
@@ -104,9 +104,12 @@ class PaperDownload:
         try:
             paper = self.paper_parser.parse(xml_content)
             if not paper:
+                print(f"No paper.")
                 return {}
+            print(f"Parsed papers. It has {len(paper.children)} sections.")
         except Exception as e:
-            return {}
+            print(f"No paper: {e}")
+            raise
         abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
         return {"full_content": paper.get_skeleton(), "abstract": abstract}
 
@@ -116,12 +119,16 @@ class PaperDownload:
             # 步骤1: 下载 PDF
             pdf_buffer = await download_paper_to_memory(url)
             if not pdf_buffer:
+                print(f"{url} No pdf buffer")
                 return None
+            print(f"Downloaded PDF from {url}")
             
             # 步骤2: 通过 GROBID 解析
             xml_content = await parse_with_grobid(pdf_buffer)
             if not xml_content:
+                print(f"{url} No xml content")
                 return None
+            print(f"Parsed from {url}")
             
             return self._post_hook(xml_content)
         
@@ -129,6 +136,7 @@ class PaperDownload:
             raise
             
         except Exception as e:
+            # print(f"URL failed downloading from {url}: {e}")
             return None
     
 
@@ -137,6 +145,7 @@ class PaperDownload:
         
         # 为该论文的所有 URL 创建任务
         tasks = [asyncio.create_task(self._try_one_url(url)) for url in list(yield_location(paper_meta))]
+        print(f"{len(tasks)} valid locations. They are: {list(yield_location(paper_meta))}")
         
         # 使用 as_completed 获取第一个成功的结果
         try:
@@ -144,16 +153,14 @@ class PaperDownload:
                 try:
                     result = await task
                     if result:
-                        # 取消其他任务
                         for other_task in tasks:
                             if not other_task.done():
                                 other_task.cancel()                                
                         return result
                 except asyncio.CancelledError:
-                    # 某些 task 被 cancel 时不会视为错误，继续尝试其他 task
                     continue
                 except Exception as e:
-                    print(f"URL failed: {e}")
+                    # print(f"URL failed at download_single_paper: {e}")
                     continue
         finally:
             # 确保所有任务都被清理

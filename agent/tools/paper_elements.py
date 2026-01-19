@@ -46,11 +46,12 @@ class Section:
     def add_child(self, child: Section):
         self.children.append(child)
         
-    def get_skeleton(self) -> Dict[str, Any]:
+    def get_skeleton(self, i) -> Dict[str, Any]:
         return {
             "title": self.name,
+            "section_id": i,
             "paragraphs": [paragraph.get_skeleton() for paragraph in self.paragraphs],
-            "sections": [section.get_skeleton() for section in self.children],
+            "sections": [section.get_skeleton(f"{i}.{j + 1}") for j, section in enumerate(self.children)],
         }
 
 
@@ -67,8 +68,8 @@ class Paper(Section):
         return {
             "title": self.title,
             "author": self.author,
-            "abstract": self.abstract.get_skeleton() if self.abstract else "",
+            "abstract": self.abstract.get_skeleton("") if self.abstract else "",
             "paragraphs": [paragraph.get_skeleton() for paragraph in self.paragraphs],
-            "sections": [section.get_skeleton() for section in self.children],
+            "sections": [section.get_skeleton(i + 1) for i, section in enumerate(self.children)],
             "citations": self.references
         }

@@ -42,9 +42,9 @@ You are a rigorous scientific fact-checker. Your task is to extract a specific c
 
 **Input Context:**
 
-Full Paragraph: """{paragraph_text}"""
+Full Paragraph: """{range}"""
 
-Target Sentence (containing citations): """{target_sentence}"""
+Target Sentence (containing citations): """{text}"""
 
 **Definitions & Examples:**
 
@@ -73,11 +73,11 @@ Target Sentence (containing citations): """{target_sentence}"""
 Return strictly a JSON object. Do not output markdown code blocks.
 
 {{
-    "claim": "<The full, self-contained text of the extracted claim",
-    "claim_type": "<SINGLE_FACTUAL | SERIAL_FACTUAL | SYNTHESIS",
+    "claim": "The full, self-contained text of the extracted claim",
+    "claim_type": "SINGLE_FACTUAL | SERIAL_FACTUAL | SYNTHESIS",
     "requires": {{
-        "<citation_key_1": "<FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY",
-        "<citation_key_2": "<FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY"
+        "citation_key_1": "FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY",
+        "citation_key_2": "FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY"
     }}
 }}
 '''
@@ -103,60 +103,120 @@ Please first explain your judgment in 1–2 sentences, citing what is missing or
 {text}
 '''
 
-TOPIC_AGGREGATION_PROMPT = """
-You are extracting and aggregating research sub-topics from multiple academic surveys with respect to main topic: {query}. Your task has two stages:
+ANCHOR_SURVEY_SELECT = """You are selecting anchor surveys for evaluating a target survey titled "{query}".
 
----
+From the candidate survey list, select 1 to 5 surveys that can serve as STRUCTURAL and CONCEPTUAL ANCHORS.
 
-### Stage 1: Per-survey topic extraction
+Strict inclusion criteria:
+1. The primary research object of the survey MUST be Transformer models or Transformer-based architectures themselves.
+2. The survey MUST organize content around model architecture, pretraining strategies, architectural variants, or scaling laws.
+3. Transformers must be the central organizing principle, not one method among many.
 
-For each survey paper with its titles set:
+Strict exclusion criteria:
+- Exclude non-survey papers.
+- Exclude task-centric surveys (e.g., sentiment analysis, stance detection, text generation, ASR, QA).
+- Exclude application- or domain-specific surveys (e.g., healthcare, education, customer service).
+- Exclude surveys where Transformers are discussed only as a technique applied to another main topic.
 
-* Extract **2–6 concise sub-topics** of the main topic that reflect substantive content from the titles set.
-* Exclude:
+For each selected survey:
+- Provide the title
+- Provide a 1–2 sentence justification explicitly explaining WHY it is architecture-centric and Transformer-first.
 
-  * generic survey phrases (e.g., "a review of", "an overview of"),
-  * generic structures of a paper (e.g., "introduction", "conclusion"),
-  * topics that are simply restatements of the query itself.
+If no candidate satisfies these criteria, return an empty list and explain why.
 
-Keep sub-topics short (5–8 words). Ensure that all sub-topics must be discussed in the survey.
+My survey list are:
 
----
+{titles}
 
-### Stage 2: Cross-survey aggregation
-
-* Merge synonymous or highly overlapping topics across surveys.
-* For each merged topic, list the **survey_ids** in which it appears.
-* **Only keep topics that appear in at least 2 different surveys.**
-
----
-
-### Output format (JSON only)
+Your output format should be a JSON object containing anchor surveys you selected, as follows:
 
 ```json
 {{
-  "topics": [
+  "surveys": [
     {{
-      "topic": "...",
-      "surveys": ["S1", "S3"]
-    }},
-    {{
-      "topic": "...",
-      "surveys": ["S2", "S4"]
+      "title": "Survey 1",
+      "reason": "Reason",
     }},
     ...
   ]
 }}
 ```
 
-Do not include explanations.
+or an empty list with reasons if no anchor surveys are found:
 
----
+```json
+{{
+  "surveys": [],
+  "reason": "Reason"
+}}
+```
+"""
 
-### Input
-Main topic here: {query}
-Surveys:
-{titles}
+TOPIC_AGGREGATION_PROMPT = """
+You are an expert researcher tasked with synthesizing a survey-level topic structure from a collection of academic papers. Your goal is to identify high-level research topics that would reasonably appear as major sections in a well-written survey on the given query.
+
+### Target query: {query}
+
+The query defines the conceptual scope of the survey. Topics must fall within this scope, not merely mention it.
+
+### Paper Collection
+
+You are given:
+* High-priority evidences: a list of section and subsection names extracted from anchor surveys for this query.
+* Low-priority evidences: a list of other relevant paper titles retrieved for this query.
+Note that not all sources are equally reliable.
+
+[High-priority evidence]
+Survey section names extracted from anchor surveys:
+{anchors}
+
+[Low-priority evidence]
+Titles and abstracts of other relevant papers:
+{surveys}
+
+### Your Task
+
+From the paper title collection, induce 5–12 high-level survey topics. Each topic should:
+
+1. Represent a recurring research direction or theme, not a single paper.
+2. Be appropriate as a top-level section in a survey.
+3. Be clearly within the semantic scope of the query.
+4. Be methodological or conceptual, not a downstream application domain unless the application itself is central to the query.
+
+### Important Constraints
+
+A topic must be:
+* short (≤ 8 words)
+* noun-phrase like
+* suitable as a section header
+* checkable by surface semantic similarity
+
+Do NOT create topics that are purely:
+- Irrelevant to the query.
+- Application domains (e.g., radiology, neurosurgery, clinical decision making)
+- Neighboring fields outside the query scope (e.g., speech recognition if the query is about NLP)
+- If a paper applies the queried method to another field, treat it as evidence, not a standalone topic.
+- If multiple papers treat a specific model family (e.g., ChatGPT as a representative LLM) as a recurring focus within the query scope, it may form a topic.
+
+### Output Format
+
+Return a JSON object:
+```json
+{{
+  "topics": [
+    {{
+      "topic_name": "...",
+      "representative_papers": ["title1", "title2", "..."]
+    }}
+  ]
+}}
+```
+
+### Sanity Checks (must satisfy internally)
+
+- Every topic should be supported by multiple papers.
+- The union of topics should cover most papers, but not necessarily all.
+- Topics should be distinct and non-overlapping at a high level.
 """
 
 SYNTHESIS_CORRECTNESS_PROMPT = ''''''
@@ -188,3 +248,5 @@ You are a senior editor at a top-tier scientific journal (e.g., Nature, NeurIPS)
     "reason": ""<Specific critique. Mention if the transition from the previous paragraph was smooth or abrupt."
 }}
 '''
+
+FINAL_AGGREGATION_PROMPT = ''''''

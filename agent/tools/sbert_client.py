@@ -5,7 +5,7 @@ import time
 
 
 class SentenceTransformerClient:
-    def __init__(self, api_url: str = "http://localhost:8000/encode", batch_size: int = 32):
+    def __init__(self, api_url: str, batch_size: int = 32):
         self.api_url = api_url
         self.batch_size = batch_size
     
@@ -24,7 +24,7 @@ class SentenceTransformerClient:
             while retry:
                 try:
                     response = requests.post(
-                        self.api_url,
+                        f"{self.api_url}/encode",
                         json={"texts": batch, "normalize": True},
                         headers={"Content-Type": "application/json"},
                         timeout=60

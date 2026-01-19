@@ -80,7 +80,7 @@ def openalex_should_retry(exception: BaseException) -> bool:
 )
 async def openalex_search_paper(
         endpoint: str,
-        filter: dict = None,
+        filter: list[tuple] | dict = {},
         do_sample: bool = False,
         per_page: int = 1,
         add_email: bool | str = True,
@@ -93,7 +93,8 @@ async def openalex_search_paper(
     url = f"https://api.openalex.org/{endpoint}"
     if filter:
         # filter
-        filter_string = ",".join([f"{k}:{v}" for k, v in filter.items()])
+        if isinstance(filter, dict): filter = list(filter.items())
+        filter_string = ",".join([f"{k}:{v}" for k, v in filter])
         request_kwargs["filter"] = filter_string
     if do_sample:
         # use per_page as num_samples
@@ -112,6 +113,7 @@ async def openalex_search_paper(
     papers = []
     for x in results['results']:
         x['id'] = x['id'].replace(URL_DOMAIN, "")
+        x['title'] = re.sub(r"\s+", " ", x['title'])
         if 'abstract_inverted_index' in x:
             x['abstract'] = index_to_abstract(x['abstract_inverted_index'])
             del x['abstract_inverted_index']

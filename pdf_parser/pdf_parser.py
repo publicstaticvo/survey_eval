@@ -626,15 +626,9 @@ class GROBIDParser:
         return self.parse_xml(xml_content)
 
 
-# Example usage
 if __name__ == "__main__":
-    # Initialize parser (make sure GROBID is running on localhost:8070)
     parser = GROBIDParser()
-    with open("../../2105.07221v2.xml", encoding='utf-8') as f:
-        paper = f.read()
-    paper = parser.parse_xml(paper)
-    # paper = parser.parse_pdf("/data/tsyu/survey_eval/crawled_papers/pdf/2306.16261.pdf")
-    print(len(paper.children))
-    print("=" * 50 + "Skeletion" + "=" * 50)
-    # x = paper.get_skeleton("none")
-    # print(x)
+    import os
+    for f in os.listdir("../agent/pdf"):
+        xml = parser.process_pdf_to_xml(f"../agent/pdf/{f}")
+        with open(f"../agent/pdf/{f[:-4]}.xml", "w") as p: p.write(xml)

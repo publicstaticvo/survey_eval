@@ -21,32 +21,40 @@ class CitationParser:
         self.n_workers = config.grobid_num_workers
         self.paper_downloader = PaperDownload()
     
-    async def _search_paper_from_api(self, paper: Dict[str, Any]) -> Dict[str, Any]:
+    async def _search_paper_from_api(self, title: str | Dict[str, Any]) -> Dict[str, Any]:
         """
         paper = citation_info，可能要改成特定的类。
         """
-        paper_title = re.sub(r"[:,.!?&]", "", paper['title'])
+        if isinstance(title, dict): title = title['title']
         # 获取所有正确结果      
         info = {
             "metadata": None, 
-            "title": paper['title'],
+            "title": title,
             "abstract": "", 
             "full_content": {}
         }
-        
-        results = await openalex_search_paper("works", {"title.search": paper_title}, select=self.SELECT)
-      
+        paper_title = re.sub(r"[:,.!?&]", "", title)
+        if not paper_title: 
+            info['status'] = 3
+            info['full_content'] = title
+            return info
+        try:
+            results = await openalex_search_paper("works", {"title.search": paper_title}, select=self.SELECT)      
+        except Exception as e:
+            print(f"Cannot get paper {title} by title.search {e}")
+            results = {}
+        print(f"get {len(results.get("results", []))} papers")
         for paper_info in results.get("results", []):
-            if valid_check(paper_title, paper_info['display_name']): 
+            if valid_check(paper_title, paper_info['title']):
                 paper_info['id'] = paper_info['id'].replace(URL_DOMAIN, "")
                 # download full content
-                if not info['full_content'] and (paper := await self.paper_downloader.download_single_paper(info)): 
-                    paper_info |= paper
+                if not info['full_content'] and (paper := await self.paper_downloader.download_single_paper(paper_info)): 
+                    info['full_content'] = paper['full_content']
+                    if paper['abstract']: info['abstract'] = paper['abstract']
                 # abstract
-                if not info['abstract'] and (abstract := index_to_abstract(paper_info['abstract_inverted_index'])):
-                    info['abstract'] = abstract
+                if not info['abstract']: info['abstract'] = paper_info['abstract']
                 # metadata
-                paper_info = self._get_metadata(paper_info)
+                del paper_info['locations'], paper_info['best_oa_location']
                 info['metadata'] = paper_info
 
         # status == 0 -> OK
@@ -58,45 +66,26 @@ class CitationParser:
         elif info['abstract']:
             info['status'] = 1
             info['full_content'] = info['abstract']
-        elif info['metadatas']:
+        elif info['metadata']:
             info['status'] = 2
-            info['abstract'] = info['full_content'] = paper['title']
+            info['abstract'] = ""
         else:
             info['status'] = 3
-            info['full_content'] = paper['title']
+            info['abstract'] = ""
+        print(f"Paper {title} Status {info['status']}")
         return info
     
-    def _get_metadata(self, paper: Dict[str, Any]):
-        # The following information to get:
-        return {
-            "id": paper['id'].replace(URL_DOMAIN, ""),
-            "title": paper['display_name'],
-            "locations": [x['source'] for x in paper['locations']],
-            "cited_by_count": paper['cited_by_count'],
-            "counts_by_year": paper['counts_by_year'],
-            "publication_date": paper['publication_date'],
-        }
-    
     async def __call__(self, citations: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+        import tqdm
         paper_content_map = {}  # key: citation key; value: citation info.
-        keys, tasks = [], []
-        for k, v in citations.items():
-            keys.append(k)
-            tasks.append(asyncio.create_task(self._search_paper_from_api(v)))
-        for paper, info in zip(keys, await asyncio.gather(*tasks)):
-            paper_content_map[paper] = info
+        # keys, tasks = [], []
+        # for k, v in citations.items():
+        #     keys.append(k)
+        #     tasks.append(asyncio.create_task(self._search_paper_from_api(v)))
+        # for k, task in tqdm.tqdm(zip(keys, asyncio.as_completed(tasks)), total=len(tasks)):
+        #     info = await task
+        #     paper_content_map[k] = info
+        for k, v in tqdm.tqdm(citations.items(), total=len(citations)):
+            info = await self._search_paper_from_api(v)
+            paper_content_map[k] = info
         return {"paper_content_map": paper_content_map}
-    
-
-async def main():
-    config = ToolConfig()
-    query = ""
-    results = await CitationParser(config)(query)
-    with open("debug/anchor_papers.json") as f:
-        json.dump(results['anchor_papers'], f, ensure_ascii=False)
-    with open("debug/topics.txt") as f:
-        f.write("\n".join(results['golden_topics']))
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

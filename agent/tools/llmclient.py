@@ -8,7 +8,7 @@ from tenacity import (
 )
 
 from .tool_config import LLMServerInfo
-from request_utils import RateLimit, HEADERS, async_request_template
+from .request_utils import RateLimit, HEADERS, async_request_template
 
 
 def llm_should_retry(exception: BaseException) -> bool:
@@ -23,6 +23,7 @@ class AsyncLLMClient(ABC):
 
     def __init__(self, llm: LLMServerInfo, sampling_params: dict = {}):
         self.llm = llm
+        self.timeout = 600
         self.sampling_params = sampling_params
         
     @abstractmethod
@@ -31,12 +32,30 @@ class AsyncLLMClient(ABC):
     
     def _organize_inputs(self, inputs: dict):
         return self.PROMPT.format(**inputs)
-
+    
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
         retry=retry_if_exception(llm_should_retry) | retry_if_result(lambda x: not x)
     )
+    async def _call_llm(self, endpoint: str = "chat/completions", request_args: dict = {}):
+        try:
+            url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
+            headers = {"Authorization": f"Bearer {self.llm.api_key}"} | HEADERS
+            async with RateLimit.AGENT_SEMAPHORE:
+                data = await async_request_template("post", url, headers, request_args, self.timeout)
+            
+            if not data: 
+                print("No return by LLM")
+                return
+            if endpoint == "chat/completions":
+                data = data["choices"][0]["message"]["content"]
+
+            return self._availability(data)
+        except Exception as e:
+            print(f"LLM call error: {e} {type(e)}")
+            raise
+
     async def call(self, endpoint: str = "chat/completions", **kwargs) -> dict | None:
         self._context = kwargs.get("context", {})
         payload = {"model": self.llm.model}
@@ -53,15 +72,4 @@ class AsyncLLMClient(ABC):
             payload['messages'] = messages
         
         payload.update({k: v for k, v in kwargs.items() if k not in ["context", 'messages']})  
-
-        url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
-        headers = {"Authorization": f"Bearer {self.llm.api_key}"} | HEADERS
-        async with RateLimit.AGENT_SEMAPHORE:
-            data = await async_request_template("post", url, headers, payload)
-        assert data
-        
-        if not data: return
-        if endpoint == "chat/completions":
-            data = data["choices"][0]["message"]["content"]
-
-        return self._availability(data)
+        return await self._call_llm(endpoint, payload)
