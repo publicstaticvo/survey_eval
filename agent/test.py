@@ -29,7 +29,7 @@ async def testCitationParser(config, paper):
 
 async def testClaimSegmentation(config, paper):
     task = await ClaimSegmentation(config)(paper)
-    with open("debug/claims.json", "w") as f: json.dump(task['claims'], f, ensure_ascii=False)
+    with open("debug/claims.json", "w", encoding='utf-8') as f: json.dump(task['claims'], f, ensure_ascii=False)
     print(f"We have {len(task['claims'])} claims and {task['errors']} errors.")
 
 
@@ -39,8 +39,8 @@ async def main():
         config = ToolConfig()
         query = "Transformers Natural Language Processing"
         survey_title = "Transformer models in Natural Language Processing: A Survey"
-        with open("pdf/Transformer.json") as f: paper = json.load(f)
-        if sys.argv[1] == "query": await testDynamicOracleGenerator(config, query)
+        with open("pdf/Transformer.json", encoding='utf-8') as f: paper = json.load(f)
+        if sys.argv[1] == "query": await testAnchorSurveyFetch(config, query)
         else: await testClaimSegmentation(config, paper)
     finally:
         await SessionManager.close()

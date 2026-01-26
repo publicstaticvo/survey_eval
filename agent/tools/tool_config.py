@@ -38,6 +38,10 @@ class ToolConfig:
     # topic coverage
     topic_weak_sim_threshold: float = 0.45
     topic_sim_threshold: float = 0.55
+    # fact check
+    mean_cov_weight: float = 0.7
+    non_compat_punishment: float = 0.6
+    confidence_threshold: float = 0.6
     # quality
     sentence_similarity_threshold: float = 0.97
     paragraph_similarity_threshold: float = 0.92

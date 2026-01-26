@@ -9,7 +9,7 @@ from tenacity import (
     retry_if_exception,           # 遇到什么异常才重试
     retry_if_result,              # 返回None的时候也要重试
 )
-from .paper_parser import PaperParser
+from .grobidpdf.paper_parser import PaperParser
 from .request_utils import RateLimit, SessionManager
 
 GROBID_URL = "http://localhost:8070"

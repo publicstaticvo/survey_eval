@@ -35,17 +35,19 @@ def extract_json(text: str) -> dict:
         return json.loads(text)
     except Exception:
         pass
+
+    try:
+        return json.loads(re.findall(r"```(?:json)?\s*(\{.*?\})\s```", text, re.DOTALL)[-1])
+    except Exception:
+        pass
     
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return {}
     
-    try:
-        candidate = text[start:end+1].replace("'", '"')
-        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
-        return json.loads(candidate)
-    except Exception:
-        return {}
+    candidate = text[start:end+1].replace("'", '"')
+    candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+    return json.loads(candidate)
     
 
 def extract_list(text: str) -> dict:

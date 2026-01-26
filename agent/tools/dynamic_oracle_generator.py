@@ -12,7 +12,7 @@ from sentence_transformers.util import cos_sim
 
 from .openalex import to_openalex, openalex_search_paper, OPENALEX_SELECT
 from .sbert_client import SentenceTransformerClient
-from .llmclient import AsyncLLMClient
+from .llmclient import AsyncChat
 from .prompts import QUERY_EXPANSION_PROMPT
 from .tool_config import ToolConfig
 from .utils import extract_json
@@ -20,7 +20,7 @@ from .utils import extract_json
 debug = False
     
 
-class QueryExpansionLLMClient(AsyncLLMClient):
+class QueryExpansionLLMClient(AsyncChat):
     PROMPT: str = QUERY_EXPANSION_PROMPT
     def _availability(self, response):
         queries = extract_json(response)        

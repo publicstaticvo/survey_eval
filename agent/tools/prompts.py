@@ -32,69 +32,153 @@ Generate exactly 4 search queries to cover the topic's core evidence and its dis
 
 ### OUTPUT FORMAT
 Provide a JSON object with a brief strategy for the expansion and the queries.
+
+```json
 {{
   "strategy": "Analysis of why previous queries failed and how these queries will broaden the search.",
   "queries": ["query 1", "query 2", "query 3", "query 4"]
-}}'''
+}}
+```
+'''
 
 CLAIM_SEGMENTATION_PROMPT = '''
-You are a rigorous scientific fact-checker. Your task is to extract a specific claim from a text segment and classify its requirements for verification.
+You are a rigorous scientific information extractor. Your task is to extract verifiable units (also called claims) from a paragraph. Each verifiable unit must be suitable for independent factual verification against the cited reference(s).
 
-**Input Context:**
+========================
+INPUT
+========================
 
-Full Paragraph: """{range}"""
+Full Paragraph:
+\"\"\"{range}\"\"\"
 
-Target Sentence (containing citations): """{text}"""
+Target Sentence (contains citation markers):
+\"\"\"{text}\"\"\"
 
-**Definitions & Examples:**
+Citation markers in this sentence:
+{keys}
 
-1. **Claim Type**:
-   - **SINGLE_FACTUAL**: A statement regarding a single entity or source.
-     *Example:* "BERT utilizes a masked language modeling objective [1]."
-   - **SERIAL_FACTUAL**: A list of independent facts or examples, each with its own citation.
-     *Example:* "Recent works have applied LLMs to biology [1], chemistry [2], and physics [3]."
-   - **SYNTHESIS**: A statement claiming a relationship (comparison, contrast, evolution) between multiple sources.
-     *Example:* "While method A [1] focuses on speed, method B [2] improves accuracy."
+========================
+CORE DEFINITIONS
+========================
 
-2. **Verification Requirement (per citation)**:
-   - **TITLE_ONLY**: The claim only asserts the existence or general topic of the paper.
-     *Example:* "Several surveys have discussed this topic [1][2]." (Checking the title is enough to prove relevance).
-   - **TITLE_AND_ABSTRACT**: The claim summarizes the main contribution, high-level method, or primary conclusion.
-     *Example:* "Author X proposed a new graph neural network [1]." (Abstract usually states the proposal).
-   - **FULL_TEXT**: The claim cites specific experimental results, hyperparameters, mathematical proofs, or minor details not found in an abstract.
-     *Example:* "The model achieved 92.5% accuracy on ImageNet [1]." or "They used a learning rate of 1e-4 [1]."
+A *verifiable unit* (claim) is the minimal statement that:
+- Is directly supported by the cited reference(s), and
+- Can be independently checked against a single paper.
 
-**Task:**
-1. Identify the full semantic span of the claim associated with the citations in the Target Sentence (this may encompass parts of the surrounding paragraph).
-2. Classify the Claim Type.
-3. For EACH citation key found in the claim, determine the Verification Requirement.
+Claim Types:
+- background: definition, scope, or topic description (what something is about)
+- action: what a paper does (proposes, evaluates, studies, analyzes, shows)
+- result: capability assertions, comparisons, performance, limitations, conclusions
 
-**Output:**
-Return strictly a JSON object. Do not output markdown code blocks.
+========================
+STRICT EXTRACTION RULES
+========================
 
+1. Context Window Constraint:
+   - You may ONLY use information from a local window of at most 3 consecutive sentences:
+     the anchor sentence and its immediately adjacent sentences.
+   - You MUST NOT use any information outside this 3-sentence window.
+
+2. Anchor-Centered Constraint:
+   - Every extracted claim MUST be anchored to the target sentence.
+   - The claim must represent what the citation in the target sentence is used to support.
+   - Do NOT extract claims unrelated to the citation purpose.
+
+3. Minimality Constraint:
+   - Extract the minimal verifiable statement required for factual checking.
+   - Do NOT include background exposition, motivation, or elaboration
+     unless strictly necessary to understand the anchored claim.
+
+4. Coreference Resolution Constraint:
+   - You SHOULD attempt to resolve pronouns or implicit references
+     using only the allowed 3-sentence context window.
+   - Replace pronouns (e.g., it, they, this model, such task) with explicit entities or concepts.
+   - If a pronoun cannot be clearly resolved within the window,
+     you MUST omit that information rather than guessing.
+
+5. Token Legitimacy Constraint:
+   - Every word in the extracted claim MUST appear verbatim in the allowed context window,
+     EXCEPT for the optional phrase "this paper" at the beginning of a claim.
+   - You MUST NOT introduce new words, paraphrases, or inferred terminology.
+
+6. Multiple Citations Handling:
+   - If multiple citations in the target sentence refer to the SAME claim,
+     output ONE claim with multiple citation keys.
+   - If multiple citations correspond to DISTINCT contributions,
+     output separate claims, each with exactly one citation key.
+
+7. Paragraph-Level Writing Note:
+   - Even if the paragraph describes one method or concept across multiple sentences,
+     you MUST NOT treat the entire paragraph as a single claim.
+   - Claims must remain citation-centered, minimal, and independently verifiable.
+
+========================
+OUTPUT FORMAT
+========================
+
+Return a JSON object in the following format:
+
+```json
 {{
-    "claim": "The full, self-contained text of the extracted claim",
-    "claim_type": "SINGLE_FACTUAL | SERIAL_FACTUAL | SYNTHESIS",
-    "requires": {{
-        "citation_key_1": "FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY",
-        "citation_key_2": "FULL_TEXT | TITLE_AND_ABSTRACT | TITLE_ONLY"
+  "claims": [
+    {{
+      "claim": "<verbatim reconstructed statement>",
+      "claim_type": "background" | "action" | "result",
+      "citation_markers": ["<citation_marker>", "..."]
     }}
+  ]
 }}
+```
+
+========================
+FINAL CHECK BEFORE OUTPUT
+========================
+
+Before producing the final answer, ensure that:
+- All claims satisfy the 3-sentence window constraint.
+- All tokens are traceable to the allowed context (except optional 'this paper').
+- No unresolved pronouns remain.
+- Each claim can be independently verified using its citation(s).
 '''
+
+CLAIM_SCHEMA = {
+    "type": "object", 
+    "required": ["claims"],
+    "properties": {
+        "claims": {"type": "array", "items": {
+            "type": "object", 
+            "required": ["claim", "claim_type", "citation_markers"],
+            "properties": {
+                "claim": {"type": "string", "minLength": 1},
+                "claim_type": {"type": "string", "enum": ["background", "action", "result"]},
+                "citation_markers": {"type": "array", "items": {"type": "string"}}
+            }
+        }}
+    }
+}
 
 FACTUAL_CORRECTNESS_PROMPT = '''
 You are a factual correctness verifier for academic surveys. Given:
 
-- A claim extracted from a survey,
-- Evidence from a cited paper (title, abstract, retrieved related sentences),
+- A claim extracted from a survey, and
+- The paper that it cites (including {content_type})
 
-Determine whether the claim is supported by the cited paper. 
-
-Please first explain your judgment in 1–2 sentences, citing what is missing or incorrect. Finally, select and output your judgment from one of $\\boxed{{SUPPORTED}}$, $\\boxed{{REFUTED}}$ or $\\boxed{{NEUTRAL}}$, in a boxed format, where:
+Determine whether the claim is supported by the cited paper. Your judgment should be one of the following:
 
 - SUPPORTED: the claim is clearly supported by the evidence.
 - REFUTED: the claim is clearly contradicted by the evidence.
-- NEUTRAL: the claim is not mentioned in the evidence.
+- NEUTRAL: the claim is not mentioned in the evidence, or there's no sufficient information to verify if the claim is supported or refuted.
+
+**Important:** If your judgment is "SUPPORTED" or "REFUTED", you MUST provide verbatim evidence from the content of the cited paper to support that.
+
+Your output should be a single JSON object only:
+
+```json
+{{
+  "judgment": "SUPPORTED" | "REFUTED" | "NEUTRAL",
+  "evidence": "verbatim evidence from the cited paper, if judgment == SUPPORTED or REFUTED" | "" (if judgment == NEUTRAL)
+}}
+```
 
 ### Claim
 {claim}
@@ -218,35 +302,5 @@ Return a JSON object:
 - The union of topics should cover most papers, but not necessarily all.
 - Topics should be distinct and non-overlapping at a high level.
 """
-
-SYNTHESIS_CORRECTNESS_PROMPT = ''''''
-
-CLARITY_EVAL_PROMPT = '''
-You are a senior editor at a top-tier scientific journal (e.g., Nature, NeurIPS). Your task is to score the writing quality of the following target paper segment, specifically focusing on logical flow and clarity.
-
-**Context (Previous Paragraph):**
-"""{pre_text}"""
-
-**Input Target (Current Paragraph):**
-"""{text}"""
-
-**Scoring Rubric (1-5):**
-1. **Unreadable**: Grammatically broken, incoherent, or nonsensical.
-2. **Poor**: Major logic gaps. The paragraph does not follow logically from the context. Confusing phrasing.
-3. **Average**: Understandable but dry or repetitive. Transitions between sentences or from the previous paragraph are weak or abrupt.
-4. **Good**: Clear, logical flow. Good use of transition words. Terminology is correct and professional.
-5. **Excellent**: Compelling narrative. The transition from the context is seamless. The argument builds perfectly within the paragraph. Concise and persuasive.
-
-**Instructions:**
-1. **Check Transitions:** If the "Context" is NOT "This is the first paragraph of the paper", evaluate how well the "Input Target" flows from it. Does the topic shift abruptly?
-2. **Check Internal Flow:** Within the "Input Target", do the sentences progress logically?
-3. **Check Style:** Is the tone scientific? Is there unnecessary redundancy?
-
-**Output:**
-{{
-    "score": <Integer 1-5,
-    "reason": ""<Specific critique. Mention if the transition from the previous paragraph was smooth or abrupt."
-}}
-'''
 
 FINAL_AGGREGATION_PROMPT = ''''''

@@ -19,57 +19,47 @@ def llm_should_retry(exception: BaseException) -> bool:
 
 class AsyncLLMClient(ABC):
 
-    PROMPT: str = ""
-
     def __init__(self, llm: LLMServerInfo, sampling_params: dict = {}):
         self.llm = llm
         self.timeout = 600
         self.sampling_params = sampling_params
         
     @abstractmethod
-    def _availability(self, response):
+    def _availability(self, response, context):
         raise NotImplementedError
     
-    def _organize_inputs(self, inputs: dict):
-        return self.PROMPT.format(**inputs)
-    
     @retry(
-        stop=stop_after_attempt(5),
+        stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
         retry=retry_if_exception(llm_should_retry) | retry_if_result(lambda x: not x)
     )
-    async def _call_llm(self, endpoint: str = "chat/completions", request_args: dict = {}):
+    async def _post(self, endpoint: str = "chat/completions", payload: dict = None, context: dict = None):
         try:
             url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
             headers = {"Authorization": f"Bearer {self.llm.api_key}"} | HEADERS
             async with RateLimit.AGENT_SEMAPHORE:
-                data = await async_request_template("post", url, headers, request_args, self.timeout)
-            
-            if not data: 
-                print("No return by LLM")
-                return
+                data = await async_request_template("post", url, headers, payload, self.timeout)            
             if endpoint == "chat/completions":
                 data = data["choices"][0]["message"]["content"]
-
-            return self._availability(data)
+            return self._availability(data, context)
         except Exception as e:
-            print(f"LLM call error: {e} {type(e)}")
+            print(f"LLM call error: {type(e)}")
             raise
 
-    async def call(self, endpoint: str = "chat/completions", **kwargs) -> dict | None:
-        self._context = kwargs.get("context", {})
-        payload = {"model": self.llm.model}
 
-        if endpoint == "chat/completions":
-            payload.update(self.sampling_params)
-            if "messages" not in kwargs:
-                if "inputs" not in kwargs:
-                    raise AttributeError("Must have messages or inputs for chat/completions")
-                kwargs['messages'] = self._organize_inputs(kwargs['inputs'])
-            messages = kwargs['messages']
-            if isinstance(messages, str):
-                messages = [{'role': 'user', "content": messages}]
-            payload['messages'] = messages
-        
-        payload.update({k: v for k, v in kwargs.items() if k not in ["context", 'messages']})  
-        return await self._call_llm(endpoint, payload)
+class AsyncChat(AsyncLLMClient):
+
+    PROMPT: str = ""
+    
+    def _organize_inputs(self, inputs: dict):
+        return self.PROMPT.format(**inputs), {}
+    
+    async def call(self, inputs=None, messages=None, context=None, **kwargs):        
+        assert inputs or messages, "Must have messages or inputs for chat/completions"        
+        if messages is None:
+            messages, new_context = self._organize_inputs(kwargs['inputs'])
+        context = {**context, **new_context}
+        if isinstance(messages, str):
+            messages = [{'role': 'user', "content": messages}]
+        payload = {"model": self.llm.model, "messages": messages, **self.sampling_params, **kwargs}
+        return await self._post("chat/completions", payload, context)

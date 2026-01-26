@@ -1,10 +1,10 @@
 
 from .agent_state import AgentState
-from .llmclient import AsyncLLMClient
+from .llmclient import AsyncChat
 from .prompts import FINAL_AGGREGATION_PROMPT
 
 
-class FinalAggregate(AsyncLLMClient):
+class FinalAggregate(AsyncChat):
 
     prompt: str = FINAL_AGGREGATION_PROMPT
 

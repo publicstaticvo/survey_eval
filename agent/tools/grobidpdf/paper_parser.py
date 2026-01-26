@@ -2,7 +2,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import List, Optional
 
-from .paper_elements import Paper, Section, Paragraph, Sentence
+from ..paper_elements import Paper, Section, Paragraph, Sentence
 
 
 class PaperParser:
@@ -15,7 +15,7 @@ class PaperParser:
         'algorithm', 'equation', 'appendix'
     ]
             
-    def parse(self, xml_content: str) -> Paper:
+    def parse(self, xml_content: str, mode: str = "casual") -> Paper:
         root = ET.fromstring(xml_content)        
         # Create the root Paper object
         paper = Paper(name="root", father=None)        
@@ -27,7 +27,7 @@ class PaperParser:
         # Extract abstract
         paper.abstract = self._extract_abstract(root, paper)
         # Extract body sections
-        self._extract_body_sections(root, paper)
+        self._extract_body_sections(root, paper, mode)
         paper.references = {x['ref_text']: x['title'] for x in self._citation_map.values() if 'ref_text' in x}  
         return paper
     
@@ -80,25 +80,30 @@ class PaperParser:
         
         return abstract_section if abstract_section.paragraphs else None
    
-    def _extract_body_sections(self, root: ET.Element, paper: Paper):
+    def _extract_body_sections(self, root: ET.Element, paper: Paper, mode: str):
         """Extract body sections with hierarchical structure."""
         body = root.find('.//tei:text/tei:body', self.NS)
         if body is None: return
         self._current_section_hierarchy = [paper]
         for div in body.findall('./tei:div', self.NS):
-            self._parse_div_element(div)
+            self._parse_div_element(div, mode)
 
-    def _parse_div_element(self, div_element: ET.Element):
+    def _parse_div_element(self, div_element: ET.Element, mode: str):
+        """
+        mode = "strict": 严格鉴别标题从属关系，用于解析待测综述和anchor survey
+        mode = "casual": 仅解析出标题，不分级，用于解析引文
+        """
         for child in div_element:
             if child.tag == f"{{{self.NS['tei']}}}head":
                 n_attr = child.get('n', "")
                 text = ' '.join(child.itertext()).strip()
-                while n_attr.count(".") + 1 < len(self._current_section_hierarchy):
-                    # 回退section层级以找到
-                    self._current_section_hierarchy.pop()
+                if mode == "strict":
+                    while n_attr.count(".") + 1 < len(self._current_section_hierarchy):
+                        # 回退section层级以找到
+                        self._current_section_hierarchy.pop()
                 section = Section(name=text, father=self._current_section_hierarchy[-1])
                 self._current_section_hierarchy[-1].add_child(section)
-                self._current_section_hierarchy.append(section)
+                if mode == "strict": self._current_section_hierarchy.append(section)
 
             elif child.tag == f"{{{self.NS['tei']}}}p":
                 paragraph = Paragraph(father=self._current_section_hierarchy[-1])

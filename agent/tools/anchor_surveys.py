@@ -41,16 +41,15 @@ class AnchorSurveySelect(AsyncLLMClient):
 
     PROMPT: str = ANCHOR_SURVEY_SELECT
 
-    def _availability(self, response: str):
+    def _availability(self, response: str, context: dict):
         results = extract_json(response)
         titles = [x['title'] for x in results['surveys']]
-        title_to_paper = {x['title']: x for x in self._context}
+        title_to_paper = {x['title']: x for x in context}
         return [title_to_paper[x] for x in titles if x in title_to_paper]
     
     def _organize_inputs(self, inputs):
-        self._context = inputs['surveys']
-        prompt = self.PROMPT.format(query=inputs['query'], titles="\n".join("\n".join(f"- {t['title']}" for t in self._context)))
-        return prompt
+        prompt = self.PROMPT.format(query=inputs['query'], titles="\n".join("\n".join(f"- {t['title']}" for t in inputs['surveys'])))
+        return prompt, inputs['surveys']
         
 
 class TopicAggregateLLMClient(AsyncLLMClient):
@@ -58,7 +57,7 @@ class TopicAggregateLLMClient(AsyncLLMClient):
 
     PROMPT: str = TOPIC_AGGREGATION_PROMPT
 
-    def _availability(self, response: str):
+    def _availability(self, response: str, context: dict):
         topics = extract_json(response)
         #  if len(set(x['representative_papers'])) >= 2
         return [x['topic_name'] for x in topics['topics']]
@@ -70,7 +69,7 @@ class TopicAggregateLLMClient(AsyncLLMClient):
         surveys_str = "\n".join(f'- {x['title']}' for x in inputs['surveys'] if x['title'] not in inputs['anchors'])
         prompt = self.PROMPT.format(query=inputs['query'], anchors='\n'.join(high), surveys=surveys_str)
         print(prompt)
-        return prompt
+        return prompt, {}
 
 
 class AnchorSurveyFetch:
