@@ -3,8 +3,9 @@ import asyncio
 import jsonschema
 from typing import Any, List, Dict
 
+from .prompts import CLAIM_SEGMENTATION_PROMPT, CLAIM_SCHEMA, CLAIMS_SCHEMA
 from .utils import split_content_to_paragraph, extract_json
-from .prompts import CLAIM_SEGMENTATION_PROMPT, CLAIM_SCHEMA
+from .sbert_client import SentenceTransformerClient
 from .tool_config import ToolConfig
 from .llmclient import AsyncChat
 
@@ -13,7 +14,7 @@ def range_check(claim: str, paragraph: List[Dict[str, Any]], anchor_id: int) -> 
     """
     check if the claim's tokens are 
     - 100% from the paragraph and 
-    - 95% from the anchor sentence and its adjacent sentences.
+    - 90% from the anchor sentence and its adjacent sentences.
     - allow claim starting with "This paper ..."
     """
 
@@ -29,35 +30,46 @@ def range_check(claim: str, paragraph: List[Dict[str, Any]], anchor_id: int) -> 
     paragraph_tokens = [_tokenize(s['text']) for s in paragraph]
     if not all(token in sum(paragraph_tokens, []) for token in claim_tokens): return False
     anchor_range = sum(paragraph_tokens[max(0, anchor_id - 1): anchor_id + 2], [])
-    print(sum(1 for token in claim_tokens if token in anchor_range))
-    return sum(1 for token in claim_tokens if token in anchor_range) / len(claim_tokens) < 0.95
+    # print(sum(1 for token in claim_tokens if token in anchor_range), len(claim_tokens), anchor_range)
+    return sum(1 for token in claim_tokens if token in anchor_range) / len(claim_tokens) >= 0.9
 
 
 class ClaimSegmentationLLMClient(AsyncChat):
 
     PROMPT: str = CLAIM_SEGMENTATION_PROMPT
 
+    def __init__(self, llm, sampling_params):
+        super().__init__(llm, sampling_params)
+
     def _availability(self, response: str, context: dict):
         claims = extract_json(response)
         # 1. check schema
-        jsonschema.validate(claim, CLAIM_SCHEMA)
+        try:
+            jsonschema.validate(claims, CLAIMS_SCHEMA)
+        except jsonschema.ValidationError:
+            jsonschema.validate(claims, CLAIM_SCHEMA)
+            claims = {"claims": [claims]}
         # 2. range_check if claim is in paragraph
-        for claim in claims:
-            assert range_check(claim, context['paragraph'], context['sentence_id'])
+        for claim in claims['claims']:
+            # print(claim, context['paragraph'], context['sentence_id'])            
+            assert range_check(claim['claim'], context['paragraph'], context['sentence_id'])
             # 3. after prompt validation and improvement:
             #    ensure each claim has exactly 1 citation
-            claim['citations'] = {k: context['citations'][k] for k in claim['citation_markers']}
-        return claims
+            # claim['citations'] = {k: context['citations'][k] for k in claim['citation_markers']}
+            claim['paragraph_id'] = context['paragraph_id']
+            claim['sentence_id'] = context['sentence_id']
+        return claims['claims']
     
     def _organize_inputs(self, inputs):
-        paragraph_text = " ".join(s['text'] for s in inputs['range'])
-        prompt = self.PROMPT.format(text=inputs['text'], range=paragraph_text, keys=list(inputs['citations']))
+        paragraph_text = "\n".join(s['text'] for s in inputs['range'])
+        prompt = self.PROMPT.format(text=inputs['text'], range=paragraph_text, keys=list(x['key'] for x in inputs['citations']))
         return prompt, {"citations": inputs['citations'], "paragraph": inputs['range'], "sentence_id": inputs['sentence_id']}
 
 
 class ClaimSegmentation:
     
     def __init__(self, config: ToolConfig):
+        sbert = SentenceTransformerClient(config.sbert_server_url)
         self.llm = ClaimSegmentationLLMClient(config.llm_server_info, config.sampling_params)
     
     async def __call__(self, paper_content: dict[str, Any]):
@@ -65,7 +77,7 @@ class ClaimSegmentation:
         :param paper_content: This is the result of `Paper.get_skeleton()`
         Use split_content_to_paragraph to convert into list of paragraphs
         Each paragraph is a list of sentences
-        Each sentence is {"text": "sentence_text", "citations": {"key1": {}, "key2": {}}}
+        Each sentence is {"text": "sentence_text", "citations": [{"title": "title1", "key": "key1"}, {"title": "title1", "key": "key1"}]}
         """
         paragraphs = split_content_to_paragraph(paper_content)
         tasks = []

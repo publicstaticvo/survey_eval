@@ -19,7 +19,7 @@ class CitationParser:
     
     def __init__(self, config: ToolConfig):
         self.n_workers = config.grobid_num_workers
-        self.paper_downloader = PaperDownload()
+        self.paper_downloader = PaperDownload(config.grobid_url)
     
     async def _search_paper_from_api(self, title: str | Dict[str, Any]) -> Dict[str, Any]:
         """

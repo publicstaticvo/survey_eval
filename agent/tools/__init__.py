@@ -1,10 +1,11 @@
 from .agent_state import AgentState
 from .anchor_surveys import AnchorSurveyFetch
 from .claim_segmentation import ClaimSegmentation
+from .citation_parser import CitationParser
 from .dynamic_oracle_generator import DynamicOracleGenerator
 from .fact_check import FactualCorrectnessCritic
-from .citation_parser import CitationParser
 from .quality import QualityCritic
+from .query_expand import QueryExpand
 from .source_critic import MissingPaperCheck
 from .topic_coverage import TopicCoverageCritic
 from .tool_config import ToolConfig
@@ -16,10 +17,11 @@ from .latex.latex_parser import LaTeXParser
 tools = [
     AnchorSurveyFetch,
     ClaimSegmentation,
+    CitationParser,
     DynamicOracleGenerator,
     FactualCorrectnessCritic,
-    CitationParser,
     QualityCritic,
+    QueryExpand,
     MissingPaperCheck,
     TopicCoverageCritic,
     SentenceTransformerClient,

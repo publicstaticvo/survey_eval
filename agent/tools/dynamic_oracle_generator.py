@@ -1,6 +1,4 @@
-import re
 import math
-import json
 import logging
 import asyncio
 import lightgbm
@@ -10,21 +8,11 @@ from datetime import datetime
 from typing import List, Dict, Any
 from sentence_transformers.util import cos_sim
 
-from .openalex import to_openalex, openalex_search_paper, OPENALEX_SELECT
 from .sbert_client import SentenceTransformerClient
-from .llmclient import AsyncChat
-from .prompts import QUERY_EXPANSION_PROMPT
+from .openalex import openalex_search_paper
 from .tool_config import ToolConfig
-from .utils import extract_json
 
 debug = False
-    
-
-class QueryExpansionLLMClient(AsyncChat):
-    PROMPT: str = QUERY_EXPANSION_PROMPT
-    def _availability(self, response):
-        queries = extract_json(response)        
-        return queries['queries']
 
 
 class DynamicOracleGenerator:
@@ -35,7 +23,6 @@ class DynamicOracleGenerator:
         self.register_key = {}
         self.letor = lightgbm.Booster(model_file=config.letor_path)
         self.eval_date = config.evaluation_date
-        self.query_llm = QueryExpansionLLMClient(config.llm_server_info, config.sampling_params)
         self.num_oracle_papers = config.num_oracle_papers
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
 
@@ -58,25 +45,6 @@ class DynamicOracleGenerator:
     def _paper_age(self, paper):
         year = int(self.eval_date.strftime("%Y-%m-%d")[:4]) - int(paper['publication_date'][:4])
         return year + 1
-
-    async def _request_for_papers(self, query, uplimit) -> List[Dict[str, Any]]:
-        filter_params = {
-            "default.search": to_openalex(query),
-            "to_publication_date": self.eval_date.strftime("%Y-%m-%d"), 
-        }
-        select = f"{OPENALEX_SELECT},relevance_score"
-        oracle = []
-        # first query
-        for page in range(1, (uplimit - 1) // 200 + 2):
-            try:
-                results = await openalex_search_paper("works", filter_params, per_page=200, select=select, page=page)
-            except Exception as e:
-                logging.info(f"An {e} cause oracle data miss in query {query}.")
-                return []
-            uplimit = results['count']
-            oracle.extend(results['results'])
-
-        return oracle
     
     async def _get_high_refs(self, num_high_refs: int = 100) -> list:
         corefs = {}
@@ -221,136 +189,96 @@ class DynamicOracleGenerator:
         
         return final_results
     
-    async def _collect_oracles(self, query: str):
+    async def _collect_oracles(self, query: str, prev_queries: List[str], library: Dict[str, Any]):
         """
             Get self.num_oracle_papers selected queries. 
         """
+        self.library = library
         targets = {"high_ref": 50, "top_seed": 50, "total": self.num_oracle_papers}
-        prev_queries, oracles = [], []  # 以便后面按顺序取
-        prev_length = 0
-        papers_for_each_query = 50
-        while len(self.oracle) < self.num_oracle_papers:
-            self.register_key = {}  # register which paper belongs to which query
-            # 1. fetch 5 queries
-            inputs = {"query": query, "prev_query": ("".join([f"\n   - {q}" for q in prev_queries[1:]])) if prev_queries else "No"}
-            try:
-                queries = await self.query_llm.call(inputs=inputs)
-            except Exception as e:
-                logging.info(f"QueryExpansion {e}")
-                queries = []
-            if not prev_queries: queries = [query] + queries
-            logging.info(f"Get {len(queries)} queries: {queries}")
-            if not (queries := [q for q in queries if q not in prev_queries]): continue
-            # 2 request papers 要串行
-            for q in queries:                
-                try:
-                    oracle = await self._request_for_papers(q, papers_for_each_query)
-                    if oracle:
-                        prev_queries.append(q)
-                        oracles.append(oracle)  # oracles中的顺序应该与prev_queries中的query一一对应
-                        for k in oracle:
-                            if k['id'] not in self.library:
-                                self.library[k['id']] = k
-                except Exception as e:
-                    logging.info(f"Query {q} has an {e}")
-            # register paper to query
-            register_key_reverse_map = {}
-            for q, oracle in zip(prev_queries, oracles):
-                for x in oracle:
-                    if x['id'] in register_key_reverse_map:
-                        # compare openalex relevance score to decide which query it belongs to
-                        if x['relevance_score'] > register_key_reverse_map[x['id']]['relevance']:
-                            register_key_reverse_map[x['id']]['query'] = q
-                            register_key_reverse_map[x['id']]['relevance'] = x['relevance_score']
-                    else:
-                        # new paper
-                        register_key_reverse_map[x['id']] = {'query': q, "relevance": x['relevance_score']}
-            for q in prev_queries: self.register_key[q] = []
-            for i, x in register_key_reverse_map.items():
-                self.register_key[x['query']].append((i, x['relevance']))
-            for q in prev_queries: 
-                self.register_key[q] = sorted(self.register_key[q], key=lambda x: x[1], reverse=True)  
-            if debug: 
-                stat = {q: len(v) for q, v in self.register_key.items()}
-                logging.info(f"query {query.lower()} Get papers distribution: {stat}, library_size: {len(self.library)}")
-            # 3 get neighbors
-            neighbors = await self._get_neighbors(prev_queries, query, targets['top_seed'])
-            # 4 get high_ref foundations
-            high_refs = await self._get_high_refs(targets['high_ref'])
+        self.register_key = {q: [] for q in prev_queries}  # register which paper belongs to which query       
+        # register paper to query
+        for i, x in library.items():
+            self.register_key[x['query']].append((i, x['relevance_score']))
+        for q in prev_queries: 
+            self.register_key[q] = sorted(self.register_key[q], key=lambda x: x[1], reverse=True)
+        # 3 get neighbors
+        neighbors = await self._get_neighbors(prev_queries, query, targets['top_seed'])
+        # 4 get high_ref foundations
+        high_refs = await self._get_high_refs(targets['high_ref'])
+        if debug:
+            logging.info(f"query {query.lower()} Has {len(self.library)} papers in library.")    
+        # 5 先检查这一轮一共找到多少不重复文献。若数量足够就组装并返回，否则重新循环。
+        if len(self.library) >= self.num_oracle_papers:
+            # 5.1 先选择high_corefs。
+            selected = set(high_refs)
             if debug:
-                logging.info(f"query {query.lower()} Has {len(self.library)} papers in library.")    
-            # 5 先检查这一轮一共找到多少不重复文献。若数量足够就组装并返回，否则重新循环。
-            if len(self.library) >= self.num_oracle_papers:
-                # 5.1 先选择high_corefs。
-                selected = set(high_refs)
-                if debug:
-                    logging.info(f"query {query.lower()} Has {len(selected)} high_refs")
+                logging.info(f"query {query.lower()} Has {len(selected)} high_refs")
 
-                # 5.2 queries_per_paper降到50后，可以直接包括所有搜到的论文。
-                for q in self.register_key:
-                    for x, _ in self.register_key[q]:
-                        if x not in selected:
-                            selected.add(x)
-                            self.library[x]['query'] = q
+            # 5.2 queries_per_paper降到50后，可以直接包括所有搜到的论文。
+            for q in self.register_key:
+                for x, _ in self.register_key[q]:
+                    if x not in selected:
+                        selected.add(x)
+                        self.library[x]['query'] = q
 
-                # 5.3 最后用neighbors填满。
-                remain_target = self.num_oracle_papers - len(selected)
-                if debug:
-                    logging.info(f"query {query.lower()} Has {remain_target} papers remain")
+            # 5.3 最后用neighbors填满。
+            remain_target = self.num_oracle_papers - len(selected)
+            if debug:
+                logging.info(f"query {query.lower()} Has {remain_target} papers remain")
+            
+            # 处理特殊的情况：邻居太少，query papers太多，常见于remain target先变成了负数的情况。
+            if 2 * remain_target < self.num_oracle_papers - len(high_refs):
+                # 此时，令query和neighbors各占一半。做法是大重排。
+                max_num_neighbors = max(remain_target, 0) + len([x for x in neighbors if x not in selected])  # 一共可以有这么多neighbors
+                max_num_queries = self.num_oracle_papers - len(high_refs) - remain_target
+                num_neighbors = num_queries = (self.num_oracle_papers - len(high_refs)) // 2
+                if num_neighbors + num_queries + len(high_refs) != self.num_oracle_papers:
+                    num_neighbors += 1
+                if max_num_neighbors < num_neighbors:
+                    num_queries += (num_neighbors - max_num_neighbors)
+                    num_neighbors = max_num_neighbors
+                elif max_num_queries < num_queries:
+                    num_neighbors += (num_queries - max_num_queries)
+                    num_queries = max_num_queries
                 
-                # 处理特殊的情况：邻居太少，query papers太多，常见于remain target先变成了负数的情况。
-                if 2 * remain_target < self.num_oracle_papers - len(high_refs):
-                    # 此时，令query和neighbors各占一半。做法是大重排。
-                    max_num_neighbors = max(remain_target, 0) + len([x for x in neighbors if x not in selected])  # 一共可以有这么多neighbors
-                    max_num_queries = self.num_oracle_papers - len(high_refs) - remain_target
-                    num_neighbors = num_queries = (self.num_oracle_papers - len(high_refs)) // 2
-                    if num_neighbors + num_queries + len(high_refs) != self.num_oracle_papers:
-                        num_neighbors += 1
-                    if max_num_neighbors < num_neighbors:
-                        num_queries += (num_neighbors - max_num_neighbors)
-                        num_neighbors = max_num_neighbors
-                    elif max_num_queries < num_queries:
-                        num_neighbors += (num_queries - max_num_queries)
-                        num_queries = max_num_queries
-                    
-                    # 按照顺序先queries后neighbors
-                    if num_queries + len(high_refs) < len(selected):
-                        selected = set(high_refs)
-                        paper_ids, sentences = [], []
-                        for q in self.register_key:
-                            for x, _ in self.register_key[q]:
-                                if x not in selected:
-                                    paper_ids.append(x)
-                                    title = self.library[x]['title']
-                                    abstract = self.library[x].get("abstract", None)
-                                    sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-                        sentences.append(query)
-                        embeddings = self.sentence_transformer.embed(sentences)
-                        cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
-                        sorted_query_papers = sorted(zip(paper_ids, cosine_scores), key=lambda x: x[1], reverse=True)
-                        selected.update(x for x, _ in sorted_query_papers[:num_queries])
+                # 按照顺序先queries后neighbors
+                if num_queries + len(high_refs) < len(selected):
+                    selected = set(high_refs)
+                    paper_ids, sentences = [], []
+                    for q in self.register_key:
+                        for x, _ in self.register_key[q]:
+                            if x not in selected:
+                                paper_ids.append(x)
+                                title = self.library[x]['title']
+                                abstract = self.library[x].get("abstract", None)
+                                sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
+                    sentences.append(query)
+                    embeddings = self.sentence_transformer.embed(sentences)
+                    cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
+                    sorted_query_papers = sorted(zip(paper_ids, cosine_scores), key=lambda x: x[1], reverse=True)
+                    selected.update(x for x, _ in sorted_query_papers[:num_queries])
 
-                    for x in neighbors:
-                        if num_neighbors <= 0: break
-                        if x not in selected:
-                            selected.add(x)
-                            num_neighbors -= 1
-                            self.library[x]['query'] = "co+neighbor"
-                else:
-                    # 不需要修改query论文的数量。
-                    for x in neighbors:
-                        if remain_target <= 0: break
-                        if x not in selected:
-                            selected.add(x)
-                            remain_target -= 1
-                            self.library[x]['query'] = "co+neighbor"
-                    
-                for x in selected:
-                    self.oracle[x] = self.library[x]
-                assert len(self.oracle) == self.num_oracle_papers, (len(self.oracle), self.num_oracle_papers)
-            if prev_length == len(self.library): 
-                raise ValueError("No new papers. Perhaps you hit the OpenAlex rate limit.")
-            prev_length = len(self.library)
+                for x in neighbors:
+                    if num_neighbors <= 0: break
+                    if x not in selected:
+                        selected.add(x)
+                        num_neighbors -= 1
+                        self.library[x]['query'] = "co+neighbor"
+            else:
+                # 不需要修改query论文的数量。
+                for x in neighbors:
+                    if remain_target <= 0: break
+                    if x not in selected:
+                        selected.add(x)
+                        remain_target -= 1
+                        self.library[x]['query'] = "co+neighbor"
+                
+            for x in selected:
+                self.oracle[x] = self.library[x]
+            assert len(self.oracle) == self.num_oracle_papers, (len(self.oracle), self.num_oracle_papers)
+        if prev_length == len(self.library): 
+            raise ValueError("No new papers. Perhaps you hit the OpenAlex rate limit.")
+        prev_length = len(self.library)
     
     def _local_citation_and_pagerank(self):
         """

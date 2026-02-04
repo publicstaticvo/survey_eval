@@ -5,6 +5,16 @@ from typing import Any
 import yaml
 
 
+GREEDY_PARAMS = {
+    'temperature': 0.0, "max_tokens": 8192, "seed": 42,
+    "top_p": 1.0,      # 设置为1，不进行核采样
+    "top_k": 1,        # 或设置为1，确保总是选择最可能的token
+    "repetition_penalty": 1.0,  # 设置为1，禁用重复惩罚
+    "length_penalty": 1.0,      # 设置为1，禁用长度惩罚
+    "no_repeat_ngram_size": 0,  # 设置为0，禁用n-gram重复惩罚
+}
+
+
 @dataclass(frozen=True)
 class LLMServerInfo:
     base_url: str = "https://uni-api.cstcloud.cn"
@@ -23,12 +33,12 @@ class ToolConfig:
     sbert_server_url: str = "http://172.18.36.90:8030"
     # external LLM
     llm_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
-    sampling_params: Mapping[str, Any] = field(default_factory=lambda: {'temperature': 0.0, "max_tokens": 16384})
+    sampling_params: Mapping[str, Any] = field(default_factory=lambda: GREEDY_PARAMS)
     # dynamic oracle
     num_oracle_papers: int = 1000
     letor_path: str = "backup/ranker.txt"
     # citation parser
-    grobid_url: str = "http://localhost:8070"
+    grobid_url: str = "http://172.18.36.90:8070"
     grobid_num_workers: int = 10
     # factual correctness - reranking
     rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)

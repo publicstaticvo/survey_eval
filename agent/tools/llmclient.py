@@ -33,7 +33,7 @@ class AsyncLLMClient(ABC):
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
         retry=retry_if_exception(llm_should_retry) | retry_if_result(lambda x: not x)
     )
-    async def _post(self, endpoint: str = "chat/completions", payload: dict = None, context: dict = None):
+    async def _post(self, endpoint: str, payload: dict, context: dict):
         try:
             url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
             headers = {"Authorization": f"Bearer {self.llm.api_key}"} | HEADERS
@@ -43,7 +43,7 @@ class AsyncLLMClient(ABC):
                 data = data["choices"][0]["message"]["content"]
             return self._availability(data, context)
         except Exception as e:
-            print(f"LLM call error: {type(e)}")
+            print(f"LLM call error: {type(e)} {e}")
             raise
 
 
@@ -54,10 +54,11 @@ class AsyncChat(AsyncLLMClient):
     def _organize_inputs(self, inputs: dict):
         return self.PROMPT.format(**inputs), {}
     
-    async def call(self, inputs=None, messages=None, context=None, **kwargs):        
-        assert inputs or messages, "Must have messages or inputs for chat/completions"        
+    async def call(self, messages=None, inputs=None, context=None, **kwargs):      
+        context = context or {}  
+        assert inputs or messages, "Must have messages or inputs for chat/completions"
         if messages is None:
-            messages, new_context = self._organize_inputs(kwargs['inputs'])
+            messages, new_context = self._organize_inputs(inputs)
         context = {**context, **new_context}
         if isinstance(messages, str):
             messages = [{'role': 'user', "content": messages}]

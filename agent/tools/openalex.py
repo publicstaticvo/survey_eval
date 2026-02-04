@@ -187,7 +187,7 @@ def split_or(group: str):
     return [clean_term(t) for t in terms if clean_term(t)]
 
 
-def to_openalex(query: str) -> str:
+def to_openalex(query: str) -> list[str]:
     query = strip_outer_parentheses(query)
     and_groups = split_top_level_and(query)
 
@@ -197,5 +197,4 @@ def to_openalex(query: str) -> str:
         if or_terms:
             blocks.append("|".join(or_terms))
 
-    return ",default.search:".join(blocks)
-    # return text.replace('default.search:', '', 1)
+    return blocks

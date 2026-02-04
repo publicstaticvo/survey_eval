@@ -5,14 +5,13 @@ from typing import Optional
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
 }
-GROBID_URL = "https://localhost:8070"
 
 
 # =============== Global Semaphore ===============
 class RateLimit:
-    OPENALEX_SEMAPHORE = asyncio.Semaphore(5)              # 搜索 API
+    OPENALEX_SEMAPHORE = asyncio.Semaphore(4)              # 搜索 API
     AGENT_SEMAPHORE = asyncio.Semaphore(100)                # LLM
-    HTTP_SEMAPHORE = asyncio.Semaphore(4)
+    DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker镜像本地解析
 

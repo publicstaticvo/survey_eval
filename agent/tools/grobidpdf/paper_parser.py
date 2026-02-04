@@ -28,7 +28,7 @@ class PaperParser:
         paper.abstract = self._extract_abstract(root, paper)
         # Extract body sections
         self._extract_body_sections(root, paper, mode)
-        paper.references = {x['ref_text']: x['title'] for x in self._citation_map.values() if 'ref_text' in x}  
+        paper.references = {x['key']: x['title'] for x in self._citation_map.values() if 'key' in x}  
         return paper
     
     def _extract_title(self, root: ET.Element) -> str:
@@ -131,7 +131,7 @@ class PaperParser:
             # Handle citation references
             if element.tag == f"{{{self.NS['tei']}}}ref" and element.get('type') == 'bibr':
                 citation_id = element.get('target', '').replace('#', '')  # b1, b2, ..., b500
-                ref_text = re.sub(r'[^0-9]', '', ''.join(element.itertext()).strip())  # "Yu et al." or "[1]"
+                key = re.sub(r'[^0-9]', '', ''.join(element.itertext()).strip())  # "Yu et al." or "[1]"
                 
                 # Add citation marker
                 if current_text:
@@ -139,7 +139,7 @@ class PaperParser:
                     current_text.clear()
 
                 if citation_id in self._citation_map:
-                    self._citation_map[citation_id]['ref_text'] = ref_text
+                    self._citation_map[citation_id]['key'] = key
                     text_parts.append(('citation', self._citation_map[citation_id]))
                 
             else:
