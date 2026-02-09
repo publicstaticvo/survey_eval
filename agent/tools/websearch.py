@@ -7,25 +7,6 @@ from .prompts import FACTUAL_CORRECTNESS_PROMPT
 from .utils import extract_json
 
 
-class FactCheckLLMClient(AsyncChat):
-
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
-    KEY: str = "judgment"
-
-    def __init__(self, config: ToolConfig):
-        super().__init__(config.llm_server_info, config.sampling_params)
-        self.check = EvidenceCheck(config)
-
-    def _availability(self, response, context):
-        response = extract_json(response)
-        if response[self.KEY]:
-            assert self.check.verify(response['evidence'], context['text'])[0]
-        return response[self.KEY]
-    
-    def _organize_inputs(self, inputs):
-        return self.PROMPT.format(text=inputs), {"text": inputs}
-
-
 class FactualLLMClient(AsyncChat):
 
     PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
@@ -35,7 +16,7 @@ class FactualLLMClient(AsyncChat):
         return response['judgment'], response['evidence']
 
 
-class FactualCorrectnessCritic:
+class WebSearchFallback:
     
     def __init__(self, config: ToolConfig):
         self.llm = FactualLLMClient(config.llm_server_info, config.sampling_params)
