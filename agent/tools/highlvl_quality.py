@@ -27,7 +27,7 @@ class MethodClient(AsyncChat):
         response = extract_json(response)
         s = context['section']
         methods = []
-        for x in response['introducte_spans']:
+        for x in response['introduce_spans']:
             span = x['introduce_span']
             if span[1] <= span[0]: continue
             for i in range(span[0] - 1, span[1]):
@@ -109,7 +109,7 @@ class PaperOrganizeLLMClient(AsyncChat):
     def _organize_inputs(self, inputs):
         string = []
         for i, s in enumerate(inputs, i):
-            string.append(f"Section S{i}: {s['name']}\n- Methods count: {s['num_works']}\n- Organization type: {s['organization_type']}")
+            string.append(f"- Section S{i}:\n  - title: {s['name']}\n  - methods_count: {s['num_works']}\n  - organization_type: {s['organization_type']}")
         string = "\n".join(string)
         return self.PROMPT.format(text=string), {"num_sections": len(inputs)}
     
