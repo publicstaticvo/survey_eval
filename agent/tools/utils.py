@@ -115,3 +115,11 @@ def split_content_to_paragraph(content: dict | list):
 
 def paragraph_to_text(content: list[dict]):
     return " ".join([s['text'] for s in content])
+
+
+def section_to_text(section: dict) -> str:
+    """convert a section into a string"""
+    text = "\n\n".join(" ".join(x['text'] for x in p) for p in section['paragraphs'])
+    for s in section['sections']:
+        text += "\n\n" + section_to_text(s)
+    return text

@@ -4,7 +4,7 @@ from .tool_config import ToolConfig
 from .llmclient import AsyncChat
 from .evidence_check import EvidenceCheck
 from .prompts import FACTUAL_CORRECTNESS_PROMPT
-from .utils import extract_json
+from .utils import extract_json, section_to_text, split_content_to_paragraph, paragraph_to_text
 
 
 class FactCheckLLMClient(AsyncChat):
@@ -65,7 +65,9 @@ class FactualCorrectnessCritic:
         judgment, evidence, score, neutral_type = await self._judge_and_verify(claim, content, material)
         if judgment == "neutral" and cited_paper['full_content']:
             material = "full_text"
-            content = f"Title: {cited_paper['title']}\nAbstract: {cited_paper['abstract']}\n\nFull Text:\n\n{cited_paper['full_content']}"
+            for p in split_content_to_paragraph(cited_paper['full_content']):
+                p = paragraph_to_text()
+                content = f"Title: {cited_paper['title']}\nAbstract: {cited_paper['abstract']}\n\nFull Text:\n\n{p}"
             judgment, evidence, score, neutral_type = await self._judge_and_verify(claim, content, material)
         return {"fact_check": {
             "claim": claim, 

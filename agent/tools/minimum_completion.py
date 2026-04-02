@@ -1,22 +1,15 @@
 from typing import List, Dict, Any
 
+from .prompts import *
 from .tool_config import ToolConfig
 from .llmclient import AsyncChat
 from .fact_check import FactCheckLLMClient
-from .prompts import FACTUAL_CORRECTNESS_PROMPT
-from .utils import extract_json
-
-
-def to_sections(section: Dict[str, Any]):
-    text = "\n\n".join(" ".join(x['text'] for x in p) for p in section['paragraphs'])
-    for s in section['sections']:
-        text += "\n\n" + to_sections(s)
-    return text
+from .utils import extract_json, section_to_text, split_content_to_paragraph
 
 
 class IntegrateClient(FactCheckLLMClient):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = INTERGRATION_INTENT
     KEY: str = 'integration_intent'
     
     def _organize_inputs(self, inputs):
@@ -25,7 +18,7 @@ class IntegrateClient(FactCheckLLMClient):
 
 class StructureClient(AsyncChat):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = STRUCTURE_AND_DISCUSSION
 
     def _availability(self, response, context):
         response = extract_json(response)
@@ -56,7 +49,7 @@ class MinimalCompletionCheck:
             if intent: return True
 
         for s in paper['sections']:
-            section_text = to_sections(s)
+            section_text = section_to_text(s)
             intent = await self.integration_intent_llm.call(inputs=section_text)
             if intent: return True
         
@@ -77,7 +70,7 @@ class MinimalCompletionCheck:
         for i, section in paper['sections']:
             if "conclusion" in section['title'].lower() or "appendix" in section['title'].lower(): continue
             cites = _recursive_citation_count(section)
-            section_text = to_sections(section)
+            section_text = section_to_text(section)
             citation_counts.append({
                 "id": i,
                 "name": section_text['title'],

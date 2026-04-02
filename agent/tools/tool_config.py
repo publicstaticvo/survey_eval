@@ -56,6 +56,9 @@ class ToolConfig:
     sentence_similarity_threshold: float = 0.97
     paragraph_similarity_threshold: float = 0.92
     redundancy_ngram: int = 5
+    # websearch
+    websearch_url: str = "https://google.serper.dev/search"
+    websearch_apikey: str = "62946589a85dc193e767cc5e430c6c2f20b0661c"
 
     @classmethod
     def from_yaml(cls, config_path):
@@ -89,4 +92,6 @@ class ToolConfig:
             sentence_similarity_threshold=config['quality']['sentence_similarity_threshold'],
             paragraph_similarity_threshold=config['quality']['paragraph_similarity_threshold'],
             redundancy_ngram=config['quality']['redundancy_ngram'],
+            websearch_url=config['websearch']['url'],
+            websearch_apikey=config['websearch']['api_key'],
         )

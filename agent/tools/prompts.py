@@ -91,8 +91,7 @@ QUERY_SCHEMA = {
     }
 }
 
-CLAIM_SEGMENTATION_PROMPT = '''
-You are a rigorous scientific information extractor. Your task is to extract verifiable units (also called claims) from a paragraph. Each verifiable unit must be suitable for independent factual verification against the cited reference(s).
+CLAIM_SEGMENTATION_PROMPT = '''You are a rigorous scientific information extractor. Your task is to extract verifiable units (also called claims) from a paragraph. Each verifiable unit must be suitable for independent factual verification against the cited reference(s).
 
 ========================
 INPUT
@@ -296,8 +295,7 @@ CLAIMS_SCHEMA = {
     "properties": CLAIM_SCHEMA
 }
 
-FACTUAL_CORRECTNESS_PROMPT = '''
-You are a factual correctness verifier for academic surveys. Given:
+FACTUAL_CORRECTNESS_PROMPT = '''You are a factual correctness verifier for academic surveys. Given:
 
 - A claim extracted from a survey, and
 - The paper that it cites (including {content_type})
@@ -476,8 +474,7 @@ or an empty list with reasons if no anchor surveys are found:
 Be conservative. It is acceptable to select fewer surveys or none if the candidates do not clearly qualify.
 """
 
-TOPIC_AGGREGATION_PROMPT = """
-You are an expert researcher tasked with synthesizing a survey-level topic structure from a collection of academic papers. Your goal is to identify high-level research topics that would reasonably appear as major sections in a well-written survey on the given query.
+TOPIC_AGGREGATION_PROMPT = """You are an expert researcher tasked with synthesizing a survey-level topic structure from a collection of academic papers. Your goal is to identify high-level research topics that would reasonably appear as major sections in a well-written survey on the given query.
 
 ### Target query: {query}
 
@@ -543,4 +540,324 @@ Return a JSON object:
 - Topics should be distinct and non-overlapping at a high level.
 """
 
-FINAL_AGGREGATION_PROMPT = ''''''
+INTERGRATION_INTENT = """You are a strict survey reviewer. You are assessing whether a given text segment explicitly shows an **intent to integrate, synthesize, or organize prior literature**, as expected in a survey paper.
+
+### Definition
+
+"Integration intent" means the text **explicitly states** one or more of the following:
+
+* organizing prior work into categories, themes, or dimensions
+* summarizing trends, comparisons, or common findings across multiple works
+* positioning multiple studies relative to each other
+
+It does **NOT** include:
+
+* merely describing one paper or one method
+* background definitions
+* narrative mentions without synthesis language
+
+### Instructions
+
+1. Read the text carefully.
+2. Decide whether **explicit integration intent** is present.
+3. If yes, copy **the exact sentence(s)** that express this intent.
+4. If no, return `false` and leave evidence empty.
+
+### Constraints
+
+* Do **not** infer intent if it is not explicitly stated.
+* If you are unsure, choose `false`.
+
+### Output Format
+
+```json
+{
+  "integration_intent": true | false,
+  "evidence": "verbatim sentence(s) from the text, or empty string if false"
+}
+```"""
+
+STRUCTURE_AND_DISCUSSION = """You are a strict survey reviewer tasked with evaluating whether a given survey meets the minimal requirements of a survey. You are given the hierarchical section titles of the survey. Determine:
+
+1. Whether the structure is **topic-driven**, as expected for a survey.
+2. Whether the survey includes **explicit discussion sections** about open problems, limitations, or future directions.
+
+### Definitions
+
+* **Topic-driven structure**:
+
+  * Sections are organized by themes, categories, tasks, approaches, or dimensions.
+  * NOT organized around proposing a single method, model, or algorithm.
+* **Discussion sections** include titles containing ideas such as:
+
+  * future directions, open problems, challenges, limitations, outlook, discussion
+
+### Instructions
+
+1. Judge whether the overall structure resembles a survey.
+2. Identify section titles that clearly indicate discussion of open questions or future work.
+3. Copy section titles exactly as provided.
+
+### Constraints
+
+* Base your decision **only on section titles**, not assumptions.
+* If uncertain, choose `false`.
+
+### Output Format
+
+```json
+{
+  "topic_driven": true | false,
+  "discussion_sections": ["Section Title 1", "Section Title 2"]
+}
+```"""
+
+IS_LANDMARK = """Given a reference and the paragraph where it appears, determine the **role** this reference plays in the narrative.
+
+### Role Definitions
+
+* **foundational**：introduced as a landmark, origin, or basis of the field
+* **representative**：used as a typical or canonical example of a category
+* **incremental**：presented as a minor improvement or extension over prior work
+* **background**：mentioned for context, definition, or historical background only
+
+### Instructions
+
+1. Focus on how the cited work is **positioned**, not its actual importance.
+2. Choose exactly one role from the defined categories.
+3. Base your decision only on the provided paragraph.
+
+### Constraints
+
+* Do not assume importance beyond what is stated.
+* If multiple roles appear, choose the **dominant** one.
+
+### Output Format
+
+```json
+{
+  "role": "foundational" | "representative" | "incremental" | "background"
+  "explanation": "brief justification of the chosen role"
+}
+```"""
+
+EXTRACT_METHODS = """Identify methods that are **substantively introduced** in this section.
+
+### Task Definition
+
+A method is considered “introduced” **only if**:
+
+* It is discussed across **at least two consecutive sentences**
+* The sentences **describe, explain, or elaborate** the method
+* Mere mentions, examples, or name drops do NOT count
+
+### Instructions
+
+1. Examine sentence order carefully.
+2. For each citation key, check whether it appears in **two or more consecutive sentences** that discuss the same method.
+3. Record the sentence index range as `[start, end]`.
+4. Skip any method discussed in only one sentence.
+
+### Constraints
+
+* Only output spans that truly correspond to method discussion.
+* If no such methods exist, return an empty list.
+
+### Output Format
+
+```json
+{
+  "introduce_spans": [
+    { "ref_key": "key1", "span": [3, 4] },
+    { "ref_key": "key2", "span": [7, 9] }
+  ]
+}
+```"""
+
+SECTION_ORGANIZE = """Determine how the methods in this section are organized.
+
+### Inputs
+
+* Information about all methods introduced in this paper, each method containing:
+  - method id (formatted as "Mi")
+  - reference key
+  - related text introducing this method
+
+### Organization Types
+
+* **grouping by criteria**: methods grouped by shared properties, categories, or dimensions
+* **chronological or technical progression**: methods ordered by time or technical evolution
+* **explicit comparison**: methods directly contrasted or compared
+* **no clear structure**: no discernible organizing principle
+
+### Instructions
+
+1. Consider only the provided methods and their original order.
+2. Select methods that clearly participate in an organizing pattern.
+3. If selected methods are **less than half** of all methods, choose `no clear structure`.
+4. Explain your reasoning briefly.
+
+### Constraints
+
+* Do not invent structure.
+* If uncertain, choose `no clear structure`.
+
+### Output Format
+
+```json
+{
+  "organization_type": "grouping_by_criteria" | "chronological_or_technical_progression" | "explicit_comparison" | "no_clear_structure",
+  "selected_methods": ["M1", "M2", "M4"],
+  "justification": "..."
+}
+```"""
+
+PAPER_ORGANIZE = """Infer the **overall organization principle** of the paper based on its sections.
+
+### Inputs
+
+* Information about all sections of the paper, each item containing:
+  - section id (formatted as "Si")
+  - section title 
+  - number of methods introduced in this section
+  - methods organization type
+
+### Organization Types
+
+* **grouping by criteria**: methods grouped by shared properties, categories, or dimensions
+* **chronological or technical progression**: methods ordered by time or technical evolution
+* **explicit comparison**: methods directly contrasted or compared
+* **no clear structure**: no discernible organizing principle
+
+### Instructions
+
+1. Consider section titles and their organization types.
+2. Identify sections that clearly follow the same organizing principle.
+3. If selected sections are **less than half**, choose `no clear structure`.
+4. Base justification on **section-level evidence**, not speculation.
+
+### Constraints
+
+* Ignore sections with very few methods.
+* Do not assume global structure if evidence is weak.
+
+### Output Format
+
+```json
+{
+  "organization_type": "grouping_by_criteria" | "chronological_or_technical_progression" | "explicit_comparison" | "no_clear_structure",
+  "selected_sections": ["S1", "S2", "S4"],
+  "justification": "..."
+}
+```"""
+
+REFUTE_ORGANIZE = """Check whether the claimed overall organization principle is **contradicted by the text**.
+
+### Instructions
+
+1. Look for passages that clearly violate or contradict the claimed structure.
+2. Only mark contradiction if **explicit evidence exists**.
+3. If no clear refutation is found, return false.
+
+### Constraints
+
+* Absence of support ≠ refutation.
+* Cite verbatim text if refuted.
+
+### Output Format
+
+```json
+{
+  "refute": true | false,
+  "evidence": "verbatim text if refuted, otherwise empty"
+}
+```"""
+
+MISSING_TOPIC_CLAIM = """Determine whether the paper **explicitly states** that a given topic is excluded, and why.
+
+### Instructions
+
+1. Search for explicit scope limitation statements.
+2. Only accept **clear declarative claims** (e.g., “we do not cover…”).
+3. Do not infer justification.
+
+### Constraints
+
+* If justification is implicit or vague, return false.
+
+### Output Format
+
+```json
+{
+  "has_claim": true | false,
+  "evidence": "verbatim text if present, otherwise empty"
+}
+```"""
+
+FINAL_AGGREGATION_PROMPT = '''You are a professional research assistant. You are writing an official review report for a survey paper.
+
+### Task
+
+Your task is to organize the provided results into a clear and professional review report. Follow the structure below exactly:
+
+1. Summary
+2. Strengths
+3. Weaknesses
+4. Comments and Suggestions
+5. Evidence from Automatic Evaluation
+6. Overall Score
+
+### Guidelines
+
+- Summary: Briefly describe what the survey attempts to do based only on the provided information.
+- Strengths: List strengths provided in the evaluation results.
+- Weaknesses: List all weaknesses.
+- Comments: Include improvement suggestions or non-critical observations.
+- Evidence from Automatic Evaluation: Summarize key findings from:
+  * citation correctness
+  * missing papers
+  * factual claim verification
+  * topic coverage
+  * anchor paper roles
+  * section organization
+  * global organization
+- Overall Score: Report the score exactly as given. Should be a integer from 1-5.
+
+Do not add any information beyond the provided evaluation results.
+
+### Important rules
+
+1. You MUST NOT perform new analysis or introduce new judgments.
+2. You MUST ONLY use the information provided in the structured evaluation results.
+3. Do NOT invent missing weaknesses, strengths, or comments.
+4. Do NOT reinterpret evidence.
+
+### Output Format
+
+Your output format should be a JSON object only:
+
+```json
+{
+  "summary": "...",
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "comments": ["..."],
+  "evidence": ["..."]
+  "overall_score": <integer from 1-5>
+}
+```
+'''
+
+FINAL_AGGREGATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "minLength": 1},
+        "strengths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "weaknesses": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "comments": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "overall_score": {"type": "integer", "minimum": 1, "maximum": 5}
+    },
+    "required": ["summary", "strengths", "weaknesses", "comments", "evidence", "overall_score"],
+    "additionalProperties": False
+}

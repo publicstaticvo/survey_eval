@@ -2,16 +2,16 @@ import asyncio
 import jsonschema
 from typing import List, Dict, Any
 
+from .prompts import *
 from .tool_config import ToolConfig
 from .llmclient import AsyncChat
 from .fact_check import FactCheckLLMClient
-from .prompts import FACTUAL_CORRECTNESS_PROMPT
 from .utils import extract_json
 
 
 class LandmarkLLMClient(AsyncChat):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = IS_LANDMARK
     ROLE: dict = {"foundational": 3, "representative": 2, "incremental": 1, "background": 0}
 
     def _availability(self, response, context):
@@ -21,7 +21,7 @@ class LandmarkLLMClient(AsyncChat):
 
 class MethodClient(AsyncChat):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = EXTRACT_METHODS
 
     def _availability(self, response, context):
         response = extract_json(response)
@@ -55,30 +55,30 @@ class MethodClient(AsyncChat):
 
 class SectionOrganizeLLMClient(AsyncChat):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = SECTION_ORGANIZE
 
     def _availability(self, response, context):
         response = extract_json(response)
-        if response['organization_type'] != "no clear structure":
+        if response['organization_type'] != "no_clear_structure":
             schema = {
                 "type": "object",
                 "required": ['organization_type', 'selected_methods', 'justification'],
                 "properties": {
-                    'organization_type': {"type": "string", "enum": ["grouping by criteria", "chronological or technical progression", "explicit comparison"]},
+                    'organization_type': {"type": "string", "enum": ["grouping_by_criteria", "chronological_or_technical_progression", "explicit_comparison"]},
                     'selected_methods': {"type": "array", "items": {"type": "string", "enum": [f"M{i + 1}" for i in range(context['num_works'])]}},
                     'justification': {"type": "string", "minLength": 1}
                 }
             }
             jsonschema.validate(response, schema)
             if len(set(response['selected_methods'])) < context['num_works'] / 2:
-                response['organization_type'] = "no clear structure"
+                response['organization_type'] = "no_clear_structure"
         response['num_works'] = context['num_works']
         return response
     
     def _organize_inputs(self, inputs):
         string = []
         for i, m in enumerate(inputs['methods'], 1):
-            string.append(f"- id: M{i}\n  citation: {m['key']}\n  related_text: {m['sentences']}")
+            string.append(f"- id: M{i}\n  reference_key: {m['key']}\n  related_text: {m['sentences']}")
         string = "\n".join(string)
         inputs = f"Section name: {inputs['section_name']}\nMethods discussed in this section:\n{string}"
         return self.PROMPT.format(text=inputs), {"num_works": len(inputs['methods'])}
@@ -86,23 +86,23 @@ class SectionOrganizeLLMClient(AsyncChat):
 
 class PaperOrganizeLLMClient(AsyncChat):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = PAPER_ORGANIZE
 
     def _availability(self, response, context):
         response = extract_json(response)
-        if response['organization_type'] != "no clear structure":
+        if response['organization_type'] != "no_clear_structure":
             schema = {
                 "type": "object",
                 "required": ['organization_type', 'selected_sections', 'justification'],
                 "properties": {
-                    'organization_type': {"type": "string", "enum": ["grouping by criteria", "chronological or technical progression", "explicit comparison"]},
+                    'organization_type': {"type": "string", "enum": ["grouping_by_criteria", "chronological_or_technical_progression", "explicit_comparison"]},
                     'selected_sections': {"type": "array", "items": {"type": "string", "enum": [f"S{i + 1}" for i in range(context['num_sections'])]}},
                     'justification': {"type": "string", "minLength": 1}
                 }
             }
             jsonschema.validate(response, schema)
             if len(set(response['selected_sections'])) < context['num_works'] / 2:
-                response['organization_type'] = "no clear structure"
+                response['organization_type'] = "no_clear_structure"
         else: assert response['justification']
         return response
     
@@ -131,7 +131,7 @@ class RefuteOrganizationLLMClient(FactCheckLLMClient):
 
 class MissingTopicLLMClient(FactCheckLLMClient):
 
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
+    PROMPT: str = MISSING_TOPIC_CLAIM
     KEY: str = "has_claim"
     
     def _organize_inputs(self, inputs):
@@ -250,14 +250,14 @@ class QualityPressureCheck:
         for x in method_organize:
             if x['num_works'] >= 3:
                 total_sections += 1
-                if x['organization_type'] == "no clear structure":
+                if x['organization_type'] == "no_clear_structure":
                     none_sections += 1
         if total_sections > 0 and none_sections / total_sections >= 0.8:
-            return {"status": False, "reason": "Sections no clear structure", "details": (none_sections, total_sections)}
+            return {"status": False, "reason": "Sections no_clear_structure", "details": (none_sections, total_sections)}
         # 第三步：LLM判断整篇文章的组织形式。
         section_organize = await self.paper_organize_llm.call(inputs=method_organize)
-        if section_organize['organization_type'] == "no clear structure":
-            return {"status": False, "reason": "Paper no clear structure", "details": section_organize['justification']}
+        if section_organize['organization_type'] == "no_clear_structure":
+            return {"status": False, "reason": "Paper no_clear_structure", "details": section_organize['justification']}
         # LLM判断整篇文章的组织形式是否与标题矛盾。
         introduction = "\n\n".join(_get_introduction(paper))
         refutes = self.refute_llm.call(inputs={"text": introduction, "organize": section_organize['organization_type']})

@@ -1,7 +1,8 @@
-
+import jsonschema
 from .agent_state import AgentState
 from .llmclient import AsyncChat
-from .prompts import FINAL_AGGREGATION_PROMPT
+from .prompts import FINAL_AGGREGATION_PROMPT, FINAL_AGGREGATION_SCHEMA
+from .utils import extract_json
 
 
 class FinalAggregate(AsyncChat):
@@ -13,10 +14,25 @@ class FinalAggregate(AsyncChat):
         self.config = config
 
     def _availability(self, response):
-        return super()._availability(response)
+        json = extract_json(response)
+        jsonschema.validate(json, FINAL_AGGREGATION_SCHEMA)
+        return json
     
     def _organize_inputs(self, inputs):
         return super()._organize_inputs(inputs)
 
     async def __call__(self, state: AgentState):
-        return
+        """
+        All results in state
+        - 
+        """
+        # Fact Check
+        supported, refuted, neutral = 0, [], {}
+        for x in state.fact_checks:
+            if x['judgment'] == 'refuted': refuted.append(x)
+            elif x['judgment'] == 'neutral':
+                value = neutral.get(x['reason'], [])
+                value.append(x)
+                neutral[x['reason']] = value
+            else: supported += 1
+        pass
