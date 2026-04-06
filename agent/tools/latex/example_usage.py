@@ -7,6 +7,10 @@ from latex_parser import parse_paper, Paper, Section, Paragraph, Sentence, Envir
 from pathlib import Path
 import json
 
+# arXiv-2503.24377v1
+
+fn = "P:\\AI4S\\survey_eval\\crawled_papers\\cs\\2307.03109v9\\main.tex"
+
 
 def example_basic_usage():
     """Example 1: Basic parsing and structure access"""
@@ -15,7 +19,7 @@ def example_basic_usage():
     print("="*70)
     
     # Parse a paper
-    paper_path = Path("P:\\AI4S\\survey_paper\\cs\\arXiv-2503.24377v1\\main.tex")
+    paper_path = Path(fn)
     paper = parse_paper(paper_path)
     
     # Access basic information
@@ -38,7 +42,7 @@ def example_section_traversal():
     print("EXAMPLE 2: Section Traversal")
     print("="*70)
     
-    paper_path = Path("P:\\AI4S\\survey_paper\\cs\\arXiv-2503.24377v1\\main.tex")
+    paper_path = Path(fn)
     paper = parse_paper(paper_path)
     
     def print_section_tree(section, indent=0):
@@ -65,7 +69,7 @@ def example_content_extraction():
     print("EXAMPLE 3: Content Extraction")
     print("="*70)
     
-    paper_path = Path("P:\\AI4S\\survey_paper\\cs\\arXiv-2503.24377v1\\main.tex")
+    paper_path = Path(fn)
     paper = parse_paper(paper_path)
     
     # Count total sentences and citations
@@ -102,7 +106,7 @@ def example_citation_analysis():
     print("EXAMPLE 4: Citation Analysis")
     print("="*70)
     
-    paper_path = Path("P:\\AI4S\\survey_paper\\cs\\arXiv-2503.24377v1\\main.tex")
+    paper_path = Path(fn)
     paper = parse_paper(paper_path)
     
     # Collect all citations
@@ -135,7 +139,7 @@ def example_serialize():
     print("EXAMPLE 5: Serialization to JSON")
     print("="*70)
     
-    paper_path = Path("P:\\AI4S\\survey_paper\\cs\\arXiv-2503.24377v1\\main.tex")
+    paper_path = Path(fn)
     paper = parse_paper(paper_path)
     
     # Get the skeleton (JSON-serializable format)
@@ -163,7 +167,7 @@ def example_search():
     print("EXAMPLE 6: Content Search")
     print("="*70)
     
-    paper_path = Path("P:\\AI4S\\survey_paper\\cs\\arXiv-2503.24377v1\\main.tex")
+    paper_path = Path(fn)
     paper = parse_paper(paper_path)
     
     # Search for sentences containing specific keywords

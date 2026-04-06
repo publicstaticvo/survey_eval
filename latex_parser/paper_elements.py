@@ -1,4 +1,5 @@
-from typing import List, Optional, Union, Dict
+import json
+from typing import Any, List, Optional, Union, Dict
 from dataclasses import dataclass, field
 
 
@@ -16,13 +17,20 @@ class LatexSentence:
     
     def __repr__(self):
         return self.text
-    
+
+    def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
+        return {
+            'text': self.text,
+            'citations': self.citations,
+            'environment_type': 'text'
+        }
+
 
 @dataclass
 class LatexEnvironment:
     """Represents a Latex environment block (theorem, remark, tikzpicture, etc.)"""
     environment_name: str
-    text: str  # Raw Latex content
+    text: str
     citations: List[str] = field(default_factory=list)
     
     def to_dict(self):
@@ -36,6 +44,13 @@ class LatexEnvironment:
     def __repr__(self):
         return self.text
         # return f"\\begin{{{self.environment_name}}}\n{self.text}\n\\end{{{self.environment_name}}}\n"
+
+    def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
+        return {
+            'text': self.text,
+            'citations': self.citations,
+            'environment_type': self.environment_name
+        }
 
 
 def debug_sentences(sentences: List[Union[LatexSentence, LatexEnvironment]], start_id: int = 0):
@@ -54,12 +69,15 @@ def debug_sentences(sentences: List[Union[LatexSentence, LatexEnvironment]], sta
 
 @dataclass
 class LatexParagraph:
-    """Represents a paragraph (either \paragraph command or text block split by \n\n)"""
+    r"""Represents a paragraph (either \paragraph command or text block split by \n\n)"""
     sentences: List[Union[LatexSentence, LatexEnvironment]] = field(default_factory=list)
     name: Optional[str] = None  # Only set if defined by \paragraph
     
     def add_sentence(self, sentence: Union[LatexSentence, LatexEnvironment]):
         self.sentences.append(sentence)
+
+    def get_skeleton(self) -> List[Dict[str, Union[str, List[str]]]]:
+        return [sentence.get_skeleton() for sentence in self.sentences]
     
     def to_dict(self):
         result = {'sentences': [s.to_dict() for s in self.sentences]}
@@ -81,7 +99,6 @@ class LatexParagraph:
             if i >= len(self.sentences): return next_sentences
             sentence = self.sentences[i]
             if isinstance(sentence, LatexSentence) and sentence.citations: return next_sentences
-            # 假如是图表类的environment就跳过，否则接上。
             if isinstance(sentence, LatexEnvironment) and sentence.environment_name in graph_environments:
                 sentence_number += 1
             else: 
@@ -106,7 +123,7 @@ def get_paragraph_skeleton(paragraph: LatexParagraph, mode: str, accumulated_sen
 
 @dataclass
 class LatexSubSubSection:
-    """Represents a subsubsection (\subsubsection)"""
+    r"""Represents a subsubsection (\subsubsection)"""
     name: str
     children: List[Union[LatexParagraph, 'LatexSubSubSection']] = field(default_factory=list)
     
@@ -131,6 +148,22 @@ class LatexSubSubSection:
         for p in self.children:
             sentences.extend(p.get_sentences())
         return sentences
+
+    def get_skeleton(self, section_id: str) -> Dict[str, Any]:
+        paragraphs = [child.get_skeleton() for child in self.children if isinstance(child, LatexParagraph)]
+        sections = []
+        sub_idx = 0
+        for child in self.children:
+            if isinstance(child, LatexSubSubSection):
+                sub_idx += 1
+                child_id = f"{section_id}.{sub_idx}" if section_id else str(sub_idx)
+                sections.append(child.get_skeleton(child_id))
+        return {
+            'title': self.name,
+            'section_id': section_id,
+            'paragraphs': paragraphs,
+            'sections': sections
+        }
     
     def __repr__(self):
         return f"SubSubSection('{self.name}', {len(self.children)} children)"
@@ -138,7 +171,7 @@ class LatexSubSubSection:
 
 @dataclass
 class LatexSubSection:
-    """Represents a subsection (\subsection)"""
+    r"""Represents a subsection (\subsection)"""
     name: str
     children: List[Union[LatexParagraph, LatexSubSubSection]] = field(default_factory=list)
     
@@ -163,6 +196,24 @@ class LatexSubSection:
         for p in self.children:
             sentences.extend(p.get_sentences())
         return sentences
+
+    def get_skeleton(self, section_id: str) -> Dict[str, Any]:
+        paragraphs = []
+        sections = []
+        sub_idx = 0
+        for child in self.children:
+            if isinstance(child, LatexParagraph):
+                paragraphs.append(child.get_skeleton())
+            elif isinstance(child, LatexSubSubSection):
+                sub_idx += 1
+                child_id = f"{section_id}.{sub_idx}" if section_id else str(sub_idx)
+                sections.append(child.get_skeleton(child_id))
+        return {
+            'title': self.name,
+            'section_id': section_id,
+            'paragraphs': paragraphs,
+            'sections': sections
+        }
     
     def __repr__(self):
         return f"SubSection('{self.name}', {len(self.children)} children)"
@@ -170,7 +221,7 @@ class LatexSubSection:
 
 @dataclass
 class LatexSection:
-    """Represents a section (\section)"""
+    r"""Represents a section (\section)"""
     name: str
     children: List[Union[LatexParagraph, LatexSubSection]] = field(default_factory=list)
     
@@ -195,6 +246,24 @@ class LatexSection:
         for p in self.children:
             sentences.extend(p.get_sentences())
         return sentences
+
+    def get_skeleton(self, section_id: Union[int, str]) -> Dict[str, Any]:
+        paragraphs = []
+        sections = []
+        sub_idx = 0
+        for child in self.children:
+            if isinstance(child, LatexParagraph):
+                paragraphs.append(child.get_skeleton())
+            elif isinstance(child, LatexSubSection):
+                sub_idx += 1
+                child_id = f"{section_id}.{sub_idx}" if section_id else str(sub_idx)
+                sections.append(child.get_skeleton(child_id))
+        return {
+            'title': self.name,
+            'section_id': section_id,
+            'paragraphs': paragraphs,
+            'sections': sections
+        }
     
     def __repr__(self):
         return f"Section('{self.name}', {len(self.children)} children)"
@@ -241,44 +310,15 @@ class LatexPaper:
             sentences.extend(p.get_sentences())
         return sentences
     
-    def get_skeleton(self, mode: str = 'first') -> str:
-        sentence_id = 0
-        repr_str = f"Title: {self.title}\nAuthor: {self.author}\n"
-        if self.abstract is not None:
-            abstract_sentences = self.abstract.get_sentences()
-            abstract_sentences = debug_sentences(abstract_sentences)
-            sentence_id += len(abstract_sentences)
-            repr_str += f"Abstract:\n{abstract_sentences}\n"
-        
-        for i, section in enumerate(self.sections):
-            section_str = f"Section {i + 1} - {section.name}\n"
-            subsection_count = 0
-            # 只有到了Paragraph中才能获取sentences。
-            for subsection in section.children:
-                if isinstance(subsection, LatexParagraph):
-                    chapter_0_sentences = subsection.get_sentences()
-                    chapter_0 = debug_sentences(chapter_0_sentences, sentence_id, mode)
-                    section_str += f"{chapter_0}\n"
-                else:
-                    subsection_count += 1
-                    subsection_str = f"Section {i + 1}.{subsection_count} - {subsection.name}\n"
-                    subsubsection_count = 0
-                    for subsubsection in subsection.children:
-                        if isinstance(subsubsection, LatexParagraph):
-                            chapter_00_sentences = subsubsection.get_sentences()
-                            chapter_00= debug_sentences(chapter_00_sentences, sentence_id, mode)
-                            subsection_str += f"{chapter_00}\n"
-                        else:
-                            subsubsection_count += 1
-                            subsubsection_str = f"Section {i + 1}.{subsection_count}.{subsubsection_count} - {subsubsection.name}\n"
-                            for paragraph in subsection.children:
-                                sentences = paragraph.get_sentences()
-                                gathered_sentence = debug_sentences(sentences, sentence_id, mode)
-                                subsubsection_str += f"{gathered_sentence}\n"
-                            subsection_str += subsubsection_str
-                    section_str += subsection_str
-            repr_str += section_str
-        return repr_str
+    def get_skeleton(self) -> Dict[str, Any]:
+        return {
+            'title': self.title,
+            'author': self.author,
+            'abstract': self.abstract.get_skeleton("") if self.abstract else "",
+            'paragraphs': [],
+            'sections': [section.get_skeleton(i + 1) for i, section in enumerate(self.sections)],
+            'citations': self.bibliography
+        }
     
     def __str__(self):
-        return self.get_skeleton('all')
+        return json.dumps(self.get_skeleton(), indent=2, ensure_ascii=False)

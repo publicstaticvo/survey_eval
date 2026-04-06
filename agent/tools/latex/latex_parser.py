@@ -132,7 +132,7 @@ class LaTeXParser:
     }
     
     # Macros that represent citations
-    CITATION_MACROS = {'cite', 'citep', 'citet', 'citeauthor', 'citeyear'}
+    CITATION_MACROS = {'cite', 'citep', 'citet', 'citeauthor', 'citeyear', 'citeyearpar'}
     
     def __init__(self, filepath: Union[str, Path]):
         """Initialize parser with a LaTeX file path"""
@@ -140,6 +140,7 @@ class LaTeXParser:
         self.base_dir = self.filepath.parent
         self.processed_files: Set[Path] = set()
         self.converter = LatexNodes2Text()
+        self.command_definitions: Dict[str, str] = {}  # Store \newcommand definitions
         
     def parse(self) -> Paper:
         """Parse the LaTeX file and return Paper object"""
@@ -167,15 +168,18 @@ class LaTeXParser:
     
     def _extract_metadata(self, content: str, paper: Paper):
         """Extract title, author, and other metadata from preamble"""
+        # Extract command definitions first
+        self._extract_command_definitions(content)
+        
         # Extract title
         title_match = re.search(r'\\title\s*(?:\[.*?\])?\s*{(.*?)}(?:\s|\\|$)', content, re.DOTALL)
         if title_match:
-            paper.title = self._clean_latex(title_match.group(1)).strip()
+            paper.title = self._clean_latex(title_match.group(1), None).strip()
         
         # Extract author
         author_match = re.search(r'\\author\s*{(.*?)}(?:\s|\\|$)', content, re.DOTALL)
         if author_match:
-            paper.author = self._clean_latex(author_match.group(1)).strip()
+            paper.author = self._clean_latex(author_match.group(1), None).strip()
     
     def _parse_document(self, content: str, paper: Paper):
         """Parse the document body into sections and paragraphs"""
@@ -225,47 +229,61 @@ class LaTeXParser:
         return content
     
     def _parse_sections(self, content: str, parent: Union[Paper, Section]):
-        """Recursively parse sections and subsections"""
-        # Find all section headers
+        """Parse sections and subsections into a proper hierarchical tree"""
         section_pattern = r'\\(section|subsection|subsubsection)\s*(?:\[.*?\])?\s*{([^}]+)}'
-        
-        sections = []
+        level_map = {'section': 0, 'subsection': 1, 'subsubsection': 2}
+
+        raw_sections = []
         for match in re.finditer(section_pattern, content):
-            level_map = {'section': 0, 'subsection': 1, 'subsubsection': 2}
-            level = level_map[match.group(1)]
-            title = self._clean_latex(match.group(2))
-            sections.append((match.start(), match.end(), level, title))
-        
-        if not sections:
-            # No sections found, treat all content as paragraphs
+            raw_sections.append({
+                'start': match.start(),
+                'end': match.end(),
+                'level': level_map[match.group(1)],
+                'title': self._clean_latex(match.group(2), None),
+                'node': Section(name=self._clean_latex(match.group(2), None), level=level_map[match.group(1)]),
+                'parent': None,
+                'section_end': len(content),
+            })
+
+        if not raw_sections:
             self._parse_text_into_section(content, parent)
             return
-        
-        # Process content before first section
-        if sections[0][0] > 0:
-            preamble_content = content[:sections[0][0]]
-            self._parse_text_into_section(preamble_content, parent)
-        
-        # Process each section
-        for i, (start, end, level, title) in enumerate(sections):
-            # Find the content for this section (until next section of same/higher level)
-            section_end = len(content)
-            for j in range(i + 1, len(sections)):
-                next_start, _, next_level, _ = sections[j]
-                if next_level <= level:
-                    section_end = next_start
+
+        # Compute section end boundaries
+        for i, item in enumerate(raw_sections):
+            for j in range(i + 1, len(raw_sections)):
+                if raw_sections[j]['level'] <= item['level']:
+                    item['section_end'] = raw_sections[j]['start']
                     break
-            
-            section_content = content[end:section_end]
-            
-            # Create section object
-            section = Section(name=title, level=level)
-            
-            # Handle nested sections recursively
-            self._parse_sections(section_content, section)
-            
-            # Add to parent
-            parent.add_child(section)
+
+        # Process content before the first top-level section
+        if raw_sections[0]['start'] > 0:
+            self._parse_text_into_section(content[:raw_sections[0]['start']], parent)
+
+        # Build parent-child relationships using a level stack
+        stack: List[Dict[str, Union[Paper, Section, int]]] = [{'node': parent, 'level': -1}]
+        for item in raw_sections:
+            while stack and item['level'] <= stack[-1]['level']:
+                stack.pop()
+            parent_node = stack[-1]['node']
+            parent_node.add_child(item['node'])
+            item['parent'] = stack[-1]
+            stack.append({'node': item['node'], 'level': item['level'], 'item': item})
+
+        # Parse direct text segments for each section
+        for item in raw_sections:
+            # Collect only immediate children of this section
+            child_sections = [child for child in raw_sections if child.get('parent') and child['parent'].get('item') is item]
+            child_sections.sort(key=lambda c: c['start'])
+
+            segment_start = item['end']
+            for child in child_sections:
+                if child['start'] > segment_start:
+                    self._parse_text_into_section(content[segment_start:child['start']], item['node'])
+                segment_start = child['section_end']
+
+            if segment_start < item['section_end']:
+                self._parse_text_into_section(content[segment_start:item['section_end']], item['node'])
     
     def _parse_text_into_section(self, content: str, section: Union[Paper, Section]):
         """Parse text content into paragraphs and sentences"""
@@ -274,6 +292,9 @@ class LaTeXParser:
         lines = [line[:line.find('%')] if '%' in line else line for line in lines]
         content = '\n'.join(lines)
         
+        # First, extract and separate out complex environments
+        content, environments = self._extract_environments(content)
+        
         # Split into paragraphs (separated by blank lines or explicit paragraph breaks)
         paragraphs = re.split(r'\n\s*\n+', content.strip())
         
@@ -281,15 +302,16 @@ class LaTeXParser:
             if not para_text.strip():
                 continue
             
-            # Check if this paragraph contains special environment
+            # Check if this paragraph contains special environment references
             env_type = self._detect_environment_type(para_text)
             
-            if env_type == EnvironmentType.EQUATION or env_type == EnvironmentType.FIGURE or env_type == EnvironmentType.TABLE:
+            if env_type in (EnvironmentType.EQUATION, EnvironmentType.FIGURE, EnvironmentType.TABLE):
                 # Handle special environments
                 para = Paragraph(environment_type=env_type)
                 clean_text = self._extract_environment_content(para_text)
-                para.add_sentence(Sentence(text=clean_text, environment_type=env_type))
-                section.add_paragraph(para)
+                if clean_text.strip():  # Only add if text is not empty
+                    para.add_sentence(Sentence(text=clean_text, environment_type=env_type))
+                    section.add_paragraph(para)
             else:
                 # Regular text paragraph
                 para = Paragraph(environment_type=EnvironmentType.TEXT)
@@ -299,11 +321,42 @@ class LaTeXParser:
                     if sentence_text.strip():
                         # Extract citations
                         citations = self._extract_citations(sentence_text)
-                        clean_text = self._clean_latex(sentence_text)
-                        para.add_sentence(Sentence(text=clean_text, citations=citations))
+                        clean_text = self._clean_latex(sentence_text, citations)
+                        
+                        # Filter out empty sentences and sentences with only braces/punctuation
+                        if self._is_valid_sentence(clean_text):
+                            para.add_sentence(Sentence(text=clean_text, citations=citations))
                 
                 if para.sentences:
                     section.add_paragraph(para)
+    
+    def _extract_environments(self, content: str) -> tuple:
+        """Extract complex environments from text, returning cleaned content and extracted environments"""
+        # Extract figure, table, equation environments
+        env_patterns = [
+            (r'\\begin\{(?:figure|figure\*)\}.*?\\end\{(?:figure|figure\*)\}', 'figure'),
+            (r'\\begin\{(?:table|table\*)\}.*?\\end\{(?:table|table\*)\}', 'table'),
+            (r'\\begin\{(?:align|align\*|gather|gather\*|multline|multline\*|equation|equation\*)\}.*?\\end\{(?:align|align\*|gather|gather\*|multline|multline\*|equation|equation\*)\}', 'equation'),
+        ]
+        
+        environments = []
+        cleaned_content = content
+        
+        for pattern, env_type in env_patterns:
+            for match in re.finditer(pattern, content, re.DOTALL):
+                # Extract caption if it's a figure/table
+                env_text = match.group(0)
+                caption_match = re.search(r'\\caption\s*\{([^}]*)\}', env_text)
+                if caption_match:
+                    environments.append({
+                        'type': env_type,
+                        'content': caption_match.group(1),
+                        'full': env_text
+                    })
+                # Replace the environment with a placeholder
+                cleaned_content = cleaned_content.replace(env_text, '')
+        
+        return cleaned_content, environments
     
     def _detect_environment_type(self, text: str) -> EnvironmentType:
         """Detect the type of environment in the text"""
@@ -331,19 +384,75 @@ class LaTeXParser:
         text = re.sub(r'\\end\{[^}]+\}', '', text)
         # Remove common LaTeX commands
         text = re.sub(r'\\(includegraphics|caption|label|centering|vspace|hspace)\s*(?:\[[^\]]*\])?\s*{[^}]*}', '', text)
-        return self._clean_latex(text).strip()
+        return self._clean_latex(text, None).strip()
+    
+
+    def _is_valid_sentence(self, text: str) -> bool:
+        """Check if a sentence is valid (not empty, not just punctuation/braces)"""
+        # Remove all whitespace and punctuation
+        clean = re.sub(r'[\s\{\}\[\]\(\)\.,;:!?\-—‐–~^]', '', text)
+        
+        # Must have at least 2 characters of actual content (words)
+        return len(clean) >= 2
     
     def _split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences"""
-        # Simple heuristic: split on periods, question marks, exclamation marks
-        # but preserve references and citations
-        text = text.replace('et al.', 'et_al')  # Temporary placeholder
+        """Split text into sentences with better handling of abbreviations"""
+        # Protect common abbreviations with placeholders
+        # Use word boundaries to avoid replacing parts of words
+        replacements = [
+            (r'\bet\s+al\.', 'et_al'),  # et al.
+            (r'\be\.g\.', 'e_g'),  # e.g.
+            (r'\bi\.e\.', 'i_e'),  # i.e.
+            (r'\betc\.', 'etc_period'),  # etc.
+            (r'\bvs\.', 'vs_period'),  # vs.
+            (r'\bno\.', 'no_period'),  # no.
+            (r'\bfig\.', 'fig_period'),  # fig.
+            (r'\beq\.', 'eq_period'),  # eq.
+            (r'\bDr\.', 'Dr_period'),  # Dr.
+            (r'\bMr\.', 'Mr_period'),  # Mr.
+            (r'\bMrs\.', 'Mrs_period'),  # Mrs.
+            (r'\bProf\.', 'Prof_period'),  # Prof.
+            (r'\bU\.S\.', 'US_period'),  # U.S.
+        ]
         
-        # Split on sentence boundaries
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+        for pattern, placeholder in replacements:
+            text = re.sub(pattern, placeholder, text, flags=re.IGNORECASE)
         
-        # Restore placeholders
-        sentences = [s.replace('et_al', 'et al.') for s in sentences]
+        # Split on sentence boundaries (period followed by space and uppercase, or ? !)
+        # More sophisticated: split on ./?/! followed by space and uppercase letter
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text)
+        
+        # Restore abbreviations
+        for pattern, placeholder in replacements:
+            for i in range(len(sentences)):
+                _, original = pattern, placeholder
+                # Restore from placeholder
+                if placeholder == 'et_al':
+                    sentences[i] = sentences[i].replace('et_al', 'et al.')
+                elif placeholder == 'e_g':
+                    sentences[i] = sentences[i].replace('e_g', 'e.g.')
+                elif placeholder == 'i_e':
+                    sentences[i] = sentences[i].replace('i_e', 'i.e.')
+                elif placeholder == 'etc_period':
+                    sentences[i] = sentences[i].replace('etc_period', 'etc.')
+                elif placeholder == 'vs_period':
+                    sentences[i] = sentences[i].replace('vs_period', 'vs.')
+                elif placeholder == 'no_period':
+                    sentences[i] = sentences[i].replace('no_period', 'no.')
+                elif placeholder == 'fig_period':
+                    sentences[i] = sentences[i].replace('fig_period', 'fig.')
+                elif placeholder == 'eq_period':
+                    sentences[i] = sentences[i].replace('eq_period', 'eq.')
+                elif placeholder == 'Dr_period':
+                    sentences[i] = sentences[i].replace('Dr_period', 'Dr.')
+                elif placeholder == 'Mr_period':
+                    sentences[i] = sentences[i].replace('Mr_period', 'Mr.')
+                elif placeholder == 'Mrs_period':
+                    sentences[i] = sentences[i].replace('Mrs_period', 'Mrs.')
+                elif placeholder == 'Prof_period':
+                    sentences[i] = sentences[i].replace('Prof_period', 'Prof.')
+                elif placeholder == 'US_period':
+                    sentences[i] = sentences[i].replace('US_period', 'U.S.')
         
         return sentences
     
@@ -356,6 +465,13 @@ class LaTeXParser:
         for match in re.finditer(cite_pattern, text):
             keys = match.group(1).split(',')
             citations.extend([k.strip() for k in keys])
+        
+        # Also match standalone {key} that contain 4 digits (likely citation keys)
+        brace_pattern = r'\{([^}]*\d{4}[^}]*)\}'
+        for match in re.finditer(brace_pattern, text):
+            key = match.group(1).strip()
+            if key and key not in citations:  # Avoid duplicates
+                citations.append(key)
         
         return citations
     
@@ -370,7 +486,7 @@ class LaTeXParser:
             return self._nodes_to_text(nodes)
         except Exception as e:
             # Fallback to regex-based cleaning
-            return self._clean_latex(latex_str)
+            return self._clean_latex(latex_str, None)
     
     def _nodes_to_text(self, nodes: List[LatexNode]) -> str:
         """Convert latex nodes to plain text"""
@@ -402,43 +518,262 @@ class LaTeXParser:
         
         return ' '.join(filter(None, text_parts))
     
-    def _clean_latex(self, text: str) -> str:
-        """Remove LaTeX commands and formatting from text"""
-        # Remove citations with their content
-        text = re.sub(r'\\(?:cite|citep|citet|citeauthor|citeyear)\s*(?:\[[^\]]*\])?\s*{[^}]*}', '', text)
+    def _clean_latex(self, text: str, citations: List[str] = None) -> str:
+        """Remove LaTeX commands and formatting from text using proper parsing"""
+        try:
+            # Use pylatexenc for proper LaTeX parsing
+            walker = LatexWalker(text)
+            nodes, _, _ = walker.get_latex_nodes(pos=0, stop_on_closing_brace=False)
+            clean_text = self._nodes_to_clean_text(nodes)
+        except Exception:
+            # Fallback to a more careful regex-based approach
+            clean_text = self._clean_latex_fallback(text, citations)
         
-        # Remove common formatting commands but keep their content
-        text = re.sub(r'\\(textbf|textit|texttt|emph|underline|sout|text)\s*{([^}]*)}', r'\2', text)
+        # Remove any remaining citation braces based on extracted citations
+        if citations:
+            # Sort by length descending to remove nested ones first
+            citations_sorted = sorted(set(citations), key=len, reverse=True)
+            for cite in citations_sorted:
+                clean_text = clean_text.replace(f'{{{cite}}}', '')
         
-        # Remove commands that take arguments
-        text = re.sub(r'\\(ref|label|footnote|href|url|command)\s*(?:\[[^\]]*\])?\s*{[^}]*}', '', text)
+        # Remove any remaining citation-like braces
+        clean_text = re.sub(r'\{[^}]*\d{4}[^}]*', '', clean_text)
         
-        # Remove generic LaTeX commands
-        text = re.sub(r'\\([a-zA-Z@]+)\s*(?:\[[^\]]*\])?\s*{[^}]*}', '', text)
-        text = re.sub(r'\\([a-zA-Z@]+)\s*(?:\[[^\]]*\])?', '', text)
+        return clean_text
+    
+    def _clean_latex_fallback(self, text: str, citations: List[str] = None) -> str:
+        """Fallback regex-based LaTeX cleaning with better handling of nested braces"""
+        # First, substitute custom command definitions
+        text = self._substitute_command_definitions(text)
         
-        # Remove special characters
-        text = re.sub(r'\\%', '%', text)
-        text = re.sub(r'\\&', '&', text)
-        text = re.sub(r'\\#', '#', text)
-        text = re.sub(r'\\\$', '$', text)
-        text = re.sub(r'\\textasciitilde', '~', text)
-        text = re.sub(r'\\textasciicircum', '^', text)
+        # Remove display math environments  
+        text = re.sub(r'\$\$.*?\$\$', '', text, flags=re.DOTALL)
         
-        # Remove inline math ($ ... $) but keep display math for now
+        # Remove inline math
         text = re.sub(r'\$[^$]*\$', '', text)
+        
+        # First pass: remove all citation commands with their complex arguments
+        # This needs to handle nested braces properly
+        text = self._remove_citation_commands(text)
+        
+        # Second pass: remove cross-reference commands
+        text = self._remove_xref_commands(text)
+        
+        # Third pass: remove formatting commands, keeping content
+        text = self._remove_formatting_commands(text)
+        
+        # Fourth pass: remove remaining LaTeX commands
+        text = re.sub(r'\\(?:[a-zA-Z@]+)\s*(?:\[[^\]]*\])?', '', text)
+        
+        # Fifth pass: clean up special LaTeX characters and braces
+        text = text.replace(r'\%', '%')
+        text = text.replace(r'\&', '&')
+        text = text.replace(r'\#', '#')
+        text = text.replace(r'\$', '$')
+        text = text.replace(r'\{', '{')
+        text = text.replace(r'\}', '}')
+        text = text.replace(r'\textasciitilde', '~')
+        text = text.replace(r'\textasciicircum', '^')
         
         # Remove line breaks
         text = re.sub(r'\\\\', ' ', text)
-        text = re.sub(r'\n\n+', '\n', text)
+        
+        # Clean up remaining braces - remove empty braces and orphaned closing braces
+        text = re.sub(r'\{\s*\}', '', text)  # Remove empty braces
+        text = re.sub(r'(?<!\{)\s*\}\s*', '', text)  # Remove orphaned closing braces
+        text = re.sub(r'\s*\{\s*', '{', text)  # Clean up braces with spaces
+        text = re.sub(r'\s*\}\s*', '}', text)
+        
+        # Remove empty parentheses (with optional whitespace) - multiple passes for nested cases
+        for _ in range(3):
+            text = re.sub(r'\(\s*\)', '', text)
+        
+        # Clean up tildes not followed by content
+        text = re.sub(r'~\s+', ' ', text)  # Tilde followed by whitespace
+        text = re.sub(r'~', '', text)  # Remaining tildes
         
         # Clean up whitespace
         text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[\s\{\}]+$', '', text)  # Remove trailing whitespace/braces
+        text = re.sub(r'^[\s\{\}]+', '', text)  # Remove leading whitespace/braces
+        
+        # Remove any remaining citation braces ( { ... } containing 4 digits )
+        text = re.sub(r'\{[^}]*\d{4}[^}]*', '', text)
         
         return text.strip()
     
+    def _substitute_command_definitions(self, text: str) -> str:
+        """Substitute custom command definitions in the text"""
+        for command, definition in self.command_definitions.items():
+            # Clean the definition first (remove LaTeX commands from it)
+            clean_definition = self._clean_latex_simple(definition)
+            # Replace the command with its cleaned definition
+            # Use word boundaries to avoid partial matches
+            pattern = re.escape(command) + r'(?=\s|[^a-zA-Z@]|$)'
+            text = re.sub(pattern, clean_definition, text)
+        
+        return text
+    
+    def _clean_latex_simple(self, text: str) -> str:
+        """Simple LaTeX cleaning for command definitions"""
+        # Remove \xspace and other simple commands
+        text = re.sub(r'\\xspace', '', text)
+        text = re.sub(r'\\(?:[a-zA-Z@]+)', '', text)
+        return text.strip()
+    
+    def _remove_citation_commands(self, text: str) -> str:
+        """Remove citation commands with proper brace handling"""
+        # First, clean up leading tildes before citations (LaTeX non-breaking space)
+        # Note: Order matters - try longer patterns first!
+        text = re.sub(r'~\s*\\(?:citeyear|citeauthor|citep|citet|cite)(?=\s|\[|\{)', '', text)
+        
+        pattern = r'\\(?:citeyear|citeauthor|citep|citet|cite)(?=\s|\[|\{)\s*(?:\[[^\]]*\])?\s*'
+        pos = 0
+        result = []
+        
+        for match in re.finditer(pattern, text):
+            result.append(text[pos:match.start()])
+            pos = match.end()
+            
+            # Skip the argument
+            if pos < len(text) and text[pos] == '{':
+                brace_count = 0
+                for i in range(pos, len(text)):
+                    if text[i] == '{':
+                        brace_count += 1
+                    elif text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            pos = i + 1
+                            break
+        
+        result.append(text[pos:])
+        return ''.join(result)
+    
+    def _remove_xref_commands(self, text: str) -> str:
+        """Remove cross-reference commands like \\cref, \\ref, etc."""
+        # Order matters - try longer patterns first!
+        pattern = r'\\(?:crefrange|crefs|cref|eqref|label|ref)(?=\s|\[|\{)\s*(?:\[[^\]]*\])?\s*'
+        pos = 0
+        result = []
+        
+        for match in re.finditer(pattern, text):
+            result.append(text[pos:match.start()])
+            pos = match.end()
+            
+            # Skip the argument
+            if pos < len(text) and text[pos] == '{':
+                brace_count = 0
+                for i in range(pos, len(text)):
+                    if text[i] == '{':
+                        brace_count += 1
+                    elif text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            pos = i + 1
+                            break
+        
+        result.append(text[pos:])
+        return ''.join(result)
+    
+    def _remove_formatting_commands(self, text: str) -> str:
+        """Remove formatting commands but keep their content"""
+        # Pattern to match formatting commands (longer patterns first)
+        pattern = r'\\(?:textasciitilde|textasciicircum|textbf|textit|texttt|emph|underline|textmd|textrm|textsf|textup|textsl|text|small|tiny|large|Large|LARGE|huge|Huge)(?=\s|\{)\s*'
+        pos = 0
+        result = []
+        
+        for match in re.finditer(pattern, text):
+            result.append(text[pos:match.start()])
+            pos = match.end()
+            
+            # Extract the content inside braces
+            if pos < len(text) and text[pos] == '{':
+                brace_count = 0
+                content_start = pos + 1
+                for i in range(pos, len(text)):
+                    if text[i] == '{':
+                        brace_count += 1
+                    elif text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            result.append(text[content_start:i])
+                            pos = i + 1
+                            break
+        
+        result.append(text[pos:])
+        return ''.join(result)
+    
+    def _nodes_to_clean_text(self, nodes: List[LatexNode]) -> str:
+        """Convert LaTeX nodes to clean text, properly handling structure"""
+        if not nodes:
+            return ""
+        
+        text_parts = []
+        
+        for node in nodes:
+            if isinstance(node, str):
+                text_parts.append(node)
+            elif isinstance(node, LatexMacroNode):
+                # For formatting macros, extract the argument
+                if node.macro_name in ('textbf', 'textit', 'texttt', 'emph', 'underline', 
+                                       'textmd', 'textrm', 'textsf', 'textup', 'textsl', 'text'):
+                    if node.nodeargs:
+                        for arg in node.nodeargs:
+                            if hasattr(arg, 'nodelist'):
+                                text_parts.append(self._nodes_to_clean_text(arg.nodelist))
+                # Skip citation and reference macros
+                elif node.macro_name in ('cite', 'citep', 'citet', 'citeauthor', 'citeyear', 
+                                        'ref', 'label', 'footnote', 'href', 'url', 'link'):
+                    pass
+                # Skip other commands
+                elif node.macro_name.startswith('includegraphics') or node.macro_name.startswith('vspace'):
+                    pass
+                # For other macros, try to extract content if available
+                else:
+                    if hasattr(node, 'nodeargs') and node.nodeargs:
+                        for arg in node.nodeargs:
+                            if hasattr(arg, 'nodelist'):
+                                text_parts.append(self._nodes_to_clean_text(arg.nodelist))
+            elif isinstance(node, LatexGroupNode):
+                # Extract content from group nodes
+                if hasattr(node, 'nodelist'):
+                    text_parts.append(self._nodes_to_clean_text(node.nodelist))
+            elif isinstance(node, LatexEnvironmentNode):
+                # Skip certain environments
+                if node.environmentname not in ('equation', 'equation*', 'align', 'align*', 
+                                               'displaymath', 'gather', 'multline'):
+                    if hasattr(node, 'nodelist') and node.nodelist:
+                        text_parts.append(self._nodes_to_clean_text(node.nodelist))
+            elif hasattr(node, 'nodelist'):
+                # Recursively process nodes with nodelists
+                text_parts.append(self._nodes_to_clean_text(node.nodelist))
+        
+        # Join and clean up
+        result = ' '.join(filter(None, text_parts))
+        # Clean up double spaces
+        result = re.sub(r'\s+', ' ', result)
+        return result.strip()
+    
+    def _extract_command_definitions(self, content: str):
+        """Extract \newcommand definitions from the LaTeX content"""
+        # Match \newcommand{\command}{definition} or \newcommand{\command}[args]{definition}
+        newcommand_pattern = r'\\newcommand\s*\{(\\[a-zA-Z@]+)\}(?:\[[^\]]*\])?\s*\{([^}]*)\}'
+        
+        for match in re.finditer(newcommand_pattern, content):
+            command = match.group(1)
+            definition = match.group(2)
+            # Store the command without the backslash as key
+            self.command_definitions[command] = definition
+        
+        # Also handle \def commands
+        def_pattern = r'\\def\s*(\\[a-zA-Z@]+)\s*\{([^}]*)\}'
+        for match in re.finditer(def_pattern, content):
+            command = match.group(1)
+            definition = match.group(2)
+            self.command_definitions[command] = definition
+    
     def _extract_references(self, content: str, paper: Paper):
-        """Extract bibliography entries from .bib file or thebibliography environment"""
         # First try to find \bibliography command
         bib_match = re.search(r'\\bibliography\s*{([^}]+)}', content)
         if bib_match:
