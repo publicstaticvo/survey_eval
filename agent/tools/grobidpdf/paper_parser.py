@@ -2,7 +2,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import List, Optional
 
-from ..paper_elements import Paper, Section, Paragraph, Sentence
+from .paper_elements import Paper, Section, Paragraph, Sentence
 
 
 class PaperParser:

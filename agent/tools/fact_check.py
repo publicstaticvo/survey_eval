@@ -26,19 +26,10 @@ class FactCheckLLMClient(AsyncChat):
         return self.PROMPT.format(text=inputs), {"text": inputs}
 
 
-class FactualLLMClient(AsyncChat):
-
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
-
-    def _availability(self, response, context):
-        response = extract_json(response)
-        return response['judgment'], response['evidence']
-
-
 class FactualCorrectnessCritic:
     
     def __init__(self, config: ToolConfig):
-        self.llm = FactualLLMClient(config.llm_server_info, config.sampling_params)
+        self.llm = FactCheckLLMClient(config.llm_server_info, config.sampling_params)
         self.check = EvidenceCheck(config)
 
     async def _judge_and_verify(self, claim: str, content: str, content_type: str):

@@ -2,7 +2,7 @@ import os
 import glob
 import json
 import tqdm
-from tex_parser import LatexPaperParser, process_input_commands, construct_citation_info
+from tex_parser import LatexPaperParser, process_input_commands
 from utils import detect_encoding
 
 

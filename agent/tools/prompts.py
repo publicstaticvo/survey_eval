@@ -91,68 +91,55 @@ QUERY_SCHEMA = {
     }
 }
 
-CLAIM_SEGMENTATION_PROMPT = '''You are a rigorous scientific information extractor. Your task is to extract verifiable units (also called claims) from a paragraph. Each verifiable unit must be suitable for independent factual verification against the cited reference(s).
+CLAIM_CLASSIFICATION_PROMPT = '''You are a precise scientific text classifier. Your task is to determine whether a given sentence describes a concrete experimental result or performance claim that can be verified against its cited reference(s).
 
 ========================
 INPUT
 ========================
 
-Full Paragraph:
-\"\"\"{range}\"\"\"
+Context Window (up to 3 consecutive sentences):
+\"\"\"{context}\"\"\"
 
-Target Sentence (contains citation markers):
-\"\"\"{text}\"\"\"
+Target Sentence (contains exactly one citation marker):
+\"\"\"{sentence}\"\"\"
 
-Citation markers in this sentence:
-{keys}
-
-========================
-CORE DEFINITIONS
-========================
-
-A *verifiable unit* (claim) is the minimal statement that:
-- Is directly supported by the cited reference(s), and
-- Can be independently checked against a single paper.
-
-Claim Types:
-- background: definition, scope, or topic description (what something is about)
-- action: what a paper does (proposes, evaluates, studies, analyzes, shows)
-- result: capability assertions, comparisons, performance, limitations, conclusions
+Citation marker:
+{citation_key}
 
 ========================
-STRICT EXTRACTION RULES
+DEFINITION
 ========================
 
-1. Context Window Constraint:
-   - You may ONLY use information from a local window of at most 3 consecutive sentences:
-     the anchor sentence and its immediately adjacent sentences.
-   - You MUST NOT use any information outside this 3-sentence window.
+A *verifiable performance claim* is a sentence that:
+- Asserts a specific, measurable result, capability, or limitation of a method, model, or system, AND
+- The assertion can in principle be confirmed or refuted by reading the cited reference.
 
-2. Anchor-Centered Constraint:
-   - Every extracted claim MUST be anchored to the target sentence.
-   - The claim must represent what the citation in the target sentence is used to support.
-   - Do NOT extract claims unrelated to the citation purpose.
+Typical verifiable performance claims include:
+- Quantitative results: accuracy, scores, rankings, comparisons with numbers
+- Qualitative capability assertions: "Model X outperforms Y on task Z"
+- Explicitly stated limitations: "Model X fails to generalize to domain Y"
+- Direct benchmark results: "This model achieves state-of-the-art on dataset X"
 
-3. Minimality Constraint:
-   - Extract the minimal verifiable statement required for factual checking.
-   - Do NOT include background exposition, motivation, or elaboration unless strictly necessary to understand the anchored claim.
+========================
+EXCLUSION CRITERIA
+========================
 
-4. Coreference Resolution Constraint:
-   - You SHOULD attempt to resolve pronouns or implicit references using only the allowed 3-sentence context window.
-   - Replace pronouns (e.g., it, they, this model, such task) with explicit entities or concepts.
-   - If a pronoun cannot be clearly resolved within the window, you MUST omit that information rather than guessing.
+Answer NO if the sentence is any of the following:
 
-5. Token Legitimacy Constraint:
-   - Every word in the extracted claim MUST appear verbatim in the allowed context window, EXCEPT for the optional phrase "this paper" at the beginning of a claim.
-   - You MUST NOT introduce new words, paraphrases, or inferred terminology.
+1. Background definition: defines a concept, task, or field
+   Example: "Language models are computational models that understand human language [36]."
 
-6. Multiple Citations Handling:
-   - If multiple citations in the target sentence refer to the SAME claim, output ONE claim with multiple citation keys.
-   - If multiple citations correspond to DISTINCT contributions, output separate claims, each with exactly one citation key.
+2. Existence citation: cites a paper merely as an example or representative of a category
+   Example: "Tasks such as mathematical reasoning [225] and structured data inference [86]."
 
-7. Paragraph-Level Writing Note:
-   - Even if the paragraph describes one method or concept across multiple sentences, you MUST NOT treat the entire paragraph as a single claim.
-   - Claims must remain citation-centered, minimal, and independently verifiable.
+3. Motivation or scope statement: explains why something matters or what a paper covers
+   Example: "Evaluating LLMs on complex tasks has become an active research direction [12]."
+
+4. Indirect attribution: the cited paper is not the primary source of the claimed result
+   Example: "As noted by recent surveys [5], performance has improved significantly."
+
+5. Unresolvable reference: the subject of the claim cannot be determined from the 3-sentence window
+   Example: "Its proficiency still requires improvement [6]." (when "its" cannot be resolved)
 
 ========================
 OUTPUT FORMAT
@@ -162,15 +149,12 @@ Return a JSON object in the following format:
 
 ```json
 {{
-  "claims": [
-    {{
-      "claim": "<verbatim reconstructed statement>",
-      "claim_type": "background" | "action" | "result",
-      "citation_markers": ["<citation_marker>", "..."]
-    }}
-  ]
+  "is_verifiable_performance_claim": true | false,
+  "reason": "<one sentence explaining the decision>"
 }}
 ```
+
+Do NOT return anything outside the JSON object.
 
 ========================
 EXAMPLES
@@ -178,103 +162,63 @@ EXAMPLES
 
 ### Example 1
 
-Full Paragraph:
-\"\"\"In contrast, more complex tasks have become the mainstream benchmarks for assessing the capabilities of LLMs. 
-These include tasks such as mathematical reasoning [225, 236, 243] and structured data inference [86, 151]. 
-Overall, LLMs show great potential in reasoning and show a continuous improvement trend, but still face many challenges and limitations, requiring more in-depth research and optimization.\"\"\"
+Context Window:
+\"\"\"ChatGPT exhibits a strong capability for arithmetic reasoning by outperforming GPT-3.5 in the majority of tasks [159].
+However, its proficiency in mathematical reasoning still requires improvement [6].
+On symbolic reasoning tasks, ChatGPT is mostly worse than GPT-3.5 [6].\"\"\"
 
-Target Sentence (contains citation markers):
-\"\"\"These include tasks such as mathematical reasoning [225, 236, 243] and structured data inference [86, 151].\"\"\"
+Target Sentence:
+\"\"\"However, its proficiency in mathematical reasoning still requires improvement [6].\"\"\"
 
-Citation markers in this sentence:
-225, 236, 243, 86, 151
+Citation marker: 6
 
 Output:
 ```json
 {{
-  "claims": [ 
-    {{ 
-      "claim": "Mathematical reasoning benchmarks for assessing the capabilities of LLMs", 
-      "claim_type": "background", 
-      "citation_keys": ["225", "236", "243"] 
-    }},
-    {{
-      "claim": "Structured data inference benchmarks for assessing the capabilities of LLMs",
-      "claim_type": "background",
-      "citation_keys": ["86", "151"]
-    }}
-  ] 
+  "is_verifiable_performance_claim": false,
+  "reason": "The subject 'its' refers to ChatGPT based on context, but 'requires improvement' is the author's interpretive judgment rather than a specific measurable result reported in the cited paper."
 }}
 ```
 
 ### Example 2
 
-Full Paragraph:
-\"\"\"Sentiment analysis is a task that analyzes and interprets the text to determine the emotional inclination. 
-It is typically a binary (positive and negative) or triple (positive, neutral, and negative) class classification problem. Evaluating sentiment analysis tasks is a popular direction. 
-Liang et al. [114] and Zeng et al. [242] showed that the performance of the models on this task is usually high. 
-ChatGPT’s sentiment analysis prediction performance is superior to traditional sentiment analysis methods [129] and comes close to that of GPT-3.5 [159]. 
-In fine-grained sentiment and emotion cause analysis, ChatGPT also exhibits exceptional performance [218].\"\"\"
+Context Window:
+\"\"\"We evaluate our model on the SQuAD 2.0 reading comprehension benchmark.
+Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].
+This represents a significant improvement in extractive question answering performance.\"\"\"
 
-Target Sentence (contains citation markers):
-\"\"\"Liang et al. [114] and Zeng et al. [242] showed that the performance of the models on this task is usually high.\"\"\"
+Target Sentence:
+\"\"\"Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].\"\"\"
 
-Citation markers in this sentence:
-114, 242
+Citation marker: 43
 
 Output:
 ```json
 {{
-  "claims": [ 
-    {{
-      "claim": "Liang et al. showed that the performance of the models on this task is usually high.",  # Alternative: "This paper showed that the performance of the models on this task is usually high."
-      "claim_type": "action", 
-      "citation_keys": ["114"] 
-    }},
-    {{
-      "claim": "Zeng et al. showed that the performance of the models on this task is usually high.",
-      "claim_type": "action",
-      "citation_keys": ["242"] 
-    }}
-  ] 
+  "is_verifiable_performance_claim": true,
+  "reason": "The sentence makes a specific quantitative comparison against a result (85.1 F1) attributed to the cited reference, which can be verified by reading that paper."
 }}
 ```
 
 ### Example 3
 
-Full Paragraph:
-\"\"\"ChatGPT exhibits a strong capability for arithmetic reasoning by outperforming GPT-3.5 in the majority of tasks [159]. 
-However, its proficiency in mathematical reasoning still requires improvement [6, 45, 263]. 
-On symbolic reasoning tasks, ChatGPT is mostly worse than GPT-3.5, which may be because ChatGPT is prone to uncertain responses, leading to poor performance [6].\"\"\"
+Context Window:
+\"\"\"Sentiment analysis is a task that analyzes text to determine emotional inclination.
+It is typically a binary or triple classification problem.
+Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
 
-Target Sentence (contains citation markers):
-\"\"\"However, its proficiency in mathematical reasoning still requires improvement [6, 45, 263].\"\"\"
+Target Sentence:
+\"\"\"Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
 
-Citation markers in this sentence:
-6, 45, 263
+Citation marker: 114
 
 Output:
 ```json
 {{
-  "claims": [ 
-    {{ 
-      "claim": "ChatGPT's proficiency in mathematical reasoning still requires improvement.", 
-      "claim_type": "result", 
-      "citation_keys": ["6", "45", "263"] 
-    }}
-  ] 
+  "is_verifiable_performance_claim": false,
+  "reason": "The sentence describes the general research landscape rather than asserting a specific experimental result or performance measurement attributable to the cited paper."
 }}
 ```
-
-========================
-FINAL CHECK BEFORE OUTPUT
-========================
-
-Before producing the final answer, ensure that:
-- All claims satisfy the 3-sentence window constraint.
-- All tokens are traceable to the allowed context (except optional 'this paper').
-- No unresolved pronouns remain.
-- Each claim can be independently verified using its citation(s).
 '''
 
 CLAIM_SCHEMA = {

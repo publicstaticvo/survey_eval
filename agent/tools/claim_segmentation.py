@@ -80,21 +80,17 @@ class ClaimSegmentation:
         Each sentence is {"text": "sentence_text", "citations": [{"title": "title1", "key": "key1"}, {"title": "title1", "key": "key1"}]}
         """
         paragraphs = split_content_to_paragraph(paper_content)
-        tasks = []
+        tasks, claims = [], []
         for i, p in enumerate(paragraphs):
             for j, s in enumerate(p): 
-                if s['citations']:
+                # new version: keep only sentences with 1 ref
+                if len(s['citations']) == 1:
                     inputs = {"text": s['text'], "citations": s['citations'], "range": p, "sentence_id": j}
                     tasks.append(asyncio.create_task(self.llm.call(inputs=inputs, context={"paragraph_id": i})))
-        print(f"We have {len(tasks)} claims.")
-        claims = []
-        count = 0
         for task in asyncio.as_completed(tasks):
             try:
                 x = await task
-                if isinstance(x, list) and x: claims.extend(x)
-                else: count += 1
+                if x: claims.extend(x)
             except Exception as e:
                 print(f"Claim {e} {type(e)}")
-                count += 1
-        return {"claims": claims, "errors": count}
+        return {"claims": claims}
