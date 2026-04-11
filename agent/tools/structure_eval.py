@@ -138,7 +138,7 @@ class MissingTopicLLMClient(FactCheckLLMClient):
         return self.PROMPT.format(**inputs), {"text": inputs['text']}
 
 
-class QualityPressureCheck:
+class StructureCheck:
     
     def __init__(self, config: ToolConfig):
         self.landmark_llm = LandmarkLLMClient(config.llm_server_info, config.sampling_params)

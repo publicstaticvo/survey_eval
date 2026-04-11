@@ -64,3 +64,14 @@ class AsyncChat(AsyncLLMClient):
             messages = [{'role': 'user', "content": messages}]
         payload = {"model": self.llm.model, "messages": messages, **self.sampling_params, **kwargs}
         return await self._post("chat/completions", payload, context)
+
+
+class AsyncRerank(AsyncLLMClient):
+    
+    def _availability(self, response, context):
+        return [x['document']['text'] for x in response['results']]
+    
+    async def call(self, query, documents, top_n, **kwargs):      
+        context = context or {}  
+        payload = {"model": self.llm.model, "query": query, "documents": documents, "top_n": top_n, **kwargs}
+        return await self._post("rerank", payload, context)

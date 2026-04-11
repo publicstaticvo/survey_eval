@@ -60,7 +60,7 @@ class CitationParser:
         # status == 0 -> OK
         # status == 1 -> fail to download paper
         # status == 2 -> fail to download paper and fetch abstract
-        # status == 3 -> fail to get information of the citation. TODO: Fallback to WebSearch.
+        # status == 3 -> fail to get information of the citation.
         if info['full_content']: 
             info['status'] = 0
         elif info['abstract']:
@@ -70,6 +70,7 @@ class CitationParser:
             info['status'] = 2
             info['abstract'] = ""
         else:
+            # TODO: 改为“若失败则调用websearch”。
             info['status'] = 3
             info['abstract'] = ""
         print(f"Paper {title} Status {info['status']}")

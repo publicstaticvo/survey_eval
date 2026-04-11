@@ -42,28 +42,13 @@ class ClaimSegmentationLLMClient(AsyncChat):
         super().__init__(llm, sampling_params)
 
     def _availability(self, response: str, context: dict):
-        claims = extract_json(response)
-        # 1. check schema
-        try:
-            jsonschema.validate(claims, CLAIMS_SCHEMA)
-        except jsonschema.ValidationError:
-            jsonschema.validate(claims, CLAIM_SCHEMA)
-            claims = {"claims": [claims]}
-        # 2. range_check if claim is in paragraph
-        for claim in claims['claims']:
-            # print(claim, context['paragraph'], context['sentence_id'])            
-            assert range_check(claim['claim'], context['paragraph'], context['sentence_id'])
-            # 3. after prompt validation and improvement:
-            #    ensure each claim has exactly 1 citation
-            # claim['citations'] = {k: context['citations'][k] for k in claim['citation_markers']}
-            claim['paragraph_id'] = context['paragraph_id']
-            claim['sentence_id'] = context['sentence_id']
-        return claims['claims']
+        result = extract_json(response)
+        if result["is_verifiable_performance_claim"]: return context['claim']
     
     def _organize_inputs(self, inputs):
         paragraph_text = "\n".join(s['text'] for s in inputs['range'])
         prompt = self.PROMPT.format(text=inputs['text'], range=paragraph_text, keys=list(x['key'] for x in inputs['citations']))
-        return prompt, {"citations": inputs['citations'], "paragraph": inputs['range'], "sentence_id": inputs['sentence_id']}
+        return prompt, {'claim': inputs}
 
 
 class ClaimSegmentation:
@@ -83,14 +68,14 @@ class ClaimSegmentation:
         tasks, claims = [], []
         for i, p in enumerate(paragraphs):
             for j, s in enumerate(p): 
-                # new version: keep only sentences with 1 ref
+                # 在现在的实现逻辑下，只保留含1个引用的句子。
                 if len(s['citations']) == 1:
                     inputs = {"text": s['text'], "citations": s['citations'], "range": p, "sentence_id": j}
                     tasks.append(asyncio.create_task(self.llm.call(inputs=inputs, context={"paragraph_id": i})))
         for task in asyncio.as_completed(tasks):
             try:
                 x = await task
-                if x: claims.extend(x)
+                if isinstance(x, dict) and x: claims.append(x)
             except Exception as e:
                 print(f"Claim {e} {type(e)}")
         return {"claims": claims}

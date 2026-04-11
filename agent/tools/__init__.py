@@ -5,18 +5,18 @@ from .claim_segmentation import ClaimSegmentation
 from .citation_parser import CitationParser
 from .dynamic_oracle_generator import DynamicOracleGenerator
 from .fact_check import FactualCorrectnessCritic
-from .highlvl_quality import QualityPressureCheck
 from .minimum_completion import MinimalCompletionCheck
 from .programmatic_quality import QualityCritic
 from .query_expand import QueryExpand
 from .source_critic import MissingPaperCheck
+from .structure_eval import StructureCheck
 from .topic_coverage import TopicCoverageCritic
 from .tool_config import ToolConfig
 from .websearch import WebSearchFallback
 from .grobidpdf.paper_parser import PaperParser
 from .sbert_client import SentenceTransformerClient
 from .request_utils import SessionManager
-from .latex.latex_parser import LaTeXParser
+from .latex_parser.tex_parser import LatexPaperParser
 
 tools = [
     AnchorSurveyFetch,
@@ -28,12 +28,12 @@ tools = [
     MinimalCompletionCheck,
     MissingPaperCheck,
     QualityCritic,
-    QualityPressureCheck,
+    StructureCheck,
     QueryExpand,
     TopicCoverageCritic,
     SentenceTransformerClient,
     WebSearchFallback,
-    LaTeXParser,
+    LatexPaperParser,
     ToolConfig,
     AgentState,
     PaperParser,
