@@ -1,386 +1,153 @@
 import math
 import logging
 import asyncio
-import lightgbm
 import numpy as np
 import networkx as nx
 from datetime import datetime
 from typing import List, Dict, Any
-from sentence_transformers.util import cos_sim
 
 from .sbert_client import SentenceTransformerClient
 from .openalex import openalex_search_paper
 from .tool_config import ToolConfig
+from .utils import cosine_similarity_matrix
+
+try:
+    import lightgbm
+except Exception:
+    lightgbm = None
 
 debug = False
 
 
 class DynamicOracleGenerator:
-    
     def __init__(self, config: ToolConfig):
-        self.oracle = {}
-        self.library = {}  # All papers searched by oracle
-        self.register_key = {}
-        self.letor = lightgbm.Booster(model_file=config.letor_path)
+        self.letor = lightgbm.Booster(model_file=config.letor_path) if lightgbm is not None else None
         self.eval_date = config.evaluation_date
         self.num_oracle_papers = config.num_oracle_papers
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
 
     def _citation_count_by_eval_date(self, paper: dict):
-        """
-        Calculate the cited by count on evaluation date.
-        """
         eval_year = int(self.eval_date.year)
-        if (citation_count := paper.get("cited_by_count", 0)):
-            for x in paper.get("counts_by_year", []):
-                if x['year'] > eval_year:
-                    citation_count -= x['cited_by_count']
+        citation_count = paper.get("cited_by_count", 0) or 0
+        if citation_count:
+            for item in paper.get("counts_by_year", []):
+                if item["year"] > eval_year:
+                    citation_count -= item["cited_by_count"]
             return citation_count
-        citation_count = 0
-        for x in paper.get("counts_by_year", []):
-            if x['year'] <= eval_year:
-                citation_count += x['cited_by_count']
-        return citation_count
+        return sum(item["cited_by_count"] for item in paper.get("counts_by_year", []) if item["year"] <= eval_year)
 
     def _paper_age(self, paper):
-        year = int(self.eval_date.strftime("%Y-%m-%d")[:4]) - int(paper['publication_date'][:4])
-        return year + 1
-    
-    async def _get_high_refs(self, num_high_refs: int = 100) -> list:
-        corefs = {}
-        for x in self.library.values():
-            for y in x['referenced_works']:
-                corefs[y] = corefs.get(y, 0) + 1
+        publication_date = paper.get("publication_date") or self.eval_date.strftime("%Y-%m-%d")
+        year = int(self.eval_date.strftime("%Y")) - int(publication_date[:4])
+        return max(1, year + 1)
 
-        # get information of top local-cited papers
-        new_oracles = []
-        high_refs = sorted(list(corefs.items()), key=lambda x: x[1], reverse=True)[:num_high_refs]
-        high_refs_to_search = set()
-        for x, _ in high_refs:
-            if x in self.library: 
-                new_oracles.append(x)
-            else:
-                high_refs_to_search.add(x)
-        if debug:
-            logging.info(f"{len(new_oracles)} high_refs already collected and {len(high_refs_to_search)} high_refs to be requested")
-        
-        if high_refs_to_search:
+    async def _fetch_by_ids(self, paper_ids: list[str], batch_size: int = 50):
+        fetched = {}
+        for i in range(0, len(paper_ids), batch_size):
+            batch = paper_ids[i : i + batch_size]
+            if not batch:
+                continue
             try:
-                results = await openalex_search_paper("works", filter={"openalex": "|".join(high_refs_to_search)}, per_page=200)
-                for x in results['results']:
-                    if not x['publication_date'] or self.eval_date.strftime("%Y-%M-%d") < x['publication_date']: continue
-                    self.library[x['id']] = x    
-                    new_oracles.append(x['id'])                
-            except Exception as e:
-                logging.error(f"get_high_refs {e}")
-        return new_oracles
-       
-    async def _get_neighbors(self, prev_queries: List[str], query: str, num_top_seeds: int, batch_size: int = 50) -> list:
+                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=min(batch_size, 200))
+            except Exception:
+                continue
+            for paper in results.get("results", []):
+                if paper.get("publication_date") and paper["publication_date"] <= self.eval_date.strftime("%Y-%m-%d"):
+                    fetched[paper["id"]] = paper
+        return fetched
 
-        async def _get_cites(work_ids, keyword, cited_by_threshold: int = 0) -> dict:
-            paper_count = -1
-            filters = {keyword: '|'.join(work_ids), "to_publication_date": self.eval_date.strftime("%Y-%m-%d")}
-            if cited_by_threshold > 0:
-                filters['cited_by_count'] = f">{cited_by_threshold}"
-            papers = {}
-            for page in range(1, 51):
-                try:                  
-                    results = await openalex_search_paper("works", filters, per_page=200, page=page, sort="cited_by_count")
-                    if paper_count == -1: paper_count = results['count']
-                    for x in results['results']: papers[x['id']] = x
-                except Exception as e:
-                    logging.info(f"_request_papers {e}") 
-                if paper_count >= 0 and page * 200 >= paper_count: break
-            return papers
-            
-        # 1. 用self.register_key选出每个子领域的TOP论文; 用相似性选出跟query最像的论文
-        paper_ids, sentences = [], []
-        for q in prev_queries:
-            for x, _ in self.register_key[q]:
-                paper_ids.append(x)
-                x = self.library[x]
-                title = x['title']
-                abstract = x.get("abstract", None)
-                sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-        sentences.append(query)
-        if len(sentences) > num_top_seeds:
-            embeddings = self.sentence_transformer.embed(sentences)
-            cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
-            top_papers = sorted([(i, s) for i, s in zip(paper_ids, cosine_scores)], key=lambda x: x[1], reverse=True)[:num_top_seeds]
-            top_papers = [x for x, _ in top_papers]
-        else:
-            top_papers = paper_ids
-        # 2. 获取他们的邻居的metadata
-        if debug:
-            logging.info(f"query {query.lower()} Top papers {len(top_papers)}")
-        # as_batch
-        citation_hub = {}
-        for i in range(0, len(top_papers), batch_size):
-            citation_hub |= await _get_cites(top_papers[i:i + batch_size], "cites", 10)
-            citation_hub |= await _get_cites(top_papers[i:i + batch_size], "cited_by", 10)
-        if debug:
-            logging.info(f"query {query.lower()} Get {len(citation_hub)} neighbors.")
+    async def _expand_library(self, query: str, library: Dict[str, Any]):
+        expanded = dict(library)
+        reference_counter = {}
+        for paper in expanded.values():
+            for ref in paper.get("referenced_works", []):
+                reference_counter[ref] = reference_counter.get(ref, 0) + 1
+        candidate_ids = [paper_id for paper_id, _ in sorted(reference_counter.items(), key=lambda item: item[1], reverse=True) if paper_id not in expanded]
+        if candidate_ids:
+            expanded.update(await self._fetch_by_ids(candidate_ids[: max(200, self.num_oracle_papers)]))
 
-        # 3. 统计同时出现在多个metadata的论文。由于batch请求自带去重，所以要手动计算。
-        neighbors_count = {}
-        top_papers = set(top_papers)
-        # 对应cited_by：top_papers -> citation_hub
-        for x in top_papers:
-            for y in self.library[x]['referenced_works']:
-                if y in citation_hub:
-                    neighbors_count[y] = neighbors_count.get(y, 0) + 1
-        # 对应cites：citation_hub -> top_papers
-        for pid, x in citation_hub.items():
-            for y in x['referenced_works']:
-                if y in top_papers:
-                    neighbors_count[pid] = neighbors_count.get(pid, 0) + 1
-        
-        # --- CRITICAL FIX STARTS HERE ---        
-        # Separate neighbors into "High Confidence" (Co-cited) and "Long Tail" (Single citation)
-        high_confidence, longtail_ids = [], []
-        
-        for x, count in neighbors_count.items():
-            if count >= 2:
-                # Structural Priority: These are connected to multiple seeds.
-                # Boost score significantly so they appear at the top.
-                score = count * 100 + math.log1p(self._citation_count_by_eval_date(citation_hub[x]))
-                high_confidence.append((x, score))
-                if debug: citation_hub[x]['score'] = score
-            else:
-                longtail_ids.append(x)
-            if debug: citation_hub[x]['neighbors_count'] = count
-        
-        high_confidence.sort(key=lambda x: x[1], reverse=True)
-        final_results = []
-        # Filter existing library
-        for x, _ in high_confidence:
-            if x not in self.library:
-                self.library[x] = citation_hub[x]
-            final_results.append(x)
+        if len(expanded) < self.num_oracle_papers:
+            seeds = sorted(expanded.values(), key=lambda paper: paper.get("relevance_score", 0), reverse=True)[:50]
+            seed_ids = [paper["id"] for paper in seeds]
+            for key in ("cites", "cited_by"):
+                try:
+                    results = await openalex_search_paper(
+                        "works",
+                        {key: "|".join(seed_ids), "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
+                        per_page=200,
+                    )
+                except Exception:
+                    results = {"results": []}
+                for paper in results.get("results", []):
+                    expanded.setdefault(paper["id"], paper)
+                    if len(expanded) >= self.num_oracle_papers:
+                        break
+                if len(expanded) >= self.num_oracle_papers:
+                    break
+        return expanded
 
-        # if not enough, process long tails
-        longtail_results, sentences = [], []
-        for paper_id in longtail_ids:
-            x = citation_hub[paper_id]
-            title = x['title']
-            abstract = x.get("abstract", None)
-            sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-
-        if sentences:
-            sentences.append(query)
-            embeddings = self.sentence_transformer.embed(sentences)
-            cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
-            for x, sim in zip(longtail_ids, cosine_scores):
-                global_cites = math.log1p(self._citation_count_by_eval_date(citation_hub[x]))
-                final_score = (sim * 10) + (global_cites * 0.1) 
-                longtail_results.append((x, final_score))
-                if debug:
-                    citation_hub[x]['sim'] = sim
-                    citation_hub[x]['score'] = final_score
-    
-        longtail_results.sort(key=lambda x: x[1], reverse=True)
-        for x, _ in longtail_results:
-            if x not in self.library:
-                self.library[x] = citation_hub[x]
-            final_results.append(x)
-
-        if debug:
-            logging.info(f"query {query.lower()} Neighbors: {len(high_confidence)} co-cited, {len(longtail_results)} semantic rescue.")
-        
-        return final_results
-    
-    async def _collect_oracles(self, query: str, prev_queries: List[str], library: Dict[str, Any]):
-        """
-            Get self.num_oracle_papers selected queries. 
-        """
-        self.library = library
-        targets = {"high_ref": 50, "top_seed": 50, "total": self.num_oracle_papers}
-        self.register_key = {q: [] for q in prev_queries}  # register which paper belongs to which query       
-        # register paper to query
-        for i, x in library.items():
-            self.register_key[x['query']].append((i, x['relevance_score']))
-        for q in prev_queries: 
-            self.register_key[q] = sorted(self.register_key[q], key=lambda x: x[1], reverse=True)
-        # 3 get neighbors
-        neighbors = await self._get_neighbors(prev_queries, query, targets['top_seed'])
-        # 4 get high_ref foundations
-        high_refs = await self._get_high_refs(targets['high_ref'])
-        if debug:
-            logging.info(f"query {query.lower()} Has {len(self.library)} papers in library.")    
-        # 5 先检查这一轮一共找到多少不重复文献。若数量足够就组装并返回，否则重新循环。
-        if len(self.library) >= self.num_oracle_papers:
-            # 5.1 先选择high_corefs。
-            selected = set(high_refs)
-            if debug:
-                logging.info(f"query {query.lower()} Has {len(selected)} high_refs")
-
-            # 5.2 queries_per_paper降到50后，可以直接包括所有搜到的论文。
-            for q in self.register_key:
-                for x, _ in self.register_key[q]:
-                    if x not in selected:
-                        selected.add(x)
-                        self.library[x]['query'] = q
-
-            # 5.3 最后用neighbors填满。
-            remain_target = self.num_oracle_papers - len(selected)
-            if debug:
-                logging.info(f"query {query.lower()} Has {remain_target} papers remain")
-            
-            # 处理特殊的情况：邻居太少，query papers太多，常见于remain target先变成了负数的情况。
-            if 2 * remain_target < self.num_oracle_papers - len(high_refs):
-                # 此时，令query和neighbors各占一半。做法是大重排。
-                max_num_neighbors = max(remain_target, 0) + len([x for x in neighbors if x not in selected])  # 一共可以有这么多neighbors
-                max_num_queries = self.num_oracle_papers - len(high_refs) - remain_target
-                num_neighbors = num_queries = (self.num_oracle_papers - len(high_refs)) // 2
-                if num_neighbors + num_queries + len(high_refs) != self.num_oracle_papers:
-                    num_neighbors += 1
-                if max_num_neighbors < num_neighbors:
-                    num_queries += (num_neighbors - max_num_neighbors)
-                    num_neighbors = max_num_neighbors
-                elif max_num_queries < num_queries:
-                    num_neighbors += (num_queries - max_num_queries)
-                    num_queries = max_num_queries
-                
-                # 按照顺序先queries后neighbors
-                if num_queries + len(high_refs) < len(selected):
-                    selected = set(high_refs)
-                    paper_ids, sentences = [], []
-                    for q in self.register_key:
-                        for x, _ in self.register_key[q]:
-                            if x not in selected:
-                                paper_ids.append(x)
-                                title = self.library[x]['title']
-                                abstract = self.library[x].get("abstract", None)
-                                sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-                    sentences.append(query)
-                    embeddings = self.sentence_transformer.embed(sentences)
-                    cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
-                    sorted_query_papers = sorted(zip(paper_ids, cosine_scores), key=lambda x: x[1], reverse=True)
-                    selected.update(x for x, _ in sorted_query_papers[:num_queries])
-
-                for x in neighbors:
-                    if num_neighbors <= 0: break
-                    if x not in selected:
-                        selected.add(x)
-                        num_neighbors -= 1
-                        self.library[x]['query'] = "co+neighbor"
-            else:
-                # 不需要修改query论文的数量。
-                for x in neighbors:
-                    if remain_target <= 0: break
-                    if x not in selected:
-                        selected.add(x)
-                        remain_target -= 1
-                        self.library[x]['query'] = "co+neighbor"
-                
-            for x in selected:
-                self.oracle[x] = self.library[x]
-            assert len(self.oracle) == self.num_oracle_papers, (len(self.oracle), self.num_oracle_papers)
-        if prev_length == len(self.library): 
-            raise ValueError("No new papers. Perhaps you hit the OpenAlex rate limit.")
-        prev_length = len(self.library)
-    
-    def _local_citation_and_pagerank(self):
-        """
-        Calculates local citation counts and PageRank for a list of papers.
-        Modifies the dictionary in-place.
-        """
-        # 1. Create a lookup map and a set of valid IDs
-        # This allows O(1) access to paper objects and quick existence checks
-        # Initialize local_citation_count to 0 for all papers
-        paper_map = {}
-        for paper_id in self.oracle:
-            x = self.oracle[paper_id]
-            paper_map[paper_id] = {"references": x['referenced_works'], "local_citation_count": 0}
-
-        valid_ids = set(paper_map.keys())
-
-        # 2. Construct the Graph
-        # A citation network is a Directed Graph (DiGraph)
-        # Direction: Source Paper -> Cites -> Target Paper
-        citation_graph = nx.DiGraph()
-        
-        # Add all nodes first (to ensure papers with 0 links are included)
-        citation_graph.add_nodes_from(valid_ids)
-
-        # Iterate through papers to build edges and count citations
-        for source_id, paper_data in paper_map.items():
-            citations = paper_data['references']
-            
-            for target_id in citations:  # target_id = workid
-                # strictly filter for 'local' papers only
-                if target_id in self.oracle:
-                    # Add Edge to Graph
-                    citation_graph.add_edge(source_id, target_id)                    
-                    # Increment Local Citation Count
-                    # Note: If A cites B, B gets the citation count
-                    paper_map[target_id]['local_citation_count'] += 1
-
-        # 3. Calculate PageRank
-        # alpha=0.85 is the standard damping factor used by Google
-        pagerank_scores = nx.pagerank(citation_graph, alpha=0.85)
-
-        # 4. Update the original list with PageRank scores
-        for paper_id, score in pagerank_scores.items():
-            paper_map[paper_id]['local_pagerank'] = score
-            self.oracle[paper_id]['features'][2] = paper_map[paper_id]['local_citation_count']
-            self.oracle[paper_id]['features'][3] = score
-
-        return nx.to_dict_of_lists(citation_graph)
-
-    def _calculate_similarity(self, query: str):
-        # vector similarity query and title & abstract
+    def _score_similarity(self, query: str, papers: Dict[str, Any]):
         sentences = []
-        for paper_id in self.oracle:
-            x = self.oracle[paper_id]
-            title = x['title']
-            abstract = x.get("abstract", None)
-            sentences.append(f"{title}. {abstract}" if abstract else f"{title}.")
-        sentences.append(query)
-        embeddings = self.sentence_transformer.embed(sentences)
-        cosine_scores = cos_sim(embeddings[-1:], embeddings[:-1])[0].tolist()
-        for paper_id, score in zip(self.oracle, cosine_scores):
-            self.oracle[paper_id]["features"][0] = score
-    
-    def _predict_paper_rank(self):
-        paper_ids, features = [], []
-        for k, v in self.oracle.items():
-            paper_ids.append(k)
-            features.append(v['features'])
-        ranks = self.letor.predict(np.array(features)).tolist()
-        for k, r in zip(paper_ids, ranks):
-            self.oracle[k]['rank'] = r
-    
-    async def __call__(self, query: str) -> dict:
-        logging.info(f"DynamicOracleGenerator::Request for oracle paper with query {query}")
-        # 1. Request for papers
-        await self._collect_oracles(query)
-        # calculate features
-        # feature 0: cosine similarity (-1~1)
-        # feature 1: citation count == global prestige (regularized to 0~1)
-        # feature 2: local citation count == local_prestige (regularized to 0~1)
-        # feature 3: local pagerank (regularized to 0~1)
-        # feature 4: citation velocity == emengence
-        for x in self.oracle.values():
-            x['features'] = [0, 0, 0, 0, 0]
-            x['features'][1] = self._citation_count_by_eval_date(x)
-        # 2. Get post-calculate features
-        logging.info(f"DynamicOracleGenerator::Get features 1 3 4")
-        # 2.1 sentence transformer cosine similarity
-        self._calculate_similarity(query)
-        # 2.3 local citation count == local_prestige && 2.4 local pagerank
-        self._local_citation_and_pagerank()
-        # regularization
-        max_citation_count = math.log1p(max(x['features'][1] for x in self.oracle.values()))
-        max_local_citation_count = math.log1p(max(x['features'][2] for x in self.oracle.values()))
-        for x in self.oracle.values():
-            if max_citation_count > 0:
-                x['features'][1] = math.log1p(x['features'][1]) / max_citation_count
-            if max_local_citation_count > 0:
-                x['features'][2] = math.log1p(x['features'][2]) / max_local_citation_count
-            x['features'][4] = x['features'][1] / math.log1p(self._paper_age(x))
-            x['features'][3] *= 100
-        # 3. Get rank
-        logging.info(f"DynamicOracleGenerator::Get rank")
-        self._predict_paper_rank()
-        return {"oracle_papers": self.oracle}
+        paper_ids = list(papers)
+        for paper_id in paper_ids:
+            paper = papers[paper_id]
+            title = paper.get("title", "")
+            abstract = paper.get("abstract", "")
+            sentences.append(f"{title}. {abstract}".strip())
+        embeddings = self.sentence_transformer.embed([query, *sentences])
+        scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0].tolist()
+        return {paper_id: score for paper_id, score in zip(paper_ids, scores)}
+
+    def _local_citation_and_pagerank(self, oracle: Dict[str, Any]):
+        graph = nx.DiGraph()
+        graph.add_nodes_from(oracle)
+        local_citation_count = {paper_id: 0 for paper_id in oracle}
+        for source_id, paper in oracle.items():
+            for target_id in paper.get("referenced_works", []):
+                if target_id in oracle:
+                    graph.add_edge(source_id, target_id)
+                    local_citation_count[target_id] += 1
+        pagerank = nx.pagerank(graph, alpha=0.85) if graph.number_of_nodes() else {}
+        return local_citation_count, pagerank
+
+    def _predict_ranks(self, oracle: Dict[str, Any]):
+        paper_ids = list(oracle)
+        features = np.array([oracle[paper_id]["features"] for paper_id in paper_ids])
+        assert len(features) and self.letor
+        ranks = self.letor.predict(features).tolist()
+        for paper_id, rank in zip(paper_ids, ranks):
+            oracle[paper_id]["rank"] = rank
+
+    async def __call__(self, query: str, library: Dict[str, Any] | None = None) -> dict:
+        library = library or {}
+        expanded = await self._expand_library(query, library)
+        similarity = self._score_similarity(query, expanded)
+        scored = []
+        for paper_id, paper in expanded.items():
+            sim = similarity.get(paper_id, 0.0)
+            prestige = math.log1p(max(0, self._citation_count_by_eval_date(paper)))
+            age = self._paper_age(paper)
+            scored.append((paper_id, sim + 0.05 * prestige + 0.02 / age))
+        scored.sort(key=lambda item: item[1], reverse=True)
+        oracle = {paper_id: expanded[paper_id] for paper_id, _ in scored[: self.num_oracle_papers]}
+
+        local_citation_count, pagerank = self._local_citation_and_pagerank(oracle)
+        max_citation = max((self._citation_count_by_eval_date(paper) for paper in oracle.values()), default=1)
+        max_local_citation = max(local_citation_count.values(), default=1)
+        for paper_id, paper in oracle.items():
+            citation_count = self._citation_count_by_eval_date(paper)
+            # calculate features
+            # feature 0: cosine similarity (-1~1)
+            # feature 1: citation count == global prestige (regularized to 0~1)
+            # feature 2: local citation count == local_prestige (regularized to 0~1)
+            # feature 3: local pagerank (regularized to 0~1)
+            # feature 4: citation velocity == emengence
+            f1 = math.log1p(citation_count) / math.log1p(max_citation or 1)
+            paper["features"] = [
+                similarity.get(paper_id, 0.0), f1,
+                math.log1p(local_citation_count.get(paper_id, 0)) / math.log1p(max_local_citation or 1),
+                pagerank.get(paper_id, 0.0) * 100,
+                f1 / math.log1p(self._paper_age(paper) + 1),
+            ]
+        self._predict_ranks(oracle)
+        return {"oracle_papers": oracle}

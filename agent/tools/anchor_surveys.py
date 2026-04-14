@@ -4,7 +4,6 @@ import math
 import asyncio
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-from sentence_transformers.util import cos_sim
 
 from .tool_config import ToolConfig
 from .llmclient import AsyncChat
@@ -21,13 +20,32 @@ class SurveyDownload(PaperDownload):
     def _check_title(self, title: str):
         for x in self.STRUCTURE_TITLES: title = title.replace(x, "")
         return len(title) >= 10
+
+    def _flatten_title_paths(self, paper_skeleton: dict):
+        titles = []
+
+        def _walk(section: dict, parent_titles: list[str]):
+            title = (section.get("title") or "").strip()
+            if title:
+                title_path = " > ".join([*parent_titles, title])
+                lowered = title_path.lower()
+                if self._check_title(lowered):
+                    titles.append(title_path)
+                parent_titles = [*parent_titles, title]
+            for child in section.get("sections", []):
+                _walk(child, parent_titles)
+
+        for section in paper_skeleton.get("sections", []):
+            _walk(section, [])
+        return titles
     
     def _post_hook(self, xml_content: str):
         try:
-            titles = self.paper_parser.get_titles(xml_content)
-            titles = set(x for x in titles if self._check_title(x))
+            paper = self.paper_parser.parse(xml_content, mode="strict")
+            paper_skeleton = paper.get_skeleton()
+            titles = set(self._flatten_title_paths(paper_skeleton))
             print(f"This survey has {len(titles)} titles")
-            return list(titles), xml_content
+            return list(titles), paper_skeleton
         except Exception as e:
             print(f"Fatal: no survey parser {e}")
             return [], None
@@ -79,129 +97,98 @@ class TopicAggregateLLMClient(AsyncChat):
         has_titles = {k: v for k, v in inputs['surveys'].items() if v is not None}
         # 低置信度证据 == 其他survey
         other_papers = [k for k, v in inputs['surveys'].items() if v is None] + [x['title'] for x in inputs['papers'] if x['title'] not in inputs['surveys']]
-        high = [f"Survey title: {k}\nSection titles:\n{'\n'.join(f'- {t}' for t in v['titles'])}\n" for k, v in has_titles.items()]
+        high = []
+        for k, v in has_titles.items():
+            titles = "\n".join(f"- {title}" for title in v["titles"])
+            high.append(f"Survey title: {k}\nSection titles:\n{titles}\n")
         prompt = self.PROMPT.format(query=inputs['query'], anchors='\n'.join(high), surveys="\n".join(f'- {x}' for x in other_papers))
         # print(prompt)
         return prompt, {}
 
 
 class AnchorSurveyFetch:
-    
-    SELECT: str = f"{OPENALEX_SELECT},best_oa_location,locations"
-    
+    SELECT = f"{OPENALEX_SELECT},best_oa_location,locations"
+
     def __init__(self, config: ToolConfig):
         self.eval_date = config.evaluation_date
         self.survey_download = SurveyDownload(config.grobid_url)
-        self.paper_select = AnchorPaperSelect(config.llm_server_info)
-        self.survey_select = AnchorSurveySelect(config.llm_server_info)
-        self.topic_aggregate = TopicAggregateLLMClient(config.llm_server_info)
-    
+        self.paper_select = AnchorPaperSelect(config.llm_server_info, config.sampling_params)
+        self.survey_select = AnchorSurveySelect(config.llm_server_info, config.sampling_params)
+
     def _citation_count_by_eval_date(self, paper: dict):
-        """
-        Calculate the cited by count on evaluation date.
-        """
         eval_year = int(self.eval_date.year)
-        if (citation_count := paper.get("cited_by_count", 0)):
-            for x in paper.get("counts_by_year", []):
-                if x['year'] > eval_year:
-                    citation_count -= x['cited_by_count']
+        citation_count = paper.get("cited_by_count", 0) or 0
+        if citation_count:
+            for item in paper.get("counts_by_year", []):
+                if item["year"] > eval_year:
+                    citation_count -= item["cited_by_count"]
             return citation_count
-        citation_count = 0
-        for x in paper.get("counts_by_year", []):
-            if x['year'] <= eval_year:
-                citation_count += x['cited_by_count']
-        return citation_count
-    
+        return sum(item["cited_by_count"] for item in paper.get("counts_by_year", []) if item["year"] <= eval_year)
+
     def _is_survey(self, paper: dict):
-        if len(paper['referenced_works']) < 40: return False
-        if self._citation_count_by_eval_date(paper) < 20: return False
-        return True
-    
+        return len(paper.get("referenced_works", [])) >= 40 and self._citation_count_by_eval_date(paper) >= 20
+
     async def _download_surveys(self, papers: list[dict]):
-        not_survey_id = set()
-        tasks = [asyncio.create_task(self.survey_download.download_single_paper(x)) for x in papers]
-        downloaded_surveys = {paper['title']: None for paper in papers}
+        downloaded = {}
+        for paper in papers:
+            try:
+                survey = await self.survey_download.download_single_paper(paper)
+            except Exception:
+                survey = None
+            if isinstance(survey, tuple):
+                titles, paper_skeleton = survey
+                if titles and paper_skeleton:
+                    downloaded[paper["title"]] = {"titles": titles, "skeleton": paper_skeleton, "paper": paper}
+        return downloaded
+
+    async def _anchor_papers(self, papers: dict, survey_title: str) -> list[dict]:
         try:
-            for paper, task in zip(papers, tasks):
-                try:
-                    titles, survey = await task
-                    if titles:
-                        if len(titles) > 5: 
-                            downloaded_surveys[paper['title']] = {"titles": titles, "survey": survey}
-                        else: 
-                            del downloaded_surveys[paper['title']]
-                            not_survey_id.add(paper['id'])
-                except asyncio.CancelledError:
-                    continue
-                except Exception as e:
-                    print(f"_download_surveys {e} {type(e)}")
-        finally:
-            # 确保所有任务都被清理
-            for task in tasks:
-                if not task.done(): task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-        print(f"We have {len(downloaded_surveys)} downloaded surveys:")
-        for x in downloaded_surveys: 
-            if downloaded_surveys[x]: print(f"- {x}, {len(downloaded_surveys[x]['titles'])} titles")
-            else: print(f"- {x}, no OA")
-        return downloaded_surveys, not_survey_id
-  
+            selected = await self.paper_select.call(inputs={"query": survey_title, "papers": papers})
+        except Exception:
+            selected = list(papers.values())[:40]
+        return selected or list(papers.values())[:40]
+
     async def _get_paper_meta_by_id(self, papers: list[str], batch_size: int = 50):
         paper_meta = {}
         for i in range(0, len(papers), batch_size):
-            try:
-                batch = papers[i: i + batch_size]
-                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=batch_size)
-                for x in results['results']: paper_meta[x['id']] = x
-            except Exception as e:
-                print(f"Critical: no paper meta in page {i}: {e}")
+            batch = papers[i : i + batch_size]
+            if not batch:
                 continue
+            try:
+                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=batch_size)
+            except Exception:
+                continue
+            for paper in results.get("results", []):
+                paper_meta[paper["id"]] = paper
         return paper_meta
-    
-    async def _anchor_papers(self, papers: dict, survey_title: str) -> tuple[dict, list]:  
-        """
-        papers: {"OpenalexID": {metadata}, "OpenalexID": {metadata}}
-        """
-        # 第二步：叫LLM过滤重点文献。
+
+    async def _anchor_survey(self, survey_candidates: list[dict], survey_title: str):
+        real_surveys = [paper for paper in survey_candidates if self._is_survey(paper)]
+        if not real_surveys:
+            return {}, {}
         try:
-            domain_papers = await self.paper_select.call(inputs={"query": survey_title, "papers": papers})
-        except Exception as e:
-            print(f"domain_papers {e}")
-            domain_papers = None
-        if not domain_papers:
-            print(f"Critical: no domain papers.")
-            return {}, []
-        print(f"Get {len(domain_papers)} domain papers")
-        return domain_papers
-    
-    async def _anchor_survey(self, real_surveys: list[dict], survey_title: str) -> dict:
-        # 第二步：从返回的文章中找到真正的综述。
-        if not real_surveys: return {}, {}
-        print(f"Get {len(real_surveys)} real surveys")
-        anchor_surveys = await self.survey_select.call(inputs={"query": survey_title, "surveys": real_surveys})
-        survey_to_subtitles, not_survey_ids = await self._download_surveys(anchor_surveys)
-        # 分类讨论。若文章数量小于等于2，则没有anchor papers。
-        anchor_surveys = [x for x in anchor_surveys if x['id'] not in not_survey_ids]
-        # anchor papers
-        anchor_papers = {}
-        if len(anchor_surveys) >= 3:
-            cited_papers = {}  # id -> metadata
-            for x in anchor_surveys:
-                for w in x['referenced_works']:
-                    cited_papers[w] = cited_papers.get(w, 0) + 1
-            cited_by_threshold = max(3, math.ceil(0.6 * len(anchor_surveys)))
-            anchor_papers = {k: v for k, v in cited_papers.items() if v >= cited_by_threshold}  # id -> metadata
-            print(f"Get {len(anchor_papers)} anchor papers")
-        # 通过openalex获取其他信息。
-        anchor_paper_meta = await self._get_paper_meta_by_id(list(anchor_papers))  # id -> metadata
-        for k in anchor_paper_meta:
-            anchor_paper_meta[k]['survey_cited_by_count'] = anchor_papers[k]
-        print(f"Get {len(survey_to_subtitles)} anchor surveys: {list(survey_to_subtitles)}")
-        return anchor_papers, survey_to_subtitles
-    
-    async def __call__(self, survey_papers: list[dict], library: dict, survey_title: str): 
+            selected = await self.survey_select.call(inputs={"query": survey_title, "surveys": real_surveys})
+        except Exception:
+            selected = real_surveys[:5]
+        downloaded = await self._download_surveys(selected[:10])
+        selected_titles = set(downloaded)
+        selected = [paper for paper in selected if paper["title"] in selected_titles]
+        citation_counter = {}
+        for paper in selected:
+            for ref in paper.get("referenced_works", []):
+                citation_counter[ref] = citation_counter.get(ref, 0) + 1
+        threshold = max(2, math.ceil(0.6 * max(1, len(selected))))
+        anchor_ids = [paper_id for paper_id, count in citation_counter.items() if count >= threshold]
+        anchor_meta = await self._get_paper_meta_by_id(anchor_ids)
+        for paper_id, metadata in anchor_meta.items():
+            metadata["survey_cited_by_count"] = citation_counter[paper_id]
+        return anchor_meta, downloaded
+
+    async def __call__(self, survey_papers: list[dict], library: dict, survey_title: str):
         domain_papers = await self._anchor_papers(library, survey_title)
         anchor_papers, anchor_surveys = await self._anchor_survey(survey_papers, survey_title)
-        # 第四步：确定要使用的topic列表。
-        topics = await self.topic_aggregate.call(inputs={"query": survey_title, "surveys": anchor_surveys, "papers": domain_papers})
-        return {"anchor_papers": anchor_papers, "golden_topics": topics, "surveys": domain_papers, "downloaded": anchor_surveys}
+        return {
+            "anchor_papers": anchor_papers,
+            "surveys": domain_papers,
+            "downloaded": anchor_surveys,
+        }

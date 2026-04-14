@@ -35,47 +35,63 @@ def range_check(claim: str, paragraph: List[Dict[str, Any]], anchor_id: int) -> 
 
 
 class ClaimSegmentationLLMClient(AsyncChat):
-
     PROMPT: str = CLAIM_SEGMENTATION_PROMPT
-
-    def __init__(self, llm, sampling_params):
-        super().__init__(llm, sampling_params)
 
     def _availability(self, response: str, context: dict):
         result = extract_json(response)
-        if result["is_verifiable_performance_claim"]: return context['claim']
-    
+        return bool(result.get("is_verifiable_performance_claim"))
+
     def _organize_inputs(self, inputs):
-        paragraph_text = "\n".join(s['text'] for s in inputs['range'])
-        prompt = self.PROMPT.format(text=inputs['text'], range=paragraph_text, keys=list(x['key'] for x in inputs['citations']))
-        return prompt, {'claim': inputs}
+        paragraph_text = "\n".join(sentence.get("text", "") for sentence in inputs["context_window"])
+        prompt = self.PROMPT.format(text=inputs["text"], range=paragraph_text, keys=inputs["citation_keys"])
+        return prompt, {}
 
 
 class ClaimSegmentation:
-    
     def __init__(self, config: ToolConfig):
-        sbert = SentenceTransformerClient(config.sbert_server_url)
         self.llm = ClaimSegmentationLLMClient(config.llm_server_info, config.sampling_params)
-    
-    async def __call__(self, paper_content: dict[str, Any]):
-        """
-        :param paper_content: This is the result of `Paper.get_skeleton()`
-        Use split_content_to_paragraph to convert into list of paragraphs
-        Each paragraph is a list of sentences
-        Each sentence is {"text": "sentence_text", "citations": [{"title": "title1", "key": "key1"}, {"title": "title1", "key": "key1"}]}
-        """
+
+    def _normalize_citations(self, citations: Any) -> list[str]:
+        normalized = []
+        for citation in citations or []:
+            if isinstance(citation, dict):
+                key = citation.get("key") or citation.get("name") or citation.get("title")
+            else:
+                key = citation
+            if key:
+                normalized.append(str(key))
+        return normalized
+
+    async def _is_verifiable(self, sentence: Dict[str, Any], paragraph: List[Dict[str, Any]], sentence_id: int) -> bool:
+        inputs = {
+            "text": sentence.get("text", ""),
+            "citation_keys": self._normalize_citations(sentence.get("citations", [])),
+            "context_window": paragraph[max(0, sentence_id - 1) : sentence_id + 2],
+        }
+        try:
+            return await self.llm.call(inputs=inputs)
+        except Exception:
+            return False
+
+    async def __call__(self, paper_content: Dict[str, Any]):
         paragraphs = split_content_to_paragraph(paper_content)
-        tasks, claims = [], []
-        for i, p in enumerate(paragraphs):
-            for j, s in enumerate(p): 
-                # 在现在的实现逻辑下，只保留含1个引用的句子。
-                if len(s['citations']) == 1:
-                    inputs = {"text": s['text'], "citations": s['citations'], "range": p, "sentence_id": j}
-                    tasks.append(asyncio.create_task(self.llm.call(inputs=inputs, context={"paragraph_id": i})))
-        for task in asyncio.as_completed(tasks):
-            try:
-                x = await task
-                if isinstance(x, dict) and x: claims.append(x)
-            except Exception as e:
-                print(f"Claim {e} {type(e)}")
-        return {"claims": claims}
+        claims = []
+        errors = []
+        for paragraph_id, paragraph in enumerate(paragraphs):
+            for sentence_id, sentence in enumerate(paragraph):
+                citation_keys = self._normalize_citations(sentence.get("citations", []))
+                if len(citation_keys) != 1: continue
+                try:
+                    if not await self._is_verifiable(sentence, paragraph, sentence_id):
+                        continue
+                    claims.append(
+                        {
+                            "claim_text": sentence.get("text", ""),
+                            "citation_key": citation_keys[0],
+                            "paragraph_id": paragraph_id,
+                            "sentence_id": sentence_id,
+                        }
+                    )
+                except Exception as exc:
+                    errors.append({"paragraph_id": paragraph_id, "sentence_id": sentence_id, "error": str(exc)})
+        return {"claims": claims, "errors": errors}

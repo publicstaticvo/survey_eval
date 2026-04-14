@@ -14,7 +14,7 @@ class RateLimit:
     DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker镜像本地解析
-    WEBSEARCH_SEMAPHORE = asyncio.Semaphore(4)
+    WEBSEARCH_SEMAPHORE = asyncio.Semaphore(50)
 
 
 class SessionManager:

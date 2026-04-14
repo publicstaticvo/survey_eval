@@ -1,240 +1,180 @@
 import asyncio
-import logging
-from typing import Dict, Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict
 
-from pydantic import BaseModel
-from langgraph.types import Send
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
-from langchain_core.language_models import BaseChatModel
+if __package__:
+    from .tools.anchor_surveys import AnchorSurveyFetch
+    from .tools.argument_eval import ArgumentStructureEvaluator
+    from .tools.citation_parser import CitationParser
+    from .tools.claim_segmentation import ClaimSegmentation
+    from .tools.dynamic_oracle_generator import DynamicOracleGenerator
+    from .tools.fact_check import FactualCorrectnessCritic
+    from .tools.golden_topics import GoldenTopicGenerator
+    from .tools.minimum_completion import MinimalCompletionCheck
+    from .tools.programmatic_quality import QualityCritic
+    from .tools.query_expand import QueryExpand
+    from .tools.request_utils import SessionManager
+    from .tools.source_critic import MissingPaperCheck
+    from .tools.structure_eval import StructureCheck
+    from .tools.tool_config import ToolConfig
+    from .tools.topic_coverage import TopicCoverageCritic
+else:
+    from tools.anchor_surveys import AnchorSurveyFetch
+    from tools.argument_eval import ArgumentStructureEvaluator
+    from tools.citation_parser import CitationParser
+    from tools.claim_segmentation import ClaimSegmentation
+    from tools.dynamic_oracle_generator import DynamicOracleGenerator
+    from tools.fact_check import FactualCorrectnessCritic
+    from tools.golden_topics import GoldenTopicGenerator
+    from tools.minimum_completion import MinimalCompletionCheck
+    from tools.programmatic_quality import QualityCritic
+    from tools.query_expand import QueryExpand
+    from tools.request_utils import SessionManager
+    from tools.source_critic import MissingPaperCheck
+    from tools.structure_eval import StructureCheck
+    from tools.tool_config import ToolConfig
+    from tools.topic_coverage import TopicCoverageCritic
 
-from tools import (
-    AgentState,
-    AnchorSurveyFetch,
-    ClaimSegmentation,
-    DynamicOracleGenerator,
-    FactualCorrectnessCritic,
-    CitationParser,
-    QualityCritic,
-    MissingPaperCheck,
-    SynthesisCorrectnessCritic,
-    TopicCoverageCritic,
-    ToolConfig,
-)
 
+@dataclass
+class SurveyEvaluationAgent:
+    config: ToolConfig
 
-# --- 1. The "Super Node" for Synchronization ---
-class ParallelDataPreperation:
-    """
-    Runs Oracle, Parser, and Segmentation in parallel.
-    This acts as a synchronization barrier: We don't move to critics
-    until ALL data (Oracle list, Parsed PDFs, Segmented Claims) is ready.
-    """
+    def __post_init__(self):
+        self._normalize_paths()
+        self.minimum_completion = MinimalCompletionCheck(self.config)
+        self.query_expand = QueryExpand(self.config)
+        self.anchor_surveys = AnchorSurveyFetch(self.config)
+        self.golden_topics = GoldenTopicGenerator(self.config)
+        self.dynamic_oracle = DynamicOracleGenerator(self.config)
+        self.citation_parser = CitationParser(self.config)
+        self.claim_segmentation = ClaimSegmentation(self.config)
+        self.fact_check = FactualCorrectnessCritic(self.config)
+        self.source_critic = MissingPaperCheck(self.config)
+        self.topic_coverage = TopicCoverageCritic(self.config)
+        self.structure_eval = StructureCheck(self.config)
+        self.argument_eval = ArgumentStructureEvaluator(self.config)
+        self.quality_eval = QualityCritic(self.config)
 
-    def __init__(self, config: ToolConfig):
-        # Initialize classes (assuming they are wrapped as simple async functions or classes)
-        self.oracle_tool = DynamicOracleGenerator(config)
-        self.parser_tool = CitationParser(config)
-        self.segment_tool = ClaimSegmentation(config)
-        self.anchor_tool = AnchorSurveyFetch(config)
+    def _normalize_paths(self):
+        letor_path = Path(self.config.letor_path)
+        if not letor_path.is_absolute():
+            candidate = Path(__file__).resolve().parent / letor_path
+            if candidate.exists():
+                object.__setattr__(self.config, "letor_path", str(candidate))
 
-    async def __call__(self, state: AgentState):
-        logging.info("--- Starting Parallel Data Prep ---")
-        # 1. Create Async Tasks
-        # Note: segment_tool only needs the review_text, not the parsed papers!
-        task_oracle = self.oracle_tool(state.query)
-        task_parse = self.parser_tool(state.review_paper['citations']) 
-        task_segment = self.segment_tool(state.review_paper['content'])
-        task_anchor = self.anchor_tool(state.query)
+    async def _fact_check_claims(self, claims, paper_content_map):
+        tasks = []
+        for claim in claims:
+            citation_key = claim["citation_key"]
+            cited_paper = paper_content_map.get(citation_key)
+            if not cited_paper or cited_paper.get("status", 3) >= 3:
+                continue
+            tasks.append(asyncio.create_task(self.fact_check(claim["claim_text"], cited_paper)))
+        results = []
+        for task in asyncio.as_completed(tasks):
+            try:
+                result = await task
+            except Exception as exc:
+                results.append(
+                    {
+                        "fact_check": {
+                            "claim": "",
+                            "judgment": "NEUTRAL",
+                            "evidence": "",
+                            "reason": str(exc),
+                            "score": 0.0,
+                            "material": "error",
+                        }
+                    }
+                )
+                continue
+            results.append(result)
+        return results
 
-        # 2. Run them all at once
-        oracle_res, parse_res, segment_res, anchor_res = await asyncio.gather(task_oracle, task_parse, task_segment, task_anchor)
-
-        # 3. Return combined state updates
-        return {
-            "oracle_data": oracle_res,
-            "paper_content_map": parse_res,
-            "claims": segment_res['claims'],
-            "anchor_papers": anchor_res,
-            "errors": {"claim_segmentation": segment_res['errors']}
+    async def evaluate(self, query: str, review_paper: Dict[str, Any], few_shot_examples: Dict[str, str] | None = None):
+        minimum_check = await self.minimum_completion(review_paper)
+        result = {
+            "query": query,
+            "minimum_check": minimum_check["minimum_check"],
+            "preprocessing": {},
+            "evaluations": {},
+            "aggregate_review": None,
+            "errors": [],
         }
+        if minimum_check["minimum_check"]["status"] != "pass":
+            return result
+
+        query_data = await self.query_expand(query)
+        anchor_data = await self.anchor_surveys(query_data["core"], query_data["library"], query)
+        golden_topic_task = asyncio.create_task(self.golden_topics(query, anchor_data, query_data["library"]))
+        oracle_task = asyncio.create_task(self.dynamic_oracle(query, query_data["queries"], query_data["library"]))
+
+        parse_task = asyncio.create_task(self.citation_parser(review_paper.get("citations", {})))
+        claim_task = asyncio.create_task(self.claim_segmentation(review_paper))
+        quality_task = asyncio.create_task(self.quality_eval._run(review_paper))
+        golden_topic_data, oracle_data, citation_data, claim_data, quality_data = await asyncio.gather(
+            golden_topic_task,
+            oracle_task,
+            parse_task,
+            claim_task,
+            quality_task,
+            return_exceptions=False,
+        )
+
+        paper_content_map = citation_data["paper_content_map"]
+        claims = claim_data["claims"]
+        fact_checks = await self._fact_check_claims(claims, paper_content_map)
+
+        topic_data = await self.topic_coverage(golden_topic_data.get("golden_topics", []), review_paper)
+        missing_topics = [
+            item["topic"]
+            for item in topic_data["topic_evals"].get("topic_coverage", [])
+            if item["status"] == "missing"
+        ]
+        source_data = self.source_critic(
+            paper_content_map,
+            oracle_data,
+            anchor_data.get("anchor_papers", {}),
+            golden_topic_data.get("golden_topics", []),
+        )
+        structure_data = await self.structure_eval(
+            review_paper,
+            anchor_data.get("anchor_papers", {}),
+            missing_topics,
+        )
+        argument_data = await self.argument_eval(
+            review_paper,
+            minimum_check_details=minimum_check["minimum_check"].get("details", {}),
+            few_shot_examples=few_shot_examples,
+        )
+
+        result["preprocessing"] = {
+            "query_expand": query_data,
+            "anchor_surveys": anchor_data,
+            "golden_topics": golden_topic_data,
+            "oracle_data": oracle_data,
+            "paper_content_map": paper_content_map,
+            "claims": claims,
+        }
+        result["evaluations"] = {
+            "fact_checks": [item["fact_check"] for item in fact_checks],
+            "source_evals": source_data["source_evals"],
+            "topic_evals": topic_data["topic_evals"],
+            "structure_evals": structure_data["structure_evals"],
+            "argument_evals": argument_data["argument_evals"],
+            "quality_evals": quality_data["quality_evals"],
+        }
+        result["errors"].extend(claim_data.get("errors", []))
+        return result
 
 
-def map_all_critics(state: AgentState):
-    """
-    The central router. Maps all claims to workers and launches document critics 
-    using LangGraph's Send() for maximum parallelism.
-    """
-    sends = []
-
-    def _claim_verifiable(claim: Dict[str, Any]) -> bool:
-        """
-        Requires
-        - 0: full text
-        - 1: title and abstract only
-        - 2: title only
-
-        status
-        - 0: full text available
-        - 1: abstract available; full text unavailable
-        - 2: abstract and full text unavailable
-        - 3: no metadata
-        """
-        for x in claim['citations']:
-            if claim['requires'][x] < state.review_paper['citations'][x]['status']: return False
-        return True
-    
-    # A. Map claims to Factual/Synthesis workers (Claim-Level Critics)
-    for claim in state.get('claims', []):
-        # claim: {"claim": text, "claim_type": type, "citations": {citations}, "requires": {requires}}}
-        # verify claim based on requirements and status
-        if _claim_verifiable(claim):
-            # paper routing depend on claims
-            match claim['type'].upper():
-                case "SINGLE_FACTUAL":
-                    cid = claim['citations'][0]
-                    sends.append(Send("factual", {
-                        "claim": claim['claim_text'],
-                        "cited_paper": state.paper_content_map[cid]
-                    }))            
-                case "SERIAL_FACTUAL":
-                    for cid in claim['citations']:
-                        sends.append(Send("factual", {
-                            "claim": claim['claim_text'],
-                            "cited_paper": state.paper_content_map[cid]
-                        }))            
-                case "SYNTHESIS":
-                    sends.append(Send("synthesis", {
-                        "claim": claim['claim_text'],
-                        "cited_papers": {cid: state.paper_content_map[cid] for cid in claim['citations']}
-                    }))            
-                case _:
-                    # state.invalid_claims means claims with insufficient evidence or wrong classifications
-                    state.invalid_claims += 1
-        else:
-            state.invalid_claims += 1
-
-    # B. Launch Document-Level Critics (Source, Topic, Quality) - Always run
-    sends.append(Send("source", {
-        "citations": state.review_paper['citations'], 
-        "query": state.query,
-        "oracle_data": state.oracle_data,
-    }))
-    sends.append(Send("topic", {
-        "review_paper": state.review_paper['content'], 
-        "golden_subtopics": state.oracle_data['subtopics']
-    }))
-    sends.append(Send("clarity", {"review_paper": state.review_paper}))
-    
-    return sends
-
-
-# ----------------- PHASE 4: REDUCE/AGGREGATE -----------------
-async def results_aggregator(state: AgentState):
-    """
-    Placeholder for the 'reduce' step. All claim_checks and document_scores 
-    are gathered automatically by the Annotated[..., operator.add] in the state.
-    """
-    
-    print("--- 4. All Critics Finished. Aggregator Node Reached. ---")
-    print(f"Total claims checked: {len(state.fact_checks)}")
-    print(f"Invalid claims: {len(state.invalid_claims)}")
-    return state # Pass the aggregated state to the final agent
-
-
-def aggregate_claim_results(state: AgentState) -> AgentState:
-    """
-    Consolidates results from parallel claim critics (Factual and Synthesis).
-    """
-    logging.log("--- Aggregator Node: Collecting parallel results ---")
-    
-    # Assuming worker results are appended to a 'fact_checks' list in the state
-    fact_checks = state.get("fact_checks", [])
-    
-    # Basic summary statistics
-    total_claims = len(fact_checks)
-    supported_count = sum(1 for fc in fact_checks if fc['status'] == 'SUPPORTED')
-    refuted_count = sum(1 for fc in fact_checks if fc['status'] == 'REFUTED')
-    
-    # Store summary for the final report
-    state_update = {
-        "summary_fact_check_metrics": {
-            "total_claims": total_claims,
-            "supported": supported_count,
-            "refuted": refuted_count,
-            "accuracy": supported_count / total_claims if total_claims > 0 else 0.0
-        },
-        # You may want to retain the full list for the final report
-        "fact_checks": fact_checks
-    }
-    
-    return state_update
-
-
-class FinalAggregation:
-
-    def __init__(self, llm: BaseChatModel):
-
-        class FinalReport(BaseModel):
-            final_score: int
-            decision: str
-            summary: str
-
-        self.structured_llm = llm.with_structured_output(FinalReport)
-
-
-    def run_final_aggregation(self, state: AgentState):
-        # Use .with_structured_output to force Pydantic compliance
-        # This guarantees your final report is valid JSON, not markdown text.
-        
-        # ... construct evidence string ...
-        prompt = ""
-        
-        result = self.structured_llm.invoke(prompt)
-        
-        # Result is now a FinalReport object, not a string
-        return {"final_report": result.model_dump()}
-    
-
-def build_agent(config: ToolConfig):
-
-    llm = ChatOpenAI(
-        model=config.agent_info.model,
-        openai_api_base=config.agent_info.base_url,
-        openai_api_key=config.agent_info.api_key,
-        temperature=0,
-        max_tokens=config.agent_max_tokens,
-    )
-
-    run_parallel_data_prep = ParallelDataPreperation(config)
-    run_quality_group = QualityCritic(config)
-    run_source_critic = AnchorSurveyFetch(config)
-    run_topic_critic = TopicCoverageCritic(config)
-    run_factual_critic = FactualCorrectnessCritic(config)
-    run_synthesis_critic = SynthesisCorrectnessCritic(config)
-    run_final_aggregation = FinalAggregation(llm)
-
-    workflow = StateGraph(AgentState)
-    workflow.add_node("data_prep", run_parallel_data_prep)
-    workflow.add_node("factual", run_factual_critic)
-    workflow.add_node("synthesis", run_synthesis_critic)
-    workflow.add_node("source", run_source_critic)
-    workflow.add_node("topic", run_topic_critic)
-    workflow.add_node("quality", run_quality_group)
-    workflow.add_node("final_report_agent", run_final_aggregation)
-
-    workflow.set_entry_point("data_prep")
-    workflow.add_conditional_edges("data_prep", map_all_critics)
-
-    workflow.add_edge("factual", "aggregator")
-    workflow.add_edge("synthesis", "aggregator")
-    workflow.add_edge("source", "aggregator")
-    workflow.add_edge("topic", "aggregator")
-    workflow.add_edge("quality", "aggregator")
-
-    # Phase 5: Aggregator -> Final Report Agent -> END
-    workflow.add_edge("aggregator", "final_report_agent")
-    workflow.add_edge("final_report_agent", END)
-    
-    app = workflow.compile()
-    return app
+async def evaluate_survey(query: str, review_paper: Dict[str, Any], config: ToolConfig | None = None, few_shot_examples=None):
+    config = config or ToolConfig()
+    await SessionManager.init()
+    try:
+        agent = SurveyEvaluationAgent(config)
+        return await agent.evaluate(query, review_paper, few_shot_examples=few_shot_examples)
+    finally:
+        await SessionManager.close()

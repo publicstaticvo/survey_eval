@@ -1,8 +1,24 @@
-from tools import ToolConfig, PaperParser
-from agent import build_agent
-from config import Config
+import asyncio
 import argparse
 
+try:
+    from .tools.grobidpdf.paper_parser import PaperParser
+    from .tools.request_utils import SessionManager
+    from .tools.tool_config import ToolConfig
+    from .agent import build_agent
+    from .config import Config
+except ImportError:
+    from tools.grobidpdf.paper_parser import PaperParser
+    from tools.request_utils import SessionManager
+    from tools.tool_config import ToolConfig
+    from agent import build_agent
+    from config import Config
+
+
+def load_paper(path: str):
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+    return PaperParser().parse(content).get_skeleton()
 
 def parse_test_papers():
     parser = PaperParser()
@@ -21,11 +37,19 @@ def main():
 
     # prepare config and paper
     config = Config.from_yaml(args.config)
-    paper = PaperParser().parse(config.paper_path).get_skeleton()
+    paper = load_paper(config.paper_path)
     tool_config = ToolConfig.from_yaml(config.tool_config)
-    # Initialize the agent
-    build_agent(tool_config).invoke({"query": config.query, "review_paper": paper})
-    # Post process
+    agent = build_agent(tool_config)
+
+    async def _run():
+        await SessionManager.init()
+        try:
+            return await agent.evaluate(config.query, paper)
+        finally:
+            await SessionManager.close()
+
+    result = asyncio.run(_run())
+    print(result)
 
 if __name__ == "__main__":
     parse_test_papers()

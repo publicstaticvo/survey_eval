@@ -10,10 +10,10 @@ import glob
 from typing import List, Any
 from pylatexenc.latex2text import LatexNodes2Text
 from pylatexenc.latexwalker import LatexWalker, LatexEnvironmentNode, LatexMacroNode, LatexCharsNode
-from paper_elements import *
-from constants import *
-from bib_parser import parse_bbl_file, parse_bib_file
-from utils import detect_encoding
+from .paper_elements import *
+from .constants import *
+from .bib_parser import parse_bbl_file, parse_bib_file
+from .utils import detect_encoding
 
 
 def process_input_commands(latex_content, base_path):

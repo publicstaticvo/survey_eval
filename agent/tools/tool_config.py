@@ -63,6 +63,11 @@ class ToolConfig:
     @classmethod
     def from_yaml(cls, config_path):
         with open(config_path) as f: config = yaml.safe_load(f)
+        evaluation_date = config['general']['evaluation_date']
+        if isinstance(evaluation_date, datetime):
+            parsed_evaluation_date = evaluation_date
+        else:
+            parsed_evaluation_date = datetime.strptime(str(evaluation_date), "%Y-%m-%d")
         return cls(
             agent_info=LLMServerInfo(
                 base_url=config['agent']['base_url'],
@@ -70,7 +75,7 @@ class ToolConfig:
                 model=config['agent']['model'],
             ),
             agent_max_tokens=config['agent']['max_tokens'],
-            evaluation_date=datetime.strftime(config['general']['evaluation_date']),
+            evaluation_date=parsed_evaluation_date,
             num_oracle_papers=config['dynamic_oracle']['num_oracle_papers'],
             letor_path=config['dynamic_oracle']['letor_path'],
             llm_server_info=LLMServerInfo(

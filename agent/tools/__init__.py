@@ -1,43 +1,35 @@
-from .agent_state import AgentState
-from .aggregate_review import FinalAggregate
-from .anchor_surveys import AnchorSurveyFetch
-from .claim_segmentation import ClaimSegmentation
-from .citation_parser import CitationParser
-from .dynamic_oracle_generator import DynamicOracleGenerator
-from .fact_check import FactualCorrectnessCritic
-from .minimum_completion import MinimalCompletionCheck
-from .programmatic_quality import QualityCritic
-from .query_expand import QueryExpand
-from .source_critic import MissingPaperCheck
-from .structure_eval import StructureCheck
-from .topic_coverage import TopicCoverageCritic
-from .tool_config import ToolConfig
-from .websearch import WebSearchFallback
-from .grobidpdf.paper_parser import PaperParser
-from .sbert_client import SentenceTransformerClient
-from .request_utils import SessionManager
-from .latex_parser.tex_parser import LatexPaperParser
+from importlib import import_module
 
-tools = [
-    AnchorSurveyFetch,
-    ClaimSegmentation,
-    CitationParser,
-    DynamicOracleGenerator,
-    FactualCorrectnessCritic,
-    FinalAggregate,
-    MinimalCompletionCheck,
-    MissingPaperCheck,
-    QualityCritic,
-    StructureCheck,
-    QueryExpand,
-    TopicCoverageCritic,
-    SentenceTransformerClient,
-    WebSearchFallback,
-    LatexPaperParser,
-    ToolConfig,
-    AgentState,
-    PaperParser,
-    SessionManager
-]
 
-__all__ = [x.__name__ for x in tools]
+_EXPORTS = {
+    "AgentState": ".agent_state",
+    "FinalAggregate": ".aggregate_review",
+    "ArgumentStructureEvaluator": ".argument_eval",
+    "AnchorSurveyFetch": ".anchor_surveys",
+    "ClaimSegmentation": ".claim_segmentation",
+    "CitationParser": ".citation_parser",
+    "DynamicOracleGenerator": ".dynamic_oracle_generator",
+    "FactualCorrectnessCritic": ".fact_check",
+    "GoldenTopicGenerator": ".golden_topics",
+    "MinimalCompletionCheck": ".minimum_completion",
+    "QualityCritic": ".programmatic_quality",
+    "QueryExpand": ".query_expand",
+    "MissingPaperCheck": ".source_critic",
+    "StructureCheck": ".structure_eval",
+    "TopicCoverageCritic": ".topic_coverage",
+    "ToolConfig": ".tool_config",
+    "WebSearchFallback": ".websearch",
+    "PaperParser": ".grobidpdf.paper_parser",
+    "SentenceTransformerClient": ".sbert_client",
+    "SessionManager": ".request_utils",
+    "LatexPaperParser": ".latex_parser.tex_parser",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    module = import_module(_EXPORTS[name], __name__)
+    return getattr(module, name)

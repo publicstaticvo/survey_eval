@@ -1,8 +1,8 @@
 from typing import Dict, Any
-from sentence_transformers import util
 
 from .sbert_client import SentenceTransformerClient
 from .tool_config import ToolConfig
+from .utils import cosine_similarity_matrix
 
 debug = True
 
@@ -15,10 +15,33 @@ def get_titles_from_sections(content: dict):
     return titles
 
 
-class TopicCoverageCritic:
+def normalize_topic_records(golden_topics):
+    topic_records = []
+    for topic in golden_topics or []:
+        if isinstance(topic, dict):
+            name = topic.get("topic_name") or topic.get("label") or topic.get("topic")
+            if name:
+                topic_records.append(topic)
+        elif topic:
+            topic_records.append({"topic_name": str(topic), "source": "unknown"})
+    return topic_records
 
-    STRUCTURE_SECTIONS = ["introduction", "background", "preliminar", "overview", "conclusion", "discussion",
-                          "future work", "related work", "reference", "acknowledgment", "appendix", "method"]
+
+class TopicCoverageCritic:
+    STRUCTURE_SECTIONS = [
+        "introduction",
+        "background",
+        "preliminar",
+        "overview",
+        "conclusion",
+        "discussion",
+        "future work",
+        "related work",
+        "reference",
+        "acknowledgment",
+        "appendix",
+        "method",
+    ]
 
     def __init__(self, config: ToolConfig):
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
@@ -26,40 +49,66 @@ class TopicCoverageCritic:
         self.threshold = config.topic_sim_threshold
 
     async def __call__(self, golden_subtopics, review_paper) -> Dict[str, Dict[str, Any]]:
-        # get vectors of subtopics and paper paragraphs
+        topic_records = normalize_topic_records(golden_subtopics)
+        topic_names = [topic["topic_name"] for topic in topic_records]
         titles = get_titles_from_sections(review_paper)
+        if not topic_names:
+            return {"topic_evals": {"topic_coverage": [], "irrelevant_sections": [], "metadata": {}}}
         if not titles:
-            return {"topic_evals": [
-                {"topic": s, "status": "missing", "best_match": None, "similarity": 0.0}
-                for s in golden_subtopics
-            ]}
-        embeddings = self.sentence_transformer.embed(golden_subtopics + titles)
-        # calculate similarity
-        num_topics = len(golden_subtopics)
+            return {
+                "topic_evals": {
+                    "topic_coverage": [{"topic": topic, "status": "missing", "best_match": None, "similarity": 0.0} for topic in topic_names],
+                    "irrelevant_sections": [],
+                    "metadata": {},
+                }
+            }
+        embeddings = self.sentence_transformer.embed(topic_names + titles)
+        num_topics = len(topic_names)
         topic_embeddings = embeddings[:num_topics]
         title_embeddings = embeddings[num_topics:]
-        cosine_similarity = util.cos_sim(topic_embeddings, title_embeddings)
-        # coverage or max
-        results = []
-        for i, s in enumerate(golden_subtopics):
-            max_sim = cosine_similarity[i].max().item()
-            argmax_title = cosine_similarity[i].argmax().item()
-            if max_sim < self.weak_threshold: status = "missing"
-            elif max_sim > self.threshold: status = "covered"
-            else: status = "weakly covered"
-            results.append({"topic": s, "status": status, "best_match": titles[argmax_title], "similarity": max_sim})
-        # check unmentioned topics
-        lv1_sections = [x['title'] for x in review_paper]
-        lv1_section_index = 0
+        cosine_similarity = cosine_similarity_matrix(topic_embeddings, title_embeddings)
+
+        topic_results = []
+        for idx, topic in enumerate(topic_names):
+            max_sim = float(cosine_similarity[idx].max().item())
+            argmax_title = int(cosine_similarity[idx].argmax().item())
+            if max_sim < self.weak_threshold:
+                status = "missing"
+            elif max_sim > self.threshold:
+                status = "covered"
+            else:
+                status = "weakly covered"
+            record = topic_records[idx]
+            topic_results.append(
+                {
+                    "topic": topic,
+                    "status": status,
+                    "best_match": titles[argmax_title],
+                    "similarity": max_sim,
+                    "source": record.get("source", "unknown"),
+                }
+            )
+
+        top_level_titles = [section.get("title", "") for section in review_paper.get("sections", [])]
         irrelevant_sections = []
-        for i, title in enumerate(titles):
-            if title == lv1_sections[lv1_section_index]:
-                lv1_section_index += 1
-                max_sim = cosine_similarity[:, i].max().item()                
-                if debug:
-                    argmax_topic = cosine_similarity[:, i].argmax().item()
-                    irrelevant_sections.append({"title": title, "sim": max_sim, "best_match_topic": golden_subtopics[argmax_topic],
-                                                "is_structure_section": any(x in title.lower() for x in self.STRUCTURE_SECTIONS)})
-                elif max_sim < self.weak_threshold and all(x not in title.lower() for x in self.STRUCTURE_SECTIONS):
-                    irrelevant_sections.append(title)
-        return {"topic_evals": {"topic_coverage": results, "irrelevant_sections": irrelevant_sections}}
+        for title in top_level_titles:
+            if not title:
+                continue
+            title_embedding = self.sentence_transformer.embed([title])
+            similarities = cosine_similarity_matrix(title_embedding, topic_embeddings)[0]
+            max_sim = float(similarities.max().item())
+            if max_sim < self.weak_threshold and all(keyword not in title.lower() for keyword in self.STRUCTURE_SECTIONS):
+                best_topic = topic_names[int(similarities.argmax().item())]
+                irrelevant_sections.append({"title": title, "similarity": max_sim, "best_match_topic": best_topic})
+
+        return {
+            "topic_evals": {
+                "topic_coverage": topic_results,
+                "irrelevant_sections": irrelevant_sections,
+                "metadata": {
+                    "topic_confidence": "low"
+                    if any(topic.get("source") == "oracle-derived" for topic in topic_records) and not any(topic.get("source") == "anchor-derived" for topic in topic_records)
+                    else "normal"
+                },
+            }
+        }

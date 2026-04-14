@@ -4,6 +4,38 @@ import json
 import sys
 
 
+if __package__:
+    from .tools.anchor_surveys import AnchorSurveyFetch
+    from .tools.argument_eval import ArgumentStructureEvaluator
+    from .tools.citation_parser import CitationParser
+    from .tools.claim_segmentation import ClaimSegmentation
+    from .tools.dynamic_oracle_generator import DynamicOracleGenerator
+    from .tools.fact_check import FactualCorrectnessCritic
+    from .tools.minimum_completion import MinimalCompletionCheck
+    from .tools.programmatic_quality import QualityCritic
+    from .tools.query_expand import QueryExpand
+    from .tools.request_utils import SessionManager
+    from .tools.source_critic import MissingPaperCheck
+    from .tools.structure_eval import StructureCheck
+    from .tools.tool_config import ToolConfig
+    from .tools.topic_coverage import TopicCoverageCritic
+else:
+    from tools.anchor_surveys import AnchorSurveyFetch
+    from tools.argument_eval import ArgumentStructureEvaluator
+    from tools.citation_parser import CitationParser
+    from tools.claim_segmentation import ClaimSegmentation
+    from tools.dynamic_oracle_generator import DynamicOracleGenerator
+    from tools.fact_check import FactualCorrectnessCritic
+    from tools.minimum_completion import MinimalCompletionCheck
+    from tools.programmatic_quality import QualityCritic
+    from tools.query_expand import QueryExpand
+    from tools.request_utils import SessionManager
+    from tools.source_critic import MissingPaperCheck
+    from tools.structure_eval import StructureCheck
+    from tools.tool_config import ToolConfig
+    from tools.topic_coverage import TopicCoverageCritic
+
+
 async def testQueryExpand(config, survey_title):
     qe = await QueryExpand(config)(survey_title)
     with open("debug/qe.json", "w") as f: json.dump(qe, f, ensure_ascii=False)

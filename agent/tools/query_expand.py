@@ -23,89 +23,89 @@ class SurveySpecifiedLLMClient(AsyncChat):
     PROMPT: str = SURVEY_SPECIFIED_QUERY_EXPANSION
     def _availability(self, response, context):
         return extract_json(response)['query']
-    
+
 
 class QueryExpand:
-    
     def __init__(self, config: ToolConfig):
         self.llm = QueryExpansionLLMClient(config.llm_server_info, config.sampling_params)
         self.survey_llm = SurveySpecifiedLLMClient(config.llm_server_info, config.sampling_params)
         self.eval_date = config.evaluation_date
 
-    async def _request_for_papers(self, query, uplimit, select=f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
+    async def _request_for_papers(self, query: str, uplimit: int, select=f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
         queries = to_openalex(query)
-        search = [
-            *[("default.search", q) for q in queries],
-            ("to_publication_date", self.eval_date.strftime("%Y-%m-%d"))
-        ]
-        oracle = []
-        # first query
+        search = [*[("default.search", q) for q in queries], ("to_publication_date", self.eval_date.strftime("%Y-%m-%d"))]
+        papers = []
+        total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            try:
-                results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
-            except Exception as e:
-                print(f"An {e} cause oracle data miss in query {query}.")
-                return []
-            uplimit = results['count']
-            oracle.extend(results['results'])
+            results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
+            total = min(total, results.get("count", 0) or total)
+            papers.extend(results.get("results", []))
+            if len(papers) >= total:
+                break
+        return papers[:uplimit]
 
-        return oracle
-
-    async def _request_for_surveys(self, query, uplimit, select=f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
+    async def _request_for_surveys(self, query: str, uplimit: int, select=f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
         queries = to_openalex(query)
         search = [
             *[("title.search", q) for q in queries],
-            ("title.search", SURVEY_KEYWORDS)
-            ("to_publication_date", self.eval_date.strftime("%Y-%m-%d"))
+            ("title.search", SURVEY_KEYWORDS),
+            ("to_publication_date", self.eval_date.strftime("%Y-%m-%d")),
         ]
-        oracle = []
-        # first query
+        papers = []
+        total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            try:
-                results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
-            except Exception as e:
-                print(f"An {e} cause oracle data miss in query {query}.")
-                return []
-            uplimit = results['count']
-            oracle.extend(results['results'])
+            results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
+            total = min(total, results.get("count", 0) or total)
+            papers.extend(results.get("results", []))
+            if len(papers) >= total:
+                break
+        return papers[:uplimit]
 
-        return oracle
-
-    async def __call__(self, query: str, papers_for_each_query: int = 50):        
-        # 1. fetch 4 queries
+    async def __call__(self, query: str, papers_for_each_query: int = 50):
         try:
             queries = await self.llm.call(inputs={"query": query})
-        except Exception as e:
-            print(f"QueryExpansion {e}")
-            queries = {}      
+        except Exception:
+            queries = {
+                "strategy": "fallback",
+                "core_anchor": [query, query],
+                "theoretical_bridge": query,
+                "methodological_bridge": query,
+            }
         try:
             survey_query = await self.survey_llm.call(inputs={"query": query})
-        except Exception as e:
-            print(f"QueryExpansion2 {e}")
-            survey_query = ""
-        # 2 request papers 要串行
-        lqueries = [*queries['core_anchor'], queries['theoretical_bridge'], queries['methodological_bridge']]
-        print(f"Get {len(lqueries)} queries: {lqueries}\nAnd survey_specified: {survey_query}")
-        prev_queries, library = [], {}
-        for q in lqueries:                
+        except Exception:
+            survey_query = query
+
+        expanded_queries = [
+            *(queries.get("core_anchor") or [])[:2],
+            queries.get("theoretical_bridge") or query,
+            queries.get("methodological_bridge") or query,
+        ]
+        library = {}
+        valid_queries = []
+        for expanded_query in expanded_queries:
             try:
-                oracle = await self._request_for_papers(q, papers_for_each_query)
-                if oracle:
-                    prev_queries.append(q)
-                    for x in oracle:
-                        if x['id'] not in library: 
-                            library[x['id']] = x
-                            library[x['id']]['query'] = q
-                        elif x['relevance_score'] > library[x['id']]['relevance_score']:
-                            library[x['id']]['query'] = q
-                            library[x['id']]['relevance_score'] = x['relevance_score']
-            except Exception as e:
-                print(f"Query {q} has an {e}")
-        # survey specified
-        oracle = []
-        if survey_query:
-            try:
-                oracle = await self._request_for_surveys(survey_query, papers_for_each_query, f"{OPENALEX_SELECT},best_oa_location,locations")
-            except Exception as e:
-                print(f"Query {q} has an {e}")
-        return {"queries": prev_queries, "core": oracle, "library": library}
+                papers = await self._request_for_papers(expanded_query, papers_for_each_query)
+            except Exception:
+                continue
+            if not papers:
+                continue
+            valid_queries.append(expanded_query)
+            for paper in papers:
+                current = library.get(paper["id"])
+                if current is None or paper.get("relevance_score", 0) > current.get("relevance_score", 0):
+                    library[paper["id"]] = paper | {"query": expanded_query}
+        try:
+            survey_candidates = await self._request_for_surveys(
+                survey_query,
+                papers_for_each_query,
+                f"{OPENALEX_SELECT},best_oa_location,locations,relevance_score",
+            )
+        except Exception:
+            survey_candidates = []
+        return {
+            "queries": valid_queries,
+            "survey_query": survey_query,
+            "core": survey_candidates,
+            "library": library,
+        }

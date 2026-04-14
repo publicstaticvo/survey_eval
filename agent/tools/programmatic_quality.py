@@ -4,11 +4,11 @@ import asyncio
 import numpy as np
 from typing import List, Tuple
 from collections import Counter
-from sentence_transformers.util import cos_sim
 
 from .tool_config import ToolConfig
 from .sbert_client import SentenceTransformerClient
 from .utils import split_content_to_paragraph
+from .utils import cosine_similarity_matrix
 
 
 class ProgrammaticReadabilityCritic:
@@ -150,7 +150,7 @@ class ProgrammaticRedundancyCritic:
         most_common_ngram = self._most_common_ngram(full_content)
         # paragraph similarity
         paragraph_embeddings = self.sentence_transformer.embed(paragraph_contents)
-        sim = cos_sim(paragraph_embeddings, paragraph_embeddings)
+        sim = cosine_similarity_matrix(paragraph_embeddings, paragraph_embeddings)
         high_sim_pairs = np.argwhere(sim > self.paragraph_threshold).tolist()
         high_sim_paragraphs = len(high_sim_pairs)
         # high_sim_paragraphs = [(paragraph_contents[i], paragraph_contents[j]) for i, j in high_sim_pairs if i < j]
@@ -158,7 +158,7 @@ class ProgrammaticRedundancyCritic:
         for p in paragraphs:
             sentences = [x['text'] for x in p]
             sentence_embeddings = self.sentence_transformer.embed(sentences)
-            sentence_sim = cos_sim(sentence_embeddings, sentence_embeddings)
+            sentence_sim = cosine_similarity_matrix(sentence_embeddings, sentence_embeddings)
             high_sim_pairs = np.argwhere(sentence_sim > self.sentence_threshold).tolist()
             high_sim_sentences += len(high_sim_pairs)
             # high_sim_sentences.extend([(sentences[i], sentences[j]) for i, j in high_sim_pairs if i < j])
@@ -187,7 +187,7 @@ class QualityCritic:
         task_readability = self.readability_tool(review_paper) 
 
         # 2. Run them all at once
-        redundancy_res, readability_res = asyncio.gather(task_redundancy, task_readability)
+        redundancy_res, readability_res = await asyncio.gather(task_redundancy, task_readability)
 
         # 3. Return combined state updates
         return {"quality_evals": {

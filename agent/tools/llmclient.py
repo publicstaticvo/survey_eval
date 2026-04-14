@@ -19,10 +19,10 @@ def llm_should_retry(exception: BaseException) -> bool:
 
 class AsyncLLMClient(ABC):
 
-    def __init__(self, llm: LLMServerInfo, sampling_params: dict = {}):
+    def __init__(self, llm: LLMServerInfo, sampling_params: dict | None = None):
         self.llm = llm
         self.timeout = 600
-        self.sampling_params = sampling_params
+        self.sampling_params = sampling_params or {}
         
     @abstractmethod
     def _availability(self, response, context):
@@ -71,7 +71,7 @@ class AsyncRerank(AsyncLLMClient):
     def _availability(self, response, context):
         return [x['document']['text'] for x in response['results']]
     
-    async def call(self, query, documents, top_n, **kwargs):      
-        context = context or {}  
+    async def call(self, query, documents, top_n, context=None, **kwargs):
+        context = context or {}
         payload = {"model": self.llm.model, "query": query, "documents": documents, "top_n": top_n, **kwargs}
         return await self._post("rerank", payload, context)

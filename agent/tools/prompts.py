@@ -805,3 +805,147 @@ FINAL_AGGREGATION_SCHEMA = {
     "required": ["summary", "strengths", "weaknesses", "comments", "evidence", "overall_score"],
     "additionalProperties": False
 }
+
+
+CLAIM_SEGMENTATION_PROMPT = """You are a careful scientific reviewer. Determine whether the target sentence is a claim that should be fact-checked against its single citation.
+
+Input paragraph:
+{range}
+
+Target sentence:
+{text}
+
+Citation keys in this sentence:
+{keys}
+
+Return a JSON object only:
+```json
+{{
+  "is_verifiable_performance_claim": true | false,
+  "reason": "short explanation"
+}}
+```
+
+Mark `true` only if all of the following hold:
+- the sentence has exactly one citation,
+- the cited work is the direct source of the sentence's meaning,
+- the sentence states a factual claim that could be checked from the cited paper.
+
+Mark `false` for background definitions, loose motivation, author opinions, or cases where the citation is just an example.
+"""
+
+
+WEBSEARCH_FILTER_PROMPT = """You are filtering academic web search results for a cited paper lookup.
+
+Target paper title:
+{title}
+
+Candidates:
+{candidates}
+
+Return a JSON object only:
+```json
+{{
+  "matched_indices": [1, 3],
+  "reason": "brief explanation"
+}}
+```
+
+Rules:
+- keep only candidates that are very likely to refer to the same paper,
+- prefer publisher, DOI, arXiv, OpenReview, ACL Anthology, Semantic Scholar, DBLP, or author pages,
+- it is acceptable to return an empty list if the evidence is weak.
+"""
+
+
+ARGUMENT_EXTRACTION_COMMON_RULES = """
+General rules:
+- Extract only what is explicitly stated in the source text.
+- Failure is acceptable. If the paper does not state the target item clearly, return `null`.
+- Do not infer unstated claims.
+- Evidence must be copied verbatim from the source text.
+- Leave `few_shot_examples` empty if no examples are provided.
+"""
+
+
+CORE_ARGUMENT_PROMPT = """You are extracting the author's core argument from a survey paper.
+
+Source text:
+{text}
+
+Few-shot examples:
+{few_shot_examples}
+
+""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
+
+Return a JSON object only:
+```json
+{{
+  "item": {{
+    "statement": "one-sentence core viewpoint",
+    "evidence": ["verbatim quote 1", "verbatim quote 2"]
+  }} | null
+}}
+```
+
+The statement should capture the central viewpoint or thesis of the survey, not just its topic.
+"""
+
+
+MAIN_CONTRIBUTION_PROMPT = """You are extracting the main claimed contributions of a survey paper.
+
+Source text:
+{text}
+
+Few-shot examples:
+{few_shot_examples}
+
+""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
+
+Return a JSON object only:
+```json
+{{
+  "items": [
+    {{
+      "statement": "contribution statement",
+      "evidence": ["verbatim quote 1"]
+    }}
+  ]
+}}
+```
+
+Return an empty list if no explicit contribution claims are stated.
+Prefer 1 to 3 major contributions, not minor details.
+"""
+
+
+RESEARCH_GAP_PROMPT = """You are extracting research gaps and future directions from a survey paper.
+
+Source text:
+{text}
+
+Few-shot examples:
+{few_shot_examples}
+
+""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
+
+Return a JSON object only:
+```json
+{{
+  "research_gaps": [
+    {{
+      "statement": "research gap",
+      "evidence": ["verbatim quote 1"]
+    }}
+  ],
+  "future_directions": [
+    {{
+      "statement": "future direction",
+      "evidence": ["verbatim quote 1"]
+    }}
+  ]
+}}
+```
+
+Either list may be empty.
+"""

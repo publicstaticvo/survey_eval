@@ -6,281 +6,182 @@ from .prompts import *
 from .tool_config import ToolConfig
 from .llmclient import AsyncChat
 from .fact_check import FactCheckLLMClient
-from .utils import extract_json
+from .utils import extract_json, iter_sections, paragraph_to_text
 
-
-class LandmarkLLMClient(AsyncChat):
-
-    PROMPT: str = IS_LANDMARK
-    ROLE: dict = {"foundational": 3, "representative": 2, "incremental": 1, "background": 0}
-
-    def _availability(self, response, context):
-        response = extract_json(response)
-        return self.ROLE[response['role']]
-    
 
 class MethodClient(AsyncChat):
-
     PROMPT: str = EXTRACT_METHODS
 
     def _availability(self, response, context):
-        response = extract_json(response)
-        s = context['section']
+        data = extract_json(response)
         methods = []
-        for x in response['introduce_spans']:
-            span = x['introduce_span']
-            if span[1] <= span[0]: continue
-            for i in range(span[0] - 1, span[1]):
-                assert i >= 0, i
-                if x['ref_key'] in s[i]['citations']: break
-            else:
-                # f"No ref_key is in this span: {span}"
+        section_sentences = context["section"]
+        for item in data.get("introduce_spans", []):
+            span = item.get("span") or item.get("introduce_span")
+            ref_key = item.get("ref_key")
+            if not span or not ref_key or len(span) != 2:
                 continue
-            methods.append({"key": x['ref_key'], "sentences": span[0] - 1})
-        methods.sort(key=lambda x: x["sentences"])
-        for m in methods:
-            m['sentences'] = f"{s[m['sentences']]['text']} {s[m['sentences'] + 1]['text']}"
-        return {"section_name": context['name'], "methods": methods}
-    
+            start, end = span
+            if not (1 <= start < end <= len(section_sentences)):
+                continue
+            text = " ".join(section_sentences[idx - 1]["text"] for idx in range(start, end + 1))
+            methods.append({"key": ref_key, "sentences": text})
+        return {"section_name": context["name"], "methods": methods}
+
     def _organize_inputs(self, inputs):
-        organized_str, refs, refs_set = [], [], set()
-        for i, x in enumerate(inputs['section'], 1):
-            organized_str.append(f"Sentence {i}: {x['text']}")
-            for c in x['citations']:
-                if c not in refs_set:
-                    refs.append(f"- {c}")
-                    refs_set.add(c)
-        return self.PROMPT.format(text="\n".join(organized_str), keys="\n".join(refs)), {"section": inputs['section']}
+        sentences = "\n".join(f"Sentence {idx}: {sentence['text']}" for idx, sentence in enumerate(inputs["section"], 1))
+        citation_keys = []
+        seen = set()
+        for sentence in inputs["section"]:
+            for citation in sentence.get("citations", []):
+                if citation not in seen:
+                    seen.add(citation)
+                    citation_keys.append(f"- {citation}")
+        prompt = self.PROMPT.format(text=sentences, keys="\n".join(citation_keys))
+        return prompt, {"section": inputs["section"], "name": inputs["name"]}
 
 
 class SectionOrganizeLLMClient(AsyncChat):
-
     PROMPT: str = SECTION_ORGANIZE
 
     def _availability(self, response, context):
-        response = extract_json(response)
-        if response['organization_type'] != "no_clear_structure":
-            schema = {
-                "type": "object",
-                "required": ['organization_type', 'selected_methods', 'justification'],
-                "properties": {
-                    'organization_type': {"type": "string", "enum": ["grouping_by_criteria", "chronological_or_technical_progression", "explicit_comparison"]},
-                    'selected_methods': {"type": "array", "items": {"type": "string", "enum": [f"M{i + 1}" for i in range(context['num_works'])]}},
-                    'justification': {"type": "string", "minLength": 1}
-                }
-            }
-            jsonschema.validate(response, schema)
-            if len(set(response['selected_methods'])) < context['num_works'] / 2:
-                response['organization_type'] = "no_clear_structure"
-        response['num_works'] = context['num_works']
-        return response
-    
+        data = extract_json(response)
+        organization_type = data.get("organization_type", "no_clear_structure")
+        selected_methods = data.get("selected_methods", [])
+        if organization_type != "no_clear_structure" and len(set(selected_methods)) < max(1, context["num_works"] / 2):
+            organization_type = "no_clear_structure"
+        return {
+            "organization_type": organization_type,
+            "selected_methods": selected_methods,
+            "justification": data.get("justification", ""),
+            "num_works": context["num_works"],
+        }
+
     def _organize_inputs(self, inputs):
-        string = []
-        for i, m in enumerate(inputs['methods'], 1):
-            string.append(f"- id: M{i}\n  reference_key: {m['key']}\n  related_text: {m['sentences']}")
-        string = "\n".join(string)
-        inputs = f"Section name: {inputs['section_name']}\nMethods discussed in this section:\n{string}"
-        return self.PROMPT.format(text=inputs), {"num_works": len(inputs['methods'])}
-    
+        methods_text = "\n".join(
+            f"- id: M{idx}\n  reference_key: {method['key']}\n  related_text: {method['sentences']}"
+            for idx, method in enumerate(inputs["methods"], 1)
+        )
+        prompt = self.PROMPT.format(
+            text=f"Section name: {inputs['section_name']}\nMethods discussed in this section:\n{methods_text}"
+        )
+        return prompt, {"num_works": len(inputs["methods"])}
+
 
 class PaperOrganizeLLMClient(AsyncChat):
-
     PROMPT: str = PAPER_ORGANIZE
 
     def _availability(self, response, context):
-        response = extract_json(response)
-        if response['organization_type'] != "no_clear_structure":
-            schema = {
-                "type": "object",
-                "required": ['organization_type', 'selected_sections', 'justification'],
-                "properties": {
-                    'organization_type': {"type": "string", "enum": ["grouping_by_criteria", "chronological_or_technical_progression", "explicit_comparison"]},
-                    'selected_sections': {"type": "array", "items": {"type": "string", "enum": [f"S{i + 1}" for i in range(context['num_sections'])]}},
-                    'justification': {"type": "string", "minLength": 1}
-                }
-            }
-            jsonschema.validate(response, schema)
-            if len(set(response['selected_sections'])) < context['num_works'] / 2:
-                response['organization_type'] = "no_clear_structure"
-        else: assert response['justification']
-        return response
-    
+        data = extract_json(response)
+        organization_type = data.get("organization_type", "no_clear_structure")
+        selected_sections = data.get("selected_sections", [])
+        if organization_type != "no_clear_structure" and len(set(selected_sections)) < max(1, context["num_sections"] / 2):
+            organization_type = "no_clear_structure"
+        return {
+            "organization_type": organization_type,
+            "selected_sections": selected_sections,
+            "justification": data.get("justification", ""),
+        }
+
     def _organize_inputs(self, inputs):
-        string = []
-        for i, s in enumerate(inputs, i):
-            string.append(f"- Section S{i}:\n  - title: {s['name']}\n  - methods_count: {s['num_works']}\n  - organization_type: {s['organization_type']}")
-        string = "\n".join(string)
-        return self.PROMPT.format(text=string), {"num_sections": len(inputs)}
-    
-
-class RefuteOrganizationLLMClient(FactCheckLLMClient):
-
-    PROMPT: str = FACTUAL_CORRECTNESS_PROMPT
-    KEY: str = "refute"
-
-    def _availability(self, response, context):
-        response = extract_json(response)
-        if response[self.KEY]:
-            assert self.check.verify(response['evidence'], context['text'])[0]
-        return response
-    
-    def _organize_inputs(self, inputs):
-        return self.PROMPT.format(**inputs), {"text": inputs['text']}
+        sections_text = "\n".join(
+            f"- Section S{idx}:\n  - title: {section['name']}\n  - methods_count: {section['num_works']}\n  - organization_type: {section['organization_type']}"
+            for idx, section in enumerate(inputs, 1)
+        )
+        return self.PROMPT.format(text=sections_text), {"num_sections": len(inputs)}
 
 
 class MissingTopicLLMClient(FactCheckLLMClient):
-
     PROMPT: str = MISSING_TOPIC_CLAIM
-    KEY: str = "has_claim"
-    
+
+    def _availability(self, response, context):
+        data = extract_json(response)
+        if data.get("has_claim") and data.get("evidence"):
+            evidence = data["evidence"] if isinstance(data["evidence"], list) else [data["evidence"]]
+            verified, _ = self.check.verify(evidence, context["text"])
+            if verified:
+                return True
+        return False
+
     def _organize_inputs(self, inputs):
-        return self.PROMPT.format(**inputs), {"text": inputs['text']}
+        return self.PROMPT.format(**inputs), {"text": inputs["text"]}
 
 
 class StructureCheck:
-    
     def __init__(self, config: ToolConfig):
-        self.landmark_llm = LandmarkLLMClient(config.llm_server_info, config.sampling_params)
         self.method_llm = MethodClient(config.llm_server_info, config.sampling_params)
         self.section_organize_llm = SectionOrganizeLLMClient(config.llm_server_info, config.sampling_params)
         self.paper_organize_llm = PaperOrganizeLLMClient(config.llm_server_info, config.sampling_params)
-        self.refute_llm = RefuteOrganizationLLMClient(config)
         self.missing_topic_llm = MissingTopicLLMClient(config)
 
-    async def _landmark(self, anchor: str, paper: Dict[str, Any]):
-        def _search_for_cite_context(anchor_paper: str, paper: Dict[str, Any]):
-            contexts = []
-            for p in paper['paragraphs']:
-                for i, s in enumerate(p['sentences']):
-                    for c in s['citations']:
-                        if c['name'] == anchor_paper:
-                            contexts.append(" ".join(p['sentences'][max(i, 0):i+2]))
-                            break
-            for s in paper['sections']:
-                contexts.extend(_search_for_cite_context(anchor_paper, s))
-            return contexts
-        
-        cite_contexts = _search_for_cite_context(anchor, paper)
-        tasks = [asyncio.create_task(self.landmark_llm.call(inputs={"title": anchor, "text": c})) for c in cite_contexts]
-        max_role = -1
-        try:
-            for task in asyncio.as_completed(tasks):
-                try:
-                    result = await task
-                    max_role = max(max_role, result)
-                    if max_role >= 2:
-                        for task in tasks:
-                            if not task.done(): task.cancel()
-                except asyncio.CancelledError:
-                    continue
-                except Exception as e:
-                    continue
-        finally:
-            for task in tasks:
-                if not task.done(): task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if max_role > 2: return {"anchor": anchor, "landmark": True}
-        return {"anchor": anchor, "landmark": False, "details": "incremental" if max_role == 1 else "background"}
-    
-    async def _missing_topic_claim(self, topic: str, paper: Dict[str, Any]):
-        """
-        Check if a missing topic is claimed in the paper. Accept if there is a claim.
-        """
-        def _yield_section(paper: dict):
-            if 'abstract' in paper and paper['abstract']:
-                abstract = "\n\n".join(" ".join(x['text'] for x in p) for p in paper['abstract'])
-                yield abstract
-            paragraphs = "\n\n".join(" ".join(x['text'] for x in p) for p in paper['paragraphs'])
-            yield paragraphs
-            for s in paper['sections']: _yield_section(s)
+    def _leaf_sections(self, paper: Dict[str, List]):
+        for section in iter_sections(paper):
+            if section.get("paragraphs"):
+                sentences = []
+                for paragraph in section.get("paragraphs", []):
+                    sentences.extend(paragraph)
+                if sentences:
+                    yield section.get("title", ""), sentences
 
-        for t in _yield_section(paper):
-            result = await self.missing_topic_llm.call(inputs={"topic": topic, "text": t})
-            if result: return
-        return topic
-    
+    async def _single_section(self, name: str, section: List[Dict[str, Any]]):
+        methods = await self.method_llm.call(inputs={"name": name, "section": section})
+        if not methods["methods"]:
+            return None
+        organize = await self.section_organize_llm.call(inputs=methods)
+        organize["name"] = name
+        return organize
+
     async def _structural_check(self, paper: Dict[str, List]):
-        def _yield_section(paper: Dict[str, List]):
-            if paper['sections']:
-                for s in paper['sections']:
-                    _yield_section(s)
-            elif paper['paragraphs']:
-                name = "" if "abstract" in paper else paper['title']
-                section = []
-                for p in paper['paragraphs']:
-                    if p['type'] == "text": section.extend(p)
-                yield name, section
-
-        async def _single_section(name: str, section: List[Dict[str, Any]]):
-            # 第一步：section内部抽取方法和介绍句。
-            methods = await self.method_llm.call(inputs={"name": name, "section": section})
-            # 第二步：LLM按照介绍句判断每个section内部所有方法的组织模式。
-            organize = await self.section_organize_llm.call(inputs=methods)
-            organize['name'] = name
-            return organize
-        
-        def _get_introduction(paper: dict, section_idx: str = ""):
-            text = []
-            if not section_idx:
-                text.append(f"Title: {text['title']}")
-                if paper['abstract']:
-                    abstract = "\n\n".join(" ".join(x['text'] for x in p) for p in paper['abstract'])
-                    text.append(f"Abstract: {abstract}")
-                text.extend(_get_introduction(s['sections'][0], "1"))
-            else:
-                text.append(f"Section {section_idx} {paper['title']}")
-                for p in paper['paragraphs']:
-                    text.append(" ".join(x['text'] for x in p))
-                for i, s in enumerate(paper['sections'], 1): 
-                    text.extend(_get_introduction(s, f"{section_idx}.{i}"))
-            return text
-        
-        method_organize, tasks = [], []
-        for n, s in _yield_section(paper):
-            tasks.append(asyncio.create_task(_single_section(n, s)))
+        tasks = [asyncio.create_task(self._single_section(name, section)) for name, section in self._leaf_sections(paper)]
+        method_organize = []
         for task in asyncio.as_completed(tasks):
             try:
-                methods = await task
-                if methods: method_organize.append(methods)
-            except Exception as e:
-                continue
-        
-        none_sections, total_sections = 0, 0
-        for x in method_organize:
-            if x['num_works'] >= 3:
-                total_sections += 1
-                if x['organization_type'] == "no_clear_structure":
-                    none_sections += 1
-        if total_sections > 0 and none_sections / total_sections >= 0.8:
-            return {"status": False, "reason": "Sections no_clear_structure", "details": (none_sections, total_sections)}
-        # 第三步：LLM判断整篇文章的组织形式。
-        section_organize = await self.paper_organize_llm.call(inputs=method_organize)
-        if section_organize['organization_type'] == "no_clear_structure":
-            return {"status": False, "reason": "Paper no_clear_structure", "details": section_organize['justification']}
-        # LLM判断整篇文章的组织形式是否与标题矛盾。
-        introduction = "\n\n".join(_get_introduction(paper))
-        refutes = self.refute_llm.call(inputs={"text": introduction, "organize": section_organize['organization_type']})
-        if refutes['refute']:
-            return {"status": False, "reason": "Paper refutes structure", "details": {"organization": section_organize, "evidence": refutes['evidence']}}
-        return {"status": True}
-    
-    async def __call__(self, paper: Dict[str, List], anchors: Dict[str, List], missing_topics: List[str]) -> Dict[str, List]:
-        landmarks = []
-        for x in anchors:
-            landmark_result = await self._landmark(x['title'], paper)
-            if not landmark_result['landmark']: landmarks.append(landmark_result)
+                result = await task
+            except Exception:
+                result = None
+            if result:
+                method_organize.append(result)
 
+        strong_sections = [item for item in method_organize if item["num_works"] >= 3]
+        if strong_sections:
+            unclear = [item for item in strong_sections if item["organization_type"] == "no_clear_structure"]
+            if len(unclear) / len(strong_sections) >= 0.8:
+                return {"status": False, "reason": "sections_no_clear_structure", "details": {"unclear": len(unclear), "total": len(strong_sections)}}
+
+        if not method_organize:
+            return {"status": False, "reason": "no_method_introduction_sections", "details": None}
+
+        try:
+            paper_organize = await self.paper_organize_llm.call(inputs=method_organize)
+        except Exception as exc:
+            return {"status": False, "reason": "paper_organization_error", "details": str(exc)}
+        if paper_organize["organization_type"] == "no_clear_structure":
+            return {"status": False, "reason": "paper_no_clear_structure", "details": paper_organize.get("justification", "")}
+        return {"status": True, "details": {"section_results": method_organize, "paper_organization": paper_organize}}
+
+    async def _missing_topic_claim(self, topic: str, paper: Dict[str, Any]):
+        text_blocks = []
+        if paper.get("abstract"):
+            text_blocks.append("\n\n".join(paragraph_to_text(p) for p in paper["abstract"]))
+        for section in [paper, *iter_sections(paper)]:
+            section_text = "\n\n".join(paragraph_to_text(p) for p in section.get("paragraphs", []))
+            if section_text:
+                text_blocks.append(section_text)
+        for block in text_blocks:
+            try:
+                result = await self.missing_topic_llm.call(inputs={"topic": topic, "text": block})
+            except Exception:
+                result = False
+            if result:
+                return None
+        return topic
+
+    async def __call__(self, paper: Dict[str, List], missing_topics: List[str]) -> Dict[str, List]:
         structure = await self._structural_check(paper)
-
-        tasks = [asyncio.create_task(self._missing_topic_claim(m, paper)) for m in missing_topics]
+        tasks = [asyncio.create_task(self._missing_topic_claim(topic, paper)) for topic in missing_topics]
         real_missing_topics = []
-        for task in tasks:
+        for task in asyncio.as_completed(tasks):
             result = await task
-            if result: real_missing_topics.append(result)
-        
-        return {"quality": {
-            "missing_topics": real_missing_topics,
-            "structure_check": structure,
-            "uncovered_landmarks": landmarks
-        }}
+            if result:
+                real_missing_topics.append(result)
+        return {"structure_evals": {"missing_topics": real_missing_topics, "structure_check": structure}}
