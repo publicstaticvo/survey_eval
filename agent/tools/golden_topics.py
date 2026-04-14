@@ -44,7 +44,7 @@ class GoldenTopicGenerator:
         return str(topic or "")
 
     def _flatten_anchor_titles(self, anchor_surveys: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # 中文注释：阶段一的输入整理，把每篇 anchor survey 的层级标题全部展平，并保留来源信息。
+        # 阶段一的输入整理，把每篇 anchor survey 的层级标题全部展平，并保留来源信息。
         records = []
         seen = set()
         for survey_title, survey_info in anchor_surveys.items():
@@ -63,7 +63,7 @@ class GoldenTopicGenerator:
         return records
 
     def _merge_similar_anchor_titles(self, title_records: List[Dict[str, Any]]) -> List[TopicRecord]:
-        # 中文注释：阶段一的核心步骤，用 SentenceBERT 合并语义相近的 section 标题，保证结果可审计。
+        # 阶段一的核心步骤，用 SentenceBERT 合并语义相近的 section 标题，保证结果可审计。
         if not title_records:
             return []
 
@@ -125,7 +125,7 @@ class GoldenTopicGenerator:
         return seed_topic_list
 
     def _align_cluster_label(self, cluster_label: str, base_topics: List[TopicRecord]) -> tuple[str, str]:
-        # 中文注释：在 anchor survey 数量不足时，用 base topics 对聚类结果做标签校正。
+        # 在 anchor survey 数量不足时，用 base topics 对聚类结果做标签校正。
         if not base_topics:
             return cluster_label, "oracle-derived"
         texts = [cluster_label, *[topic.topic_name for topic in base_topics]]
@@ -138,7 +138,7 @@ class GoldenTopicGenerator:
         return cluster_label, "oracle-derived"
 
     def _run_bertopic(self, documents: List[str], seed_topic_list: List[List[str]] | None):
-        # 中文注释：阶段二的主流程，先降维，再用 HDBSCAN 聚类，最后用 BERTopic 产出可追溯主题。
+        # 阶段二的主流程，先降维，再用 HDBSCAN 聚类，最后用 BERTopic 产出可追溯主题。
         if not documents or BERTopic is None or UMAP is None or HDBSCAN is None or CountVectorizer is None:
             return [], "bertopic_unavailable"
 
@@ -184,7 +184,7 @@ class GoldenTopicGenerator:
         base_topics: List[TopicRecord],
         anchor_surveys_count: int,
     ) -> tuple[List[TopicRecord], Dict[str, Any]]:
-        # 中文注释：阶段二输入使用 QueryExpand 的 200 篇 library papers，标题+摘要都作为可审计材料。
+        # 阶段二输入使用 QueryExpand 的 200 篇 library papers，标题+摘要都作为可审计材料。
         papers = list(library.values())
         documents = []
         paper_titles = []
@@ -210,7 +210,7 @@ class GoldenTopicGenerator:
             cluster_label = cluster["label"]
             source = "oracle-derived"
 
-            # 中文注释：anchor surveys 足够时，base topic 为主，过滤掉已经被 anchor surveys 覆盖的聚类。
+            # anchor surveys 足够时，base topic 为主，过滤掉已经被 anchor surveys 覆盖的聚类。
             if anchor_surveys_count >= 3 and base_topic_names:
                 texts = [cluster_label, *base_topic_names]
                 embeddings = self.sbert.embed(texts)
@@ -218,7 +218,7 @@ class GoldenTopicGenerator:
                 if float(scores.max()) > self.base_overlap_threshold:
                     continue
 
-            # 中文注释：anchor surveys 较少时，BERTopic 结果为主，但允许用 base topics 修正标签。
+            # anchor surveys 较少时，BERTopic 结果为主，但允许用 base topics 修正标签。
             if anchor_surveys_count in {1, 2}:
                 aligned_label, source = self._align_cluster_label(cluster_label, base_topics)
                 cluster_label = aligned_label
@@ -267,19 +267,17 @@ class GoldenTopicGenerator:
             for topic in topics
         ]
 
-    async def __call__(self, query: str, anchor_data: Dict[str, Any], library: Dict[str, Dict[str, Any]]):
-        del query
-
-        # 中文注释：阶段一，从 anchor surveys 的层级标题直接抽取 base topics。
+    async def __call__(self, anchor_data: Dict[str, Any], library: Dict[str, Dict[str, Any]]):
+        # 阶段一，从 anchor surveys 的层级标题直接抽取 base topics。
         anchor_surveys = anchor_data.get("downloaded", {})
         anchor_title_records = self._flatten_anchor_titles(anchor_surveys)
         base_topics = self._merge_similar_anchor_titles(anchor_title_records)
 
-        # 中文注释：阶段二，用 BERTopic 从 library papers 中寻找补充 topics。
+        # 阶段二，用 BERTopic 从 library papers 中寻找补充 topics。
         anchor_surveys_count = len(anchor_surveys)
         supplementary_topics, supplementary_meta = self._build_supplementary_topics(library, base_topics, anchor_surveys_count)
 
-        # 中文注释：根据 anchor survey 数量决定最终 topics 的组织方式和可信度说明。
+        # 根据 anchor survey 数量决定最终 topics 的组织方式和可信度说明。
         if anchor_surveys_count >= 3:
             mode = "anchor_consensus_primary"
             confidence = "high"

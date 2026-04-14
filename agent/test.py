@@ -1,7 +1,6 @@
 from tools import *
 import asyncio
 import json
-import sys
 
 
 if __package__:
@@ -11,6 +10,7 @@ if __package__:
     from .tools.claim_segmentation import ClaimSegmentation
     from .tools.dynamic_oracle_generator import DynamicOracleGenerator
     from .tools.fact_check import FactualCorrectnessCritic
+    from .tools.golden_topics import GoldenTopicGenerator
     from .tools.minimum_completion import MinimalCompletionCheck
     from .tools.programmatic_quality import QualityCritic
     from .tools.query_expand import QueryExpand
@@ -26,6 +26,7 @@ else:
     from tools.claim_segmentation import ClaimSegmentation
     from tools.dynamic_oracle_generator import DynamicOracleGenerator
     from tools.fact_check import FactualCorrectnessCritic
+    from tools.golden_topics import GoldenTopicGenerator
     from tools.minimum_completion import MinimalCompletionCheck
     from tools.programmatic_quality import QualityCritic
     from tools.query_expand import QueryExpand
@@ -38,28 +39,38 @@ else:
 
 async def testQueryExpand(config, survey_title):
     qe = await QueryExpand(config)(survey_title)
-    with open("debug/qe.json", "w") as f: json.dump(qe, f, ensure_ascii=False)
+    with open("debug/qe.json", "w") as f: json.dump(qe, f, ensure_ascii=False, indent=2)
 
 
 async def testAnchorSurveyFetch(config, survey_title):
     with open("debug/qe.json") as f: qe = json.load(f)
     results = await AnchorSurveyFetch(config)(qe['core'], qe['library'], survey_title)
-    with open("debug/anchor_papers.json", "w") as f: json.dump(results['anchor_papers'], f, ensure_ascii=False)
-    with open("debug/downloaded.json", "w") as f: json.dump(results['downloaded'], f, ensure_ascii=False)
-    with open("debug/surveys.json", "w") as f: json.dump(results['surveys'], f, ensure_ascii=False)
-    with open("debug/topics.txt", "w") as f: f.write("\n".join(results['golden_topics']))
+    with open("debug/anchor_papers.json", "w") as f: 
+        json.dump(results['anchor_papers'], f, ensure_ascii=False, indent=2)
+    with open("debug/downloaded.json", "w") as f: 
+        json.dump(results['downloaded'], f, ensure_ascii=False, indent=2)
+    with open("debug/surveys.json", "w") as f: 
+        json.dump(results['surveys'], f, ensure_ascii=False, indent=2)
 
 
 async def testDynamicOracleGenerator(config, survey_title):
     with open("debug/qe.json") as f: qe = json.load(f)
     oracles = await DynamicOracleGenerator(config)(survey_title, qe['library'])
-    with open("debug/oracles.json", "w") as f: json.dump(oracles['oracle_papers'], f, ensure_ascii=False)
+    with open("debug/oracles.json", "w") as f: 
+        json.dump(oracles['oracle_papers'], f, ensure_ascii=False, indent=2)
+
+
+async def testGoldenTopics(config):
+    with open("debug/qe.json") as f: qe = json.load(f)
+    results = await GoldenTopicGenerator(config)(qe['core'], qe['library'])
+    with open("debug/topics.json", "w") as f: json.dump(results, f, ensure_ascii=False, indent=2)
 
 
 async def testCitationParser(config, paper):
     task = await CitationParser(config)(paper['citations'])
     paper_map = task['paper_content_map']
-    with open("debug/cites.json", "w") as f: json.dump(paper_map, f, ensure_ascii=False)
+    with open("debug/cites.json", "w") as f: 
+        json.dump(paper_map, f, ensure_ascii=False, indent=2)
     count = [0, 0, 0, 0]
     for x in paper_map.values(): count[x['status']] += 1
     print(count)
@@ -76,10 +87,15 @@ async def main():
     try:
         await SessionManager.init()
         config = ToolConfig()
+        # query = "Transformers Natural Language Processing"
         survey_title = "Transformer models in Natural Language Processing: A Survey"
         with open("pdf/Transformer.json", encoding='utf-8') as f: paper = json.load(f)
-        if sys.argv[1] == "query": await testAnchorSurveyFetch(config, survey_title)
-        else: await testClaimSegmentation(config, paper)
+        # await testQueryExpand(config, survey_title)
+        # await testAnchorSurveyFetch(config, survey_title)
+        await testDynamicOracleGenerator(config, survey_title)
+        await testClaimSegmentation(config, paper)
+        await testCitationParser(config, paper)
+        await testGoldenTopics(config)
     finally:
         await SessionManager.close()
 

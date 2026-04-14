@@ -1,6 +1,7 @@
 import math
 import logging
 import asyncio
+import lightgbm
 import numpy as np
 import networkx as nx
 from datetime import datetime
@@ -11,17 +12,12 @@ from .openalex import openalex_search_paper
 from .tool_config import ToolConfig
 from .utils import cosine_similarity_matrix
 
-try:
-    import lightgbm
-except Exception:
-    lightgbm = None
-
 debug = False
 
 
 class DynamicOracleGenerator:
     def __init__(self, config: ToolConfig):
-        self.letor = lightgbm.Booster(model_file=config.letor_path) if lightgbm is not None else None
+        self.letor = lightgbm.Booster(model_file=config.letor_path)
         self.eval_date = config.evaluation_date
         self.num_oracle_papers = config.num_oracle_papers
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
@@ -56,7 +52,7 @@ class DynamicOracleGenerator:
                     fetched[paper["id"]] = paper
         return fetched
 
-    async def _expand_library(self, query: str, library: Dict[str, Any]):
+    async def _expand_library(self, library: Dict[str, Any]):
         expanded = dict(library)
         reference_counter = {}
         for paper in expanded.values():
@@ -113,7 +109,6 @@ class DynamicOracleGenerator:
     def _predict_ranks(self, oracle: Dict[str, Any]):
         paper_ids = list(oracle)
         features = np.array([oracle[paper_id]["features"] for paper_id in paper_ids])
-        assert len(features) and self.letor
         ranks = self.letor.predict(features).tolist()
         for paper_id, rank in zip(paper_ids, ranks):
             oracle[paper_id]["rank"] = rank
