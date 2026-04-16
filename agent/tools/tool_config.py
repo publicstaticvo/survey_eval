@@ -15,12 +15,19 @@ GREEDY_PARAMS = {
 }
 
 
+# @dataclass(frozen=True)
+# class LLMServerInfo:
+#     base_url: str = "https://uni-api.cstcloud.cn"
+#     api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
+#     model: str = "gpt-oss-120b"
+
+
 @dataclass(frozen=True)
 class LLMServerInfo:
-    base_url: str = "https://uni-api.cstcloud.cn"
-    api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
-    model: str = "gpt-oss-120b"
-    
+    base_url: str = "https://api.deepseek.com"
+    api_key: str = "sk-391fb819fefe42d9906d8d69595917ed"
+    model: str = "deepseek-chat"
+
 
 @dataclass(frozen=True)
 class ToolConfig:

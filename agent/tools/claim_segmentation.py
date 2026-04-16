@@ -3,7 +3,7 @@ import asyncio
 import jsonschema
 from typing import Any, List, Dict
 
-from .prompts import CLAIM_SEGMENTATION_PROMPT, CLAIM_SCHEMA, CLAIMS_SCHEMA
+from .prompts import CLAIM_CLASSIFICATION_PROMPT
 from .utils import split_content_to_paragraph, extract_json
 from .sbert_client import SentenceTransformerClient
 from .tool_config import ToolConfig
@@ -35,7 +35,7 @@ def range_check(claim: str, paragraph: List[Dict[str, Any]], anchor_id: int) -> 
 
 
 class ClaimSegmentationLLMClient(AsyncChat):
-    PROMPT: str = CLAIM_SEGMENTATION_PROMPT
+    PROMPT: str = CLAIM_CLASSIFICATION_PROMPT
 
     def _availability(self, response: str, context: dict):
         result = extract_json(response)

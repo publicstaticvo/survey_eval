@@ -1,3 +1,4 @@
+# query_expansion.py
 QUERY_EXPANSION_PROMPT = '''You are a Senior Research Librarian specializing in Systematic Literature Reviews. 
 Your goal is to generate 4 distinct, high-recall search queries for the topic or literature review: "{query}"
 
@@ -91,183 +92,63 @@ QUERY_SCHEMA = {
     }
 }
 
-CLAIM_CLASSIFICATION_PROMPT = '''You are a precise scientific text classifier. Your task is to determine whether a given sentence describes a concrete experimental result or performance claim that can be verified against its cited reference(s).
+TOPIC_LABEL_FROM_CLUSTER_PROMPT = """You are naming a literature-review topic from one BERTopic cluster.
 
-========================
-INPUT
-========================
+Target query:
+{query}
 
-Context Window (up to 3 consecutive sentences):
-\"\"\"{context}\"\"\"
+Cluster keywords:
+{keywords}
 
-Target Sentence (contains exactly one citation marker):
-\"\"\"{sentence}\"\"\"
+Representative paper titles:
+{titles}
 
-Citation marker:
-{citation_key}
+Instructions:
+- Produce one short human-friendly topic name suitable for a survey section title.
+- Prefer a noun phrase, usually 2 to 8 words.
+- The topic name must stay within the semantic scope of the target query.
+- Do not output a list of keywords.
+- Avoid vague labels like "methods", "approaches", or "applications" unless the titles clearly support that.
+- If the cluster is noisy, still provide the best concise topic name from the dominant pattern.
 
-========================
-DEFINITION
-========================
+Return a JSON object only:
+```json
+{{
+  "topic_name": "...",
+  "reason": "brief explanation"
+}}
+```
+"""
 
-A *verifiable performance claim* is a sentence that:
-- Asserts a specific, measurable result, capability, or limitation of a method, model, or system, AND
-- The assertion can in principle be confirmed or refuted by reading the cited reference.
+# claim_segmentation.py
+CLAIM_CLASSIFICATION_PROMPT = """You are a careful scientific reviewer. Determine whether the target sentence is a claim that should be fact-checked against its single citation.
 
-Typical verifiable performance claims include:
-- Quantitative results: accuracy, scores, rankings, comparisons with numbers
-- Qualitative capability assertions: "Model X outperforms Y on task Z"
-- Explicitly stated limitations: "Model X fails to generalize to domain Y"
-- Direct benchmark results: "This model achieves state-of-the-art on dataset X"
+Input paragraph:
+{range}
 
-========================
-EXCLUSION CRITERIA
-========================
+Target sentence:
+{text}
 
-Answer NO if the sentence is any of the following:
+Citation keys in this sentence:
+{keys}
 
-1. Background definition: defines a concept, task, or field
-   Example: "Language models are computational models that understand human language [36]."
-
-2. Existence citation: cites a paper merely as an example or representative of a category
-   Example: "Tasks such as mathematical reasoning [225] and structured data inference [86]."
-
-3. Motivation or scope statement: explains why something matters or what a paper covers
-   Example: "Evaluating LLMs on complex tasks has become an active research direction [12]."
-
-4. Indirect attribution: the cited paper is not the primary source of the claimed result
-   Example: "As noted by recent surveys [5], performance has improved significantly."
-
-5. Unresolvable reference: the subject of the claim cannot be determined from the 3-sentence window
-   Example: "Its proficiency still requires improvement [6]." (when "its" cannot be resolved)
-
-========================
-OUTPUT FORMAT
-========================
-
-Return a JSON object in the following format:
-
+Return a JSON object only:
 ```json
 {{
   "is_verifiable_performance_claim": true | false,
-  "reason": "<one sentence explaining the decision>"
+  "reason": "short explanation"
 }}
 ```
 
-Do NOT return anything outside the JSON object.
+Mark `true` only if all of the following hold:
+- the sentence has exactly one citation,
+- the cited work is the direct source of the sentence's meaning,
+- the sentence states a factual claim that could be checked from the cited paper.
 
-========================
-EXAMPLES
-========================
+Mark `false` for background definitions, loose motivation, author opinions, or cases where the citation is just an example.
+"""
 
-### Example 1
-
-Context Window:
-\"\"\"ChatGPT exhibits a strong capability for arithmetic reasoning by outperforming GPT-3.5 in the majority of tasks [159].
-However, its proficiency in mathematical reasoning still requires improvement [6].
-On symbolic reasoning tasks, ChatGPT is mostly worse than GPT-3.5 [6].\"\"\"
-
-Target Sentence:
-\"\"\"However, its proficiency in mathematical reasoning still requires improvement [6].\"\"\"
-
-Citation marker: 6
-
-Output:
-```json
-{{
-  "is_verifiable_performance_claim": false,
-  "reason": "The subject 'its' refers to ChatGPT based on context, but 'requires improvement' is the author's interpretive judgment rather than a specific measurable result reported in the cited paper."
-}}
-```
-
-### Example 2
-
-Context Window:
-\"\"\"We evaluate our model on the SQuAD 2.0 reading comprehension benchmark.
-Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].
-This represents a significant improvement in extractive question answering performance.\"\"\"
-
-Target Sentence:
-\"\"\"Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].\"\"\"
-
-Citation marker: 43
-
-Output:
-```json
-{{
-  "is_verifiable_performance_claim": true,
-  "reason": "The sentence makes a specific quantitative comparison against a result (85.1 F1) attributed to the cited reference, which can be verified by reading that paper."
-}}
-```
-
-### Example 3
-
-Context Window:
-\"\"\"Sentiment analysis is a task that analyzes text to determine emotional inclination.
-It is typically a binary or triple classification problem.
-Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
-
-Target Sentence:
-\"\"\"Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
-
-Citation marker: 114
-
-Output:
-```json
-{{
-  "is_verifiable_performance_claim": false,
-  "reason": "The sentence describes the general research landscape rather than asserting a specific experimental result or performance measurement attributable to the cited paper."
-}}
-```
-'''
-
-CLAIM_SCHEMA = {
-    "claims": {"type": "array", "items": {
-        "type": "object", 
-        "required": ["claim", "claim_type", "citation_markers"],
-        "properties": {
-            "claim": {"type": "string", "minLength": 1},
-            "claim_type": {"type": "string", "enum": ["background", "action", "result"]},
-            "citation_markers": {"type": "array", "items": {"type": "string"}}
-        }
-    }}
-}
-
-CLAIMS_SCHEMA = {
-    "type": "object", 
-    "required": ["claims"],
-    "properties": CLAIM_SCHEMA
-}
-
-FACTUAL_CORRECTNESS_PROMPT = '''You are a factual correctness verifier for academic surveys. Given:
-
-- A claim extracted from a survey, and
-- The paper that it cites (including {content_type})
-
-Determine whether the claim is supported by the cited paper. Your judgment should be one of the following:
-
-- SUPPORTED: the claim is clearly supported by the evidence.
-- REFUTED: the claim is clearly contradicted by the evidence.
-- NEUTRAL: the claim is not mentioned in the evidence, or there's no sufficient information to verify if the claim is supported or refuted.
-
-**Important:** If your judgment is "SUPPORTED" or "REFUTED", you MUST provide verbatim evidence from the content of the cited paper to support that.
-
-Your output should be a single JSON object only:
-
-```json
-{{
-  "judgment": "SUPPORTED" | "REFUTED" | "NEUTRAL",
-  "evidence": "verbatim evidence from the cited paper, if judgment == SUPPORTED or REFUTED" | "" (if judgment == NEUTRAL)
-}}
-```
-
-### Claim
-{claim}
-
-### Evidence
-{text}
-'''
-
+# anchor_survey.py
 ANCHOR_PAPER_SELECT = """You are an expert researcher preparing to evaluate a survey paper titled:
 
 "{query}"
@@ -418,173 +299,61 @@ or an empty list with reasons if no anchor surveys are found:
 Be conservative. It is acceptable to select fewer surveys or none if the candidates do not clearly qualify.
 """
 
-TOPIC_AGGREGATION_PROMPT = """You are an expert researcher tasked with synthesizing a survey-level topic structure from a collection of academic papers. Your goal is to identify high-level research topics that would reasonably appear as major sections in a well-written survey on the given query.
+# websearch.py
+WEBSEARCH_FILTER_PROMPT = """You are filtering academic web search results for a cited paper lookup.
 
-### Target query: {query}
+Target paper title:
+{title}
 
-The query defines the conceptual scope of the survey. Topics must fall within this scope, not merely mention it.
+Candidates:
+{candidates}
 
-### Paper Collection
-
-You are given:
-* High-priority evidences: a list of section and subsection names extracted from anchor surveys for this query.
-* Low-priority evidences: a list of other relevant paper titles retrieved for this query.
-Note that not all sources are equally reliable.
-
-[High-priority evidence]
-Survey section names extracted from anchor surveys:
-{anchors}
-
-[Low-priority evidence]
-Titles and abstracts of other relevant papers:
-{surveys}
-
-### Your Task
-
-From the paper title collection, induce 5–12 high-level survey topics. Each topic should:
-
-1. Represent a recurring research direction or theme, not a single paper.
-2. Be appropriate as a top-level section in a survey.
-3. Be clearly within the semantic scope of the query.
-4. Be methodological or conceptual, not a downstream application domain unless the application itself is central to the query.
-
-### Important Constraints
-
-A topic must be:
-* short (≤ 8 words)
-* noun-phrase like
-* suitable as a section header
-* checkable by surface semantic similarity
-
-Do NOT create topics that are purely:
-- Irrelevant to the query.
-- Application domains (e.g., radiology, neurosurgery, clinical decision making)
-- Neighboring fields outside the query scope (e.g., speech recognition if the query is about NLP)
-- If a paper applies the queried method to another field, treat it as evidence, not a standalone topic.
-- If multiple papers treat a specific model family (e.g., ChatGPT as a representative LLM) as a recurring focus within the query scope, it may form a topic.
-
-### Output Format
-
-Return a JSON object:
+Return a JSON object only:
 ```json
 {{
-  "topics": [
-    {{
-      "topic_name": "...",
-      "representative_papers": ["title1", "title2", "..."]
-    }}
-  ]
+  "matched_indices": [1, 3],
+  "reason": "brief explanation"
 }}
 ```
 
-### Sanity Checks (must satisfy internally)
-
-- Every topic should be supported by multiple papers.
-- The union of topics should cover most papers, but not necessarily all.
-- Topics should be distinct and non-overlapping at a high level.
+Rules:
+- keep only candidates that are very likely to refer to the same paper,
+- prefer publisher, DOI, arXiv, OpenReview, ACL Anthology, Semantic Scholar, DBLP, or author pages,
+- it is acceptable to return an empty list if the evidence is weak.
 """
 
-INTERGRATION_INTENT = """You are a strict survey reviewer. You are assessing whether a given text segment explicitly shows an **intent to integrate, synthesize, or organize prior literature**, as expected in a survey paper.
+# fact_check.py
+FACTUAL_CORRECTNESS_PROMPT = '''You are a factual correctness verifier for academic surveys. Given:
 
-### Definition
+- A claim extracted from a survey, and
+- The paper that it cites (including {content_type})
 
-"Integration intent" means the text **explicitly states** one or more of the following:
+Determine whether the claim is supported by the cited paper. Your judgment should be one of the following:
 
-* organizing prior work into categories, themes, or dimensions
-* summarizing trends, comparisons, or common findings across multiple works
-* positioning multiple studies relative to each other
+- SUPPORTED: the claim is clearly supported by the evidence.
+- REFUTED: the claim is clearly contradicted by the evidence.
+- NEUTRAL: the claim is not mentioned in the evidence, or there's no sufficient information to verify if the claim is supported or refuted.
 
-It does **NOT** include:
+**Important:** If your judgment is "SUPPORTED" or "REFUTED", you MUST provide verbatim evidence from the content of the cited paper to support that.
 
-* merely describing one paper or one method
-* background definitions
-* narrative mentions without synthesis language
-
-### Instructions
-
-1. Read the text carefully.
-2. Decide whether **explicit integration intent** is present.
-3. If yes, copy **the exact sentence(s)** that express this intent.
-4. If no, return `false` and leave evidence empty.
-
-### Constraints
-
-* Do **not** infer intent if it is not explicitly stated.
-* If you are unsure, choose `false`.
-
-### Output Format
+Your output should be a single JSON object only:
 
 ```json
-{
-  "integration_intent": true | false,
-  "evidence": "verbatim sentence(s) from the text, or empty string if false"
-}
-```"""
+{{
+  "judgment": "SUPPORTED" | "REFUTED" | "NEUTRAL",
+  "evidence": "verbatim evidence from the cited paper, if judgment == SUPPORTED or REFUTED" | "" (if judgment == NEUTRAL)
+}}
+```
 
-STRUCTURE_AND_DISCUSSION = """You are a strict survey reviewer tasked with evaluating whether a given survey meets the minimal requirements of a survey. You are given the hierarchical section titles of the survey. Determine:
+### Claim
+{claim}
 
-1. Whether the structure is **topic-driven**, as expected for a survey.
-2. Whether the survey includes **explicit discussion sections** about open problems, limitations, or future directions.
+### Evidence
+{text}
+'''
 
-### Definitions
 
-* **Topic-driven structure**:
-
-  * Sections are organized by themes, categories, tasks, approaches, or dimensions.
-  * NOT organized around proposing a single method, model, or algorithm.
-* **Discussion sections** include titles containing ideas such as:
-
-  * future directions, open problems, challenges, limitations, outlook, discussion
-
-### Instructions
-
-1. Judge whether the overall structure resembles a survey.
-2. Identify section titles that clearly indicate discussion of open questions or future work.
-3. Copy section titles exactly as provided.
-
-### Constraints
-
-* Base your decision **only on section titles**, not assumptions.
-* If uncertain, choose `false`.
-
-### Output Format
-
-```json
-{
-  "topic_driven": true | false,
-  "discussion_sections": ["Section Title 1", "Section Title 2"]
-}
-```"""
-
-IS_LANDMARK = """Given a reference and the paragraph where it appears, determine the **role** this reference plays in the narrative.
-
-### Role Definitions
-
-* **foundational**：introduced as a landmark, origin, or basis of the field
-* **representative**：used as a typical or canonical example of a category
-* **incremental**：presented as a minor improvement or extension over prior work
-* **background**：mentioned for context, definition, or historical background only
-
-### Instructions
-
-1. Focus on how the cited work is **positioned**, not its actual importance.
-2. Choose exactly one role from the defined categories.
-3. Base your decision only on the provided paragraph.
-
-### Constraints
-
-* Do not assume importance beyond what is stated.
-* If multiple roles appear, choose the **dominant** one.
-
-### Output Format
-
-```json
-{
-  "role": "foundational" | "representative" | "incremental" | "background"
-  "explanation": "brief justification of the chosen role"
-}
-```"""
-
+# structure_eval.py
 EXTRACT_METHODS = """Identify methods that are **substantively introduced** in this section.
 
 ### Task Definition
@@ -738,6 +507,97 @@ MISSING_TOPIC_CLAIM = """Determine whether the paper **explicitly states** that 
 }
 ```"""
 
+# argument_eval.py
+ARGUMENT_EXTRACTION_COMMON_RULES = """
+General rules:
+- Extract only what is explicitly stated in the source text.
+- Failure is acceptable. If the paper does not state the target item clearly, return `null`.
+- Do not infer unstated claims.
+- Evidence must be copied verbatim from the source text.
+- Leave `few_shot_examples` empty if no examples are provided.
+"""
+
+CORE_ARGUMENT_PROMPT = """You are extracting the author's core argument from a survey paper.
+
+Source text:
+{text}
+
+Few-shot examples:
+{few_shot_examples}
+
+""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
+
+Return a JSON object only:
+```json
+{{
+  "item": {{
+    "statement": "one-sentence core viewpoint",
+    "evidence": ["verbatim quote 1", "verbatim quote 2"]
+  }} | null
+}}
+```
+
+The statement should capture the central viewpoint or thesis of the survey, not just its topic.
+"""
+
+MAIN_CONTRIBUTION_PROMPT = """You are extracting the main claimed contributions of a survey paper.
+
+Source text:
+{text}
+
+Few-shot examples:
+{few_shot_examples}
+
+""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
+
+Return a JSON object only:
+```json
+{{
+  "items": [
+    {{
+      "statement": "contribution statement",
+      "evidence": ["verbatim quote 1"]
+    }}
+  ]
+}}
+```
+
+Return an empty list if no explicit contribution claims are stated.
+Prefer 1 to 3 major contributions, not minor details.
+"""
+
+RESEARCH_GAP_PROMPT = """You are extracting research gaps and future directions from a survey paper.
+
+Source text:
+{text}
+
+Few-shot examples:
+{few_shot_examples}
+
+""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
+
+Return a JSON object only:
+```json
+{{
+  "research_gaps": [
+    {{
+      "statement": "research gap",
+      "evidence": ["verbatim quote 1"]
+    }}
+  ],
+  "future_directions": [
+    {{
+      "statement": "future direction",
+      "evidence": ["verbatim quote 1"]
+    }}
+  ]
+}}
+```
+
+Either list may be empty.
+"""
+
+# aggregate_review.py
 FINAL_AGGREGATION_PROMPT = '''You are a professional research assistant. You are writing an official review report for a survey paper.
 
 ### Task
@@ -806,146 +666,283 @@ FINAL_AGGREGATION_SCHEMA = {
     "additionalProperties": False
 }
 
+# deprecated
+INTERGRATION_INTENT = """You are a strict survey reviewer. You are assessing whether a given text segment explicitly shows an **intent to integrate, synthesize, or organize prior literature**, as expected in a survey paper.
 
-CLAIM_SEGMENTATION_PROMPT = """You are a careful scientific reviewer. Determine whether the target sentence is a claim that should be fact-checked against its single citation.
+### Definition
 
-Input paragraph:
-{range}
+"Integration intent" means the text **explicitly states** one or more of the following:
 
-Target sentence:
-{text}
+* organizing prior work into categories, themes, or dimensions
+* summarizing trends, comparisons, or common findings across multiple works
+* positioning multiple studies relative to each other
 
-Citation keys in this sentence:
-{keys}
+It does **NOT** include:
 
-Return a JSON object only:
+* merely describing one paper or one method
+* background definitions
+* narrative mentions without synthesis language
+
+### Instructions
+
+1. Read the text carefully.
+2. Decide whether **explicit integration intent** is present.
+3. If yes, copy **the exact sentence(s)** that express this intent.
+4. If no, return `false` and leave evidence empty.
+
+### Constraints
+
+* Do **not** infer intent if it is not explicitly stated.
+* If you are unsure, choose `false`.
+
+### Output Format
+
+```json
+{
+  "integration_intent": true | false,
+  "evidence": "verbatim sentence(s) from the text, or empty string if false"
+}
+```"""
+
+TOPIC_AGGREGATION_PROMPT = """You are an expert researcher tasked with synthesizing a survey-level topic structure from a collection of academic papers. Your goal is to identify high-level research topics that would reasonably appear as major sections in a well-written survey on the given query.
+
+### Target query: {query}
+
+The query defines the conceptual scope of the survey. Topics must fall within this scope, not merely mention it.
+
+### Paper Collection
+
+You are given:
+* High-priority evidences: a list of section and subsection names extracted from anchor surveys for this query.
+* Low-priority evidences: a list of other relevant paper titles retrieved for this query.
+Note that not all sources are equally reliable.
+
+[High-priority evidence]
+Survey section names extracted from anchor surveys:
+{anchors}
+
+[Low-priority evidence]
+Titles and abstracts of other relevant papers:
+{surveys}
+
+### Your Task
+
+From the paper title collection, induce 5–12 high-level survey topics. Each topic should:
+
+1. Represent a recurring research direction or theme, not a single paper.
+2. Be appropriate as a top-level section in a survey.
+3. Be clearly within the semantic scope of the query.
+4. Be methodological or conceptual, not a downstream application domain unless the application itself is central to the query.
+
+### Important Constraints
+
+A topic must be:
+* short (≤ 8 words)
+* noun-phrase like
+* suitable as a section header
+* checkable by surface semantic similarity
+
+Do NOT create topics that are purely:
+- Irrelevant to the query.
+- Application domains (e.g., radiology, neurosurgery, clinical decision making)
+- Neighboring fields outside the query scope (e.g., speech recognition if the query is about NLP)
+- If a paper applies the queried method to another field, treat it as evidence, not a standalone topic.
+- If multiple papers treat a specific model family (e.g., ChatGPT as a representative LLM) as a recurring focus within the query scope, it may form a topic.
+
+### Output Format
+
+Return a JSON object:
+```json
+{{
+  "topics": [
+    {{
+      "topic_name": "...",
+      "representative_papers": ["title1", "title2", "..."]
+    }}
+  ]
+}}
+```
+
+### Sanity Checks (must satisfy internally)
+
+- Every topic should be supported by multiple papers.
+- The union of topics should cover most papers, but not necessarily all.
+- Topics should be distinct and non-overlapping at a high level.
+"""
+
+IS_LANDMARK = """Given a reference and the paragraph where it appears, determine the **role** this reference plays in the narrative.
+
+### Role Definitions
+
+* **foundational**：introduced as a landmark, origin, or basis of the field
+* **representative**：used as a typical or canonical example of a category
+* **incremental**：presented as a minor improvement or extension over prior work
+* **background**：mentioned for context, definition, or historical background only
+
+### Instructions
+
+1. Focus on how the cited work is **positioned**, not its actual importance.
+2. Choose exactly one role from the defined categories.
+3. Base your decision only on the provided paragraph.
+
+### Constraints
+
+* Do not assume importance beyond what is stated.
+* If multiple roles appear, choose the **dominant** one.
+
+### Output Format
+
+```json
+{
+  "role": "foundational" | "representative" | "incremental" | "background"
+  "explanation": "brief justification of the chosen role"
+}
+```"""
+
+CLAIM_SEGMENTATION_PROMPT = '''You are a precise scientific text classifier. Your task is to determine whether a given sentence describes a concrete experimental result or performance claim that can be verified against its cited reference(s).
+
+========================
+INPUT
+========================
+
+Context Window (up to 3 consecutive sentences):
+\"\"\"{context}\"\"\"
+
+Target Sentence (contains exactly one citation marker):
+\"\"\"{sentence}\"\"\"
+
+Citation marker:
+{citation_key}
+
+========================
+DEFINITION
+========================
+
+A *verifiable performance claim* is a sentence that:
+- Asserts a specific, measurable result, capability, or limitation of a method, model, or system, AND
+- The assertion can in principle be confirmed or refuted by reading the cited reference.
+
+Typical verifiable performance claims include:
+- Quantitative results: accuracy, scores, rankings, comparisons with numbers
+- Qualitative capability assertions: "Model X outperforms Y on task Z"
+- Explicitly stated limitations: "Model X fails to generalize to domain Y"
+- Direct benchmark results: "This model achieves state-of-the-art on dataset X"
+
+========================
+EXCLUSION CRITERIA
+========================
+
+Answer NO if the sentence is any of the following:
+
+1. Background definition: defines a concept, task, or field
+   Example: "Language models are computational models that understand human language [36]."
+
+2. Existence citation: cites a paper merely as an example or representative of a category
+   Example: "Tasks such as mathematical reasoning [225] and structured data inference [86]."
+
+3. Motivation or scope statement: explains why something matters or what a paper covers
+   Example: "Evaluating LLMs on complex tasks has become an active research direction [12]."
+
+4. Indirect attribution: the cited paper is not the primary source of the claimed result
+   Example: "As noted by recent surveys [5], performance has improved significantly."
+
+5. Unresolvable reference: the subject of the claim cannot be determined from the 3-sentence window
+   Example: "Its proficiency still requires improvement [6]." (when "its" cannot be resolved)
+
+========================
+OUTPUT FORMAT
+========================
+
+Return a JSON object in the following format:
+
 ```json
 {{
   "is_verifiable_performance_claim": true | false,
-  "reason": "short explanation"
+  "reason": "<one sentence explaining the decision>"
 }}
 ```
 
-Mark `true` only if all of the following hold:
-- the sentence has exactly one citation,
-- the cited work is the direct source of the sentence's meaning,
-- the sentence states a factual claim that could be checked from the cited paper.
+Do NOT return anything outside the JSON object.
 
-Mark `false` for background definitions, loose motivation, author opinions, or cases where the citation is just an example.
-"""
+========================
+EXAMPLES
+========================
 
+### Example 1
 
-WEBSEARCH_FILTER_PROMPT = """You are filtering academic web search results for a cited paper lookup.
+Context Window:
+\"\"\"ChatGPT exhibits a strong capability for arithmetic reasoning by outperforming GPT-3.5 in the majority of tasks [159].
+However, its proficiency in mathematical reasoning still requires improvement [6].
+On symbolic reasoning tasks, ChatGPT is mostly worse than GPT-3.5 [6].\"\"\"
 
-Target paper title:
-{title}
+Target Sentence:
+\"\"\"However, its proficiency in mathematical reasoning still requires improvement [6].\"\"\"
 
-Candidates:
-{candidates}
+Citation marker: 6
 
-Return a JSON object only:
+Output:
 ```json
 {{
-  "matched_indices": [1, 3],
-  "reason": "brief explanation"
+  "is_verifiable_performance_claim": false,
+  "reason": "The subject 'its' refers to ChatGPT based on context, but 'requires improvement' is the author's interpretive judgment rather than a specific measurable result reported in the cited paper."
 }}
 ```
 
-Rules:
-- keep only candidates that are very likely to refer to the same paper,
-- prefer publisher, DOI, arXiv, OpenReview, ACL Anthology, Semantic Scholar, DBLP, or author pages,
-- it is acceptable to return an empty list if the evidence is weak.
-"""
+### Example 2
 
+Context Window:
+\"\"\"We evaluate our model on the SQuAD 2.0 reading comprehension benchmark.
+Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].
+This represents a significant improvement in extractive question answering performance.\"\"\"
 
-ARGUMENT_EXTRACTION_COMMON_RULES = """
-General rules:
-- Extract only what is explicitly stated in the source text.
-- Failure is acceptable. If the paper does not state the target item clearly, return `null`.
-- Do not infer unstated claims.
-- Evidence must be copied verbatim from the source text.
-- Leave `few_shot_examples` empty if no examples are provided.
-"""
+Target Sentence:
+\"\"\"Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].\"\"\"
 
+Citation marker: 43
 
-CORE_ARGUMENT_PROMPT = """You are extracting the author's core argument from a survey paper.
-
-Source text:
-{text}
-
-Few-shot examples:
-{few_shot_examples}
-
-""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
-
-Return a JSON object only:
+Output:
 ```json
 {{
-  "item": {{
-    "statement": "one-sentence core viewpoint",
-    "evidence": ["verbatim quote 1", "verbatim quote 2"]
-  }} | null
+  "is_verifiable_performance_claim": true,
+  "reason": "The sentence makes a specific quantitative comparison against a result (85.1 F1) attributed to the cited reference, which can be verified by reading that paper."
 }}
 ```
 
-The statement should capture the central viewpoint or thesis of the survey, not just its topic.
-"""
+### Example 3
 
+Context Window:
+\"\"\"Sentiment analysis is a task that analyzes text to determine emotional inclination.
+It is typically a binary or triple classification problem.
+Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
 
-MAIN_CONTRIBUTION_PROMPT = """You are extracting the main claimed contributions of a survey paper.
+Target Sentence:
+\"\"\"Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
 
-Source text:
-{text}
+Citation marker: 114
 
-Few-shot examples:
-{few_shot_examples}
-
-""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
-
-Return a JSON object only:
+Output:
 ```json
 {{
-  "items": [
-    {{
-      "statement": "contribution statement",
-      "evidence": ["verbatim quote 1"]
+  "is_verifiable_performance_claim": false,
+  "reason": "The sentence describes the general research landscape rather than asserting a specific experimental result or performance measurement attributable to the cited paper."
+}}
+```
+'''
+
+CLAIM_SCHEMA = {
+    "claims": {"type": "array", "items": {
+        "type": "object", 
+        "required": ["claim", "claim_type", "citation_markers"],
+        "properties": {
+            "claim": {"type": "string", "minLength": 1},
+            "claim_type": {"type": "string", "enum": ["background", "action", "result"]},
+            "citation_markers": {"type": "array", "items": {"type": "string"}}
+        }
     }}
-  ]
-}}
-```
+}
 
-Return an empty list if no explicit contribution claims are stated.
-Prefer 1 to 3 major contributions, not minor details.
-"""
-
-
-RESEARCH_GAP_PROMPT = """You are extracting research gaps and future directions from a survey paper.
-
-Source text:
-{text}
-
-Few-shot examples:
-{few_shot_examples}
-
-""" + ARGUMENT_EXTRACTION_COMMON_RULES + """
-
-Return a JSON object only:
-```json
-{{
-  "research_gaps": [
-    {{
-      "statement": "research gap",
-      "evidence": ["verbatim quote 1"]
-    }}
-  ],
-  "future_directions": [
-    {{
-      "statement": "future direction",
-      "evidence": ["verbatim quote 1"]
-    }}
-  ]
-}}
-```
-
-Either list may be empty.
-"""
+CLAIMS_SCHEMA = {
+    "type": "object", 
+    "required": ["claims"],
+    "properties": CLAIM_SCHEMA
+}

@@ -1,25 +1,57 @@
 from __future__ import annotations
 
+import asyncio
+import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-import numpy as np
+from bertopic import BERTopic
+from hdbscan import HDBSCAN
+from sklearn.feature_extraction.text import CountVectorizer
+from umap import UMAP
 
+from .llmclient import AsyncChat
+from .prompts import TOPIC_LABEL_FROM_CLUSTER_PROMPT
 from .sbert_client import SentenceTransformerClient
 from .tool_config import ToolConfig
-from .utils import cosine_similarity_matrix, normalize_text
+from .utils import cosine_similarity_matrix, extract_json, normalize_text
 
-try:
-    from bertopic import BERTopic
-    from hdbscan import HDBSCAN
-    from sklearn.feature_extraction.text import CountVectorizer
-    from umap import UMAP
-except Exception:
-    BERTopic = None
-    HDBSCAN = None
-    CountVectorizer = None
-    UMAP = None
+
+GENERIC_SECTION_KEYWORDS = [
+    "introduction",
+    "background",
+    "method",
+    "methods",
+    "methodology",
+    "experiment",
+    "experiments",
+    "evaluation",
+    "result",
+    "results",
+    "discussion",
+    "conclusion",
+    "conclusions",
+    "challenge",
+    "challenges",
+    "outlook",
+    "prospect",
+    "prospects",
+    "frontier",
+    "frontiers",
+    "unsolved",
+    "future work",
+    "future works",
+    "future direction",
+    "future directions",
+    "limitation",
+    "limitations",
+    "open problem",
+    "open problems",
+    "open question",
+    "open questions",
+]
 
 
 @dataclass
@@ -31,24 +63,62 @@ class TopicRecord:
     metadata: Dict[str, Any]
 
 
+class TopicLabelLLMClient(AsyncChat):
+    PROMPT = TOPIC_LABEL_FROM_CLUSTER_PROMPT
+
+    def _availability(self, response, context):
+        data = extract_json(response)
+        topic_name = (data.get("topic_name") or "").strip()
+        if not topic_name:
+            topic_name = context["fallback"]
+        return {"topic_name": topic_name, "reason": data.get("reason", "")}
+
+    def _organize_inputs(self, inputs):
+        prompt = self.PROMPT.format(
+            query=inputs["query"],
+            keywords=", ".join(inputs["keywords"]),
+            titles="\n".join(f"- {title}" for title in inputs["titles"]),
+        )
+        return prompt, {"fallback": inputs["fallback"]}
+
+
 class GoldenTopicGenerator:
+    """Build auditable survey topics from anchor-survey headings and oracle-paper clusters."""
+
     def __init__(self, config: ToolConfig):
+        """Initialize topic generation utilities and thresholds."""
         self.sbert = SentenceTransformerClient(config.sbert_server_url)
+        self.topic_label_llm = TopicLabelLLMClient(config.llm_server_info, config.sampling_params)
         self.anchor_merge_threshold = 0.85
         self.base_overlap_threshold = 0.5
         self.bertopic_min_topic_size = 5
+        self.bertopic_max_topic_size = 10
+        self.library_keep_ratio = 0.3
 
-    def _topic_label(self, topic: Any) -> str:
-        if isinstance(topic, dict):
-            return topic.get("topic_name") or topic.get("label") or topic.get("topic") or ""
-        return str(topic or "")
+    def _normalize_title_for_keyword_match(self, title: str) -> str:
+        """Normalize a heading for keyword-based generic-title filtering."""
+        lowered = (title or "").strip().lower()
+        lowered = re.sub(r"^[0-9.ivx]+\s*[.)-]?\s*", "", lowered)
+        lowered = lowered.replace("&", " and ").replace("/", " ").replace("-", " ")
+        return " ".join(lowered.split())
+
+    def _is_generic_anchor_title(self, title_path: str) -> bool:
+        """Return whether the current heading is a generic survey-structure title."""
+        leaf_title = (title_path or "").split(">")[-1].strip()
+        normalized_leaf = self._normalize_title_for_keyword_match(leaf_title)
+        if not normalized_leaf:
+            return True
+        return any(keyword in normalized_leaf for keyword in GENERIC_SECTION_KEYWORDS)
 
     def _flatten_anchor_titles(self, anchor_surveys: Dict[str, Any]) -> List[Dict[str, Any]]:
-        # 阶段一的输入整理，把每篇 anchor survey 的层级标题全部展平，并保留来源信息。
+        """Flatten anchor-survey title paths while excluding generic section headings."""
         records = []
         seen = set()
         for survey_title, survey_info in anchor_surveys.items():
+            paper_title = survey_info.get("paper", {}).get("title", survey_title)
             for title_path in survey_info.get("titles", []):
+                if self._is_generic_anchor_title(title_path):
+                    continue
                 normalized = normalize_text(title_path)
                 if not normalized or normalized in seen:
                     continue
@@ -57,13 +127,13 @@ class GoldenTopicGenerator:
                     {
                         "title_path": title_path,
                         "survey_title": survey_title,
-                        "paper_title": survey_info.get("paper", {}).get("title", survey_title),
+                        "paper_title": paper_title,
                     }
                 )
         return records
 
     def _merge_similar_anchor_titles(self, title_records: List[Dict[str, Any]]) -> List[TopicRecord]:
-        # 阶段一的核心步骤，用 SentenceBERT 合并语义相近的 section 标题，保证结果可审计。
+        """Merge semantically similar anchor titles into auditable base topics."""
         if not title_records:
             return []
 
@@ -72,25 +142,26 @@ class GoldenTopicGenerator:
         similarity = cosine_similarity_matrix(embeddings, embeddings)
         parent = list(range(len(title_records)))
 
-        def _find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
+        def _find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
 
-        def _union(x: int, y: int):
-            root_x, root_y = _find(x), _find(y)
-            if root_x != root_y:
-                parent[root_y] = root_x
+        def _union(left: int, right: int):
+            left_root = _find(left)
+            right_root = _find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
 
-        for i in range(len(title_records)):
-            for j in range(i + 1, len(title_records)):
-                if float(similarity[i, j]) >= self.anchor_merge_threshold:
-                    _union(i, j)
+        for left in range(len(title_records)):
+            for right in range(left + 1, len(title_records)):
+                if float(similarity[left, right]) >= self.anchor_merge_threshold:
+                    _union(left, right)
 
         groups = defaultdict(list)
-        for idx, record in enumerate(title_records):
-            groups[_find(idx)].append(record)
+        for index, record in enumerate(title_records):
+            groups[_find(index)].append(record)
 
         topics = []
         for group_records in groups.values():
@@ -98,53 +169,91 @@ class GoldenTopicGenerator:
                 {record["title_path"] for record in group_records},
                 key=lambda value: (value.count(">"), len(value), value.lower()),
             )
-            topic_name = sorted_titles[0]
             representative_papers = sorted({record["paper_title"] for record in group_records})
-            evidence_titles = sorted_titles
             topics.append(
                 TopicRecord(
-                    topic_name=topic_name,
+                    topic_name=sorted_titles[0],
                     source="anchor-derived",
                     representative_papers=representative_papers,
-                    evidence_titles=evidence_titles,
+                    evidence_titles=sorted_titles,
                     metadata={
                         "anchor_surveys": sorted({record["survey_title"] for record in group_records}),
                         "merge_size": len(group_records),
                     },
                 )
             )
-        topics.sort(key=lambda item: (len(item.evidence_titles), len(item.representative_papers), item.topic_name), reverse=True)
+        topics.sort(
+            key=lambda item: (len(item.evidence_titles), len(item.representative_papers), item.topic_name),
+            reverse=True,
+        )
         return topics
 
+    def _filter_library_by_query_similarity(self, query: str, library: Dict[str, Dict[str, Any]]):
+        """Keep the most query-relevant library papers and log all similarity scores."""
+        if not library:
+            return {}, []
+
+        paper_items = list(library.items())
+        documents = []
+        for _, paper in paper_items:
+            title = (paper.get("title") or "").strip()
+            abstract = (paper.get("abstract") or "").strip()
+            documents.append(f"{title}. {abstract}".strip())
+
+        embeddings = self.sbert.embed([query, *documents])
+        scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0].tolist()
+
+        scored_papers = []
+        for (paper_id, paper), score in zip(paper_items, scores):
+            paper["query_similarity"] = float(score)
+            scored_papers.append((paper_id, paper, float(score)))
+
+        scored_papers.sort(key=lambda item: item[2], reverse=True)
+        keep_num = max(1, math.ceil(len(scored_papers) * self.library_keep_ratio))
+        kept = {paper_id: paper for paper_id, paper, _ in scored_papers[:keep_num]}
+
+        print("GoldenTopicGenerator::Library similarity scores")
+        for _, paper, score in scored_papers:
+            print(f"{score:.4f}\t{paper.get('title', '')}")
+        print(f"GoldenTopicGenerator::Keep {keep_num}/{len(scored_papers)} papers for clustering")
+
+        metadata = [
+            {
+                "paper_id": paper_id,
+                "title": paper.get("title", ""),
+                "query_similarity": score,
+                "kept_for_topic_modeling": paper_id in kept,
+            }
+            for paper_id, paper, score in scored_papers
+        ]
+        return kept, metadata
+
     def _build_seed_topic_list(self, base_topics: List[TopicRecord]) -> List[List[str]]:
+        """Convert base topics into BERTopic seed tokens for weak-anchor mode."""
         seed_topic_list = []
         for topic in base_topics:
-            tokens = [token for token in topic.topic_name.replace(">", " ").split() if token]
+            tokens = [
+                token
+                for token in topic.topic_name.replace(">", " ").replace("/", " ").split()
+                if token
+            ]
             if tokens:
                 seed_topic_list.append(tokens[:8])
         return seed_topic_list
 
-    def _align_cluster_label(self, cluster_label: str, base_topics: List[TopicRecord]) -> tuple[str, str]:
-        # 在 anchor survey 数量不足时，用 base topics 对聚类结果做标签校正。
-        if not base_topics:
-            return cluster_label, "oracle-derived"
-        texts = [cluster_label, *[topic.topic_name for topic in base_topics]]
-        embeddings = self.sbert.embed(texts)
-        scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0]
-        best_idx = int(scores.argmax())
-        best_score = float(scores[best_idx])
-        if best_score >= self.base_overlap_threshold:
-            return base_topics[best_idx].topic_name, "oracle-derived(seed-aligned)"
-        return cluster_label, "oracle-derived"
-
     def _run_bertopic(self, documents: List[str], seed_topic_list: List[List[str]] | None):
-        # 阶段二的主流程，先降维，再用 HDBSCAN 聚类，最后用 BERTopic 产出可追溯主题。
-        if not documents or BERTopic is None or UMAP is None or HDBSCAN is None or CountVectorizer is None:
+        """Run BERTopic and keep each cluster as a keyword list before LLM naming."""
+        if not documents:
             return [], "bertopic_unavailable"
 
         embeddings = self.sbert.embed(documents)
         umap_model = UMAP(n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=42)
-        hdbscan_model = HDBSCAN(min_cluster_size=self.bertopic_min_topic_size, metric="euclidean", prediction_data=True)
+        hdbscan_model = HDBSCAN(
+            min_cluster_size=self.bertopic_min_topic_size,
+            max_cluster_size=self.bertopic_max_topic_size,
+            metric="euclidean",
+            prediction_data=True,
+        )
         vectorizer_model = CountVectorizer(stop_words="english", ngram_range=(1, 2))
         topic_model = BERTopic(
             embedding_model=None,
@@ -156,6 +265,7 @@ class GoldenTopicGenerator:
             verbose=False,
         )
         topic_ids, _ = topic_model.fit_transform(documents, embeddings=embeddings)
+
         topic_groups = defaultdict(list)
         for index, topic_id in enumerate(topic_ids):
             if topic_id == -1:
@@ -164,98 +274,101 @@ class GoldenTopicGenerator:
 
         clustered_topics = []
         for topic_id, indices in topic_groups.items():
-            keywords = topic_model.get_topic(topic_id) or []
-            if not keywords:
+            keyword_weights = topic_model.get_topic(topic_id) or []
+            if not keyword_weights:
                 continue
-            label = ", ".join(word for word, _ in keywords[:4])
             clustered_topics.append(
                 {
                     "cluster_id": topic_id,
-                    "label": label,
-                    "keywords": [word for word, _ in keywords[:8]],
+                    "keywords": [word for word, _ in keyword_weights[:8]],
                     "indices": indices,
                 }
             )
         return clustered_topics, "ok"
 
-    def _build_supplementary_topics(
-        self,
-        library: Dict[str, Dict[str, Any]],
-        base_topics: List[TopicRecord],
-        anchor_surveys_count: int,
-    ) -> tuple[List[TopicRecord], Dict[str, Any]]:
-        # 阶段二输入使用 QueryExpand 的 200 篇 library papers，标题+摘要都作为可审计材料。
-        papers = list(library.values())
-        documents = []
-        paper_titles = []
-        for paper in papers:
-            title = paper.get("title", "").strip()
-            abstract = (paper.get("abstract") or "").strip()
-            text = f"{title}. {abstract}".strip()
-            if not text:
-                continue
-            documents.append(text)
-            paper_titles.append(title or paper.get("id", ""))
+    async def _name_cluster_topics(self, query: str, clustered_topics: List[Dict[str, Any]], paper_titles: List[str]):
+        """Name each BERTopic cluster asynchronously with one LLM call per cluster."""
 
-        seed_topic_list = self._build_seed_topic_list(base_topics) if anchor_surveys_count in {1, 2} else None
-        clustered_topics, status = self._run_bertopic(documents, seed_topic_list)
-        if status != "ok":
-            return [], {"status": status, "used_seed_topics": bool(seed_topic_list)}
-
-        base_topic_names = [topic.topic_name for topic in base_topics]
-        supplementary_topics = []
-        used_base_topic_names = set()
-
-        for cluster in clustered_topics:
-            cluster_label = cluster["label"]
-            source = "oracle-derived"
-
-            # anchor surveys 足够时，base topic 为主，过滤掉已经被 anchor surveys 覆盖的聚类。
-            if anchor_surveys_count >= 3 and base_topic_names:
-                texts = [cluster_label, *base_topic_names]
-                embeddings = self.sbert.embed(texts)
-                scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0]
-                if float(scores.max()) > self.base_overlap_threshold:
-                    continue
-
-            # anchor surveys 较少时，BERTopic 结果为主，但允许用 base topics 修正标签。
-            if anchor_surveys_count in {1, 2}:
-                aligned_label, source = self._align_cluster_label(cluster_label, base_topics)
-                cluster_label = aligned_label
-                if source == "oracle-derived(seed-aligned)":
-                    used_base_topic_names.add(cluster_label)
-
-            representative_titles = [paper_titles[idx] for idx in cluster["indices"][:5] if idx < len(paper_titles)]
-            supplementary_topics.append(
-                TopicRecord(
-                    topic_name=cluster_label,
-                    source=source,
-                    representative_papers=representative_titles,
-                    evidence_titles=cluster["keywords"],
-                    metadata={
-                        "cluster_id": cluster["cluster_id"],
-                        "cluster_size": len(cluster["indices"]),
+        async def _single_cluster(cluster: Dict[str, Any]):
+            representative_titles = [
+                paper_titles[index]
+                for index in cluster["indices"][:8]
+                if index < len(paper_titles)
+            ]
+            fallback = ", ".join(cluster["keywords"][:3]) if cluster["keywords"] else f"cluster_{cluster['cluster_id']}"
+            try:
+                label_info = await self.topic_label_llm.call(
+                    inputs={
+                        "query": query,
                         "keywords": cluster["keywords"],
-                    },
+                        "titles": representative_titles,
+                        "fallback": fallback,
+                    }
                 )
+            except Exception as exc:
+                print(f"TopicLabelLLM {cluster['cluster_id']} {exc}")
+                label_info = {"topic_name": fallback, "reason": "fallback"}
+            return cluster, representative_titles, label_info
+
+        tasks = [asyncio.create_task(_single_cluster(cluster)) for cluster in clustered_topics]
+        named_clusters = []
+        for task in asyncio.as_completed(tasks):
+            cluster, representative_titles, label_info = await task
+            named_clusters.append(
+                {
+                    **cluster,
+                    "topic_name": label_info["topic_name"],
+                    "reason": label_info.get("reason", ""),
+                    "representative_titles": representative_titles,
+                }
             )
+        named_clusters.sort(key=lambda item: item["cluster_id"])
+        return named_clusters
 
-        if anchor_surveys_count in {1, 2}:
-            for topic in base_topics:
-                if topic.topic_name not in used_base_topic_names:
-                    supplementary_topics.append(
-                        TopicRecord(
-                            topic_name=topic.topic_name,
-                            source="anchor-derived(soft-seed)",
-                            representative_papers=topic.representative_papers,
-                            evidence_titles=topic.evidence_titles,
-                            metadata=topic.metadata | {"note": "anchor survey 数量不足时作为软约束保留"},
-                        )
-                    )
+    def _similarity_to_any(self, topic_name: str, existing_names: List[str]) -> float:
+        """Compute the maximum SBERT similarity between one topic and existing topics."""
+        if not existing_names:
+            return 0.0
+        texts = [topic_name, *existing_names]
+        embeddings = self.sbert.embed(texts)
+        scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0]
+        return float(scores.max())
 
-        return supplementary_topics, {"status": "ok", "used_seed_topics": bool(seed_topic_list)}
+    def _collect_supplementary_topics(self, base_topics: List[TopicRecord], cluster_topics: List[TopicRecord]) -> List[TopicRecord]:
+        """Collect non-overlapping cluster topics as supplementary topics without gap filling."""
+        base_names = [topic.topic_name for topic in base_topics]
+        supplementary_topics = []
+        for topic in cluster_topics:
+            if self._similarity_to_any(topic.topic_name, base_names) < self.base_overlap_threshold:
+                supplementary_topics.append(topic)
+        return supplementary_topics
+
+    def _gap_fill_topics(self, base_topics: List[TopicRecord], cluster_topics: List[TopicRecord]) -> List[TopicRecord]:
+        """Add dissimilar cluster topics into base topics only in the 1-2 anchor-survey case."""
+        accepted = []
+        current_names = [topic.topic_name for topic in base_topics]
+        remaining = sorted(
+            cluster_topics,
+            key=lambda item: item.metadata.get("cluster_size", 0),
+            reverse=True,
+        )
+
+        changed = True
+        while changed:
+            changed = False
+            next_round = []
+            for topic in remaining:
+                if self._similarity_to_any(topic.topic_name, current_names) < self.base_overlap_threshold:
+                    accepted.append(topic)
+                    current_names.append(topic.topic_name)
+                    changed = True
+                else:
+                    next_round.append(topic)
+            remaining = next_round
+        return accepted
 
     def _serialize_topics(self, topics: List[TopicRecord]) -> List[Dict[str, Any]]:
+        """Convert topic records into plain dictionaries for downstream modules."""
         return [
             {
                 "topic_name": topic.topic_name,
@@ -267,44 +380,74 @@ class GoldenTopicGenerator:
             for topic in topics
         ]
 
-    async def __call__(self, anchor_data: Dict[str, Any], library: Dict[str, Dict[str, Any]]):
-        # 阶段一，从 anchor surveys 的层级标题直接抽取 base topics。
-        anchor_surveys = anchor_data.get("downloaded", {})
+    async def __call__(self, query: str, anchor_surveys: Dict[str, Any], library: Dict[str, Dict[str, Any]]):
+        """Build golden topics from anchor-survey headings and BERTopic-derived clusters."""
+        anchor_surveys_count = len(anchor_surveys)
+
         anchor_title_records = self._flatten_anchor_titles(anchor_surveys)
         base_topics = self._merge_similar_anchor_titles(anchor_title_records)
 
-        # 阶段二，用 BERTopic 从 library papers 中寻找补充 topics。
-        anchor_surveys_count = len(anchor_surveys)
-        supplementary_topics, supplementary_meta = self._build_supplementary_topics(library, base_topics, anchor_surveys_count)
+        filtered_library, library_similarity = self._filter_library_by_query_similarity(query, library)
+        filtered_papers = list(filtered_library.values())
+        documents = []
+        paper_titles = []
+        for paper in filtered_papers:
+            title = (paper.get("title") or "").strip()
+            if not title:
+                continue
+            abstract = (paper.get("abstract") or "").strip()
+            documents.append(f"{title}. {abstract}".strip())
+            paper_titles.append(title)
 
-        # 根据 anchor survey 数量决定最终 topics 的组织方式和可信度说明。
+        seed_topic_list = self._build_seed_topic_list(base_topics) if anchor_surveys_count in {1, 2} else None
+        clustered_topics, bertopic_status = self._run_bertopic(documents, seed_topic_list)
+        named_clusters = await self._name_cluster_topics(query, clustered_topics, paper_titles) if bertopic_status == "ok" else []
+
+        raw_cluster_topics = [
+            TopicRecord(
+                topic_name=cluster["topic_name"],
+                source="oracle-derived",
+                representative_papers=cluster["representative_titles"][:5],
+                evidence_titles=cluster["keywords"],
+                metadata={
+                    "cluster_id": cluster["cluster_id"],
+                    "cluster_size": len(cluster["indices"]),
+                    "keywords": cluster["keywords"],
+                    "llm_reason": cluster["reason"],
+                },
+            )
+            for cluster in named_clusters
+        ]
+
+        supplementary_topics = []
         if anchor_surveys_count >= 3:
-            mode = "anchor_consensus_primary"
-            confidence = "high"
+            supplementary_topics = self._collect_supplementary_topics(base_topics, raw_cluster_topics)
             final_topics = [*base_topics, *supplementary_topics]
-            note = "base topics 来自主流 anchor surveys，共识性较强；supplementary topics 仅作为补充。"
+            confidence = "high"
         elif anchor_surveys_count in {1, 2}:
-            mode = "weak_anchor_guided"
+            supplementary_topics = self._gap_fill_topics(base_topics, raw_cluster_topics)
+            final_topics = [*base_topics, *supplementary_topics]
             confidence = "medium"
-            final_topics = supplementary_topics or base_topics
-            note = "anchor surveys 数量不足，BERTopic 结果为主，base topics 仅用于软约束和标签校正。"
         else:
-            mode = "cluster_only"
-            confidence = "low"
+            supplementary_topics = raw_cluster_topics
             final_topics = supplementary_topics
-            note = "未找到 anchor surveys，topic list 完全来自文献聚类，topic coverage 结果应视为低可信度。"
+            confidence = "low"
 
         return {
             "golden_topics": self._serialize_topics(final_topics),
             "base_topics": self._serialize_topics(base_topics),
             "supplementary_topics": self._serialize_topics(supplementary_topics),
             "metadata": {
-                "mode": mode,
                 "confidence": confidence,
-                "note": note,
                 "anchor_surveys_count": anchor_surveys_count,
                 "base_topic_count": len(base_topics),
                 "supplementary_topic_count": len(supplementary_topics),
-                "bertopic": supplementary_meta,
+                "library_keep_ratio": self.library_keep_ratio,
+                "library_similarity": library_similarity,
+                "bertopic": {
+                    "status": bertopic_status,
+                    "cluster_count": len(clustered_topics),
+                    "used_seed_topics": bool(seed_topic_list),
+                },
             },
         }

@@ -27,7 +27,7 @@ class SessionManager:
             connector = aiohttp.TCPConnector(limit=200, limit_per_host=100, ttl_dns_cache=300)
             cls._global_session = aiohttp.ClientSession(
                 connector=connector,
-                timeout=aiohttp.ClientTimeout(total=60)
+                timeout=aiohttp.ClientTimeout(total=600)
             )
     
     @classmethod

@@ -11,7 +11,7 @@ _EXPORTS = {
     "DynamicOracleGenerator": ".dynamic_oracle_generator",
     "FactualCorrectnessCritic": ".fact_check",
     "GoldenTopicGenerator": ".golden_topics",
-    "MinimalCompletionCheck": ".minimum_completion",
+    "minimum_completion": ".minimum_completion",
     "QualityCritic": ".programmatic_quality",
     "QueryExpand": ".query_expand",
     "MissingPaperCheck": ".source_critic",

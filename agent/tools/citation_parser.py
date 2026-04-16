@@ -1,5 +1,6 @@
 import re
 import json
+import tqdm
 import asyncio
 from typing import Dict, Any
 
@@ -104,7 +105,7 @@ class CitationParser:
             for citation_key, citation_info in citations.items()
         ]
         paper_content_map = {}
-        for task in asyncio.as_completed(tasks):
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks)):
             try:
                 citation_key, info = await task
                 paper_content_map[citation_key] = info

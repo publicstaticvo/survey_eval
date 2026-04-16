@@ -1,6 +1,7 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 from .sbert_client import SentenceTransformerClient
+from .golden_topics import TopicRecord
 from .tool_config import ToolConfig
 from .utils import cosine_similarity_matrix
 
@@ -15,7 +16,7 @@ def get_titles_from_sections(content: dict):
     return titles
 
 
-def normalize_topic_records(golden_topics):
+def normalize_topic_records(golden_topics: List[TopicRecord]):
     topic_records = []
     for topic in golden_topics or []:
         if isinstance(topic, dict):
@@ -48,7 +49,7 @@ class TopicCoverageCritic:
         self.weak_threshold = config.topic_weak_sim_threshold
         self.threshold = config.topic_sim_threshold
 
-    async def __call__(self, golden_subtopics, review_paper) -> Dict[str, Dict[str, Any]]:
+    async def __call__(self, golden_subtopics: List[TopicRecord], review_paper: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         topic_records = normalize_topic_records(golden_subtopics)
         topic_names = [topic["topic_name"] for topic in topic_records]
         titles = get_titles_from_sections(review_paper)

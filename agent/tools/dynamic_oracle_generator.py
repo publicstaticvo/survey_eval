@@ -1,4 +1,5 @@
 import math
+import tqdm
 import logging
 import asyncio
 import lightgbm
@@ -52,34 +53,72 @@ class DynamicOracleGenerator:
                     fetched[paper["id"]] = paper
         return fetched
 
-    async def _expand_library(self, library: Dict[str, Any]):
-        expanded = dict(library)
-        reference_counter = {}
-        for paper in expanded.values():
-            for ref in paper.get("referenced_works", []):
-                reference_counter[ref] = reference_counter.get(ref, 0) + 1
-        candidate_ids = [paper_id for paper_id, _ in sorted(reference_counter.items(), key=lambda item: item[1], reverse=True) if paper_id not in expanded]
-        if candidate_ids:
-            expanded.update(await self._fetch_by_ids(candidate_ids[: max(200, self.num_oracle_papers)]))
+    async def _fetch_neighbors(self, paper_id: str):
+        neighbors = {}
+        filters = [
+            {"cites": paper_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
+            {"cited_by": paper_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
+        ]
+        for filter_kwargs in filters:
+            try:
+                results = await openalex_search_paper("works", filter=filter_kwargs, per_page=200)
+            except Exception:
+                continue
+            for paper in results.get("results", []):
+                if paper.get("id"):
+                    neighbors[paper["id"]] = paper
+        return neighbors, paper_id
 
-        if len(expanded) < self.num_oracle_papers:
-            seeds = sorted(expanded.values(), key=lambda paper: paper.get("relevance_score", 0), reverse=True)[:50]
-            seed_ids = [paper["id"] for paper in seeds]
-            for key in ("cites", "cited_by"):
-                try:
-                    results = await openalex_search_paper(
-                        "works",
-                        {key: "|".join(seed_ids), "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
-                        per_page=200,
-                    )
-                except Exception:
-                    results = {"results": []}
-                for paper in results.get("results", []):
-                    expanded.setdefault(paper["id"], paper)
-                    if len(expanded) >= self.num_oracle_papers:
-                        break
+    async def _expand_library(self, query: str, library: Dict[str, Any]):
+        expanded = {**library}
+        if len(expanded) >= self.num_oracle_papers:
+            print(f"{len(expanded)} oracle papers")
+            return expanded
+
+        neighbor_sources, neighbor_papers, co_neighbors, long_tail = {}, {}, {}, {}
+        tasks = [asyncio.create_task(self._fetch_neighbors(paper_id)) for paper_id in expanded]
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks)):
+            neighbors, paper_id = await task
+            for neighbor_id, paper in neighbors.items():
+                if neighbor_id in expanded: continue
+                neighbor_papers[neighbor_id] = paper
+                neighbor_sources.setdefault(neighbor_id, set()).add(paper_id)
+
+        for paper_id, paper in neighbor_papers.items():
+            sources = neighbor_sources.get(paper_id, set())
+            paper["neighbors_count"] = len(sources)
+            # paper["neighbor_seed_ids"] = sorted(sources)
+            if len(sources) >= 2: co_neighbors[paper_id] = paper
+            elif len(sources) == 1: long_tail[paper_id] = paper
+
+        ranked_co_neighbors = sorted(
+            co_neighbors.items(),
+            key=lambda item: (
+                item[1]["neighbors_count"] * 100 + math.log1p(max(0, self._citation_count_by_eval_date(item[1])))
+            ),
+            reverse=True,
+        )
+        for paper_id, paper in ranked_co_neighbors:
+            expanded[paper_id] = paper
+            if len(expanded) >= self.num_oracle_papers:
+                print(f"{len(expanded)} oracle papers")
+                return expanded
+
+        if long_tail and len(expanded) < self.num_oracle_papers:
+            similarity = self._score_similarity(query, long_tail)
+            ranked_long_tail = sorted(
+                long_tail.items(),
+                key=lambda item: (
+                    similarity.get(item[0], 0.0) * 10 + math.log1p(max(0, self._citation_count_by_eval_date(item[1])))
+                ),
+                reverse=True,
+            )
+            for paper_id, paper in ranked_long_tail:
+                paper["query_similarity"] = similarity.get(paper_id, 0.0)
+                expanded[paper_id] = paper
                 if len(expanded) >= self.num_oracle_papers:
                     break
+        print(f"{len(expanded)} oracle papers")
         return expanded
 
     def _score_similarity(self, query: str, papers: Dict[str, Any]):

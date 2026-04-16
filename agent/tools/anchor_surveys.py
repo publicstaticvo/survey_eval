@@ -102,7 +102,6 @@ class TopicAggregateLLMClient(AsyncChat):
             titles = "\n".join(f"- {title}" for title in v["titles"])
             high.append(f"Survey title: {k}\nSection titles:\n{titles}\n")
         prompt = self.PROMPT.format(query=inputs['query'], anchors='\n'.join(high), surveys="\n".join(f'- {x}' for x in other_papers))
-        # print(prompt)
         return prompt, {}
 
 
@@ -112,7 +111,6 @@ class AnchorSurveyFetch:
     def __init__(self, config: ToolConfig):
         self.eval_date = config.evaluation_date
         self.survey_download = SurveyDownload(config.grobid_url)
-        self.paper_select = AnchorPaperSelect(config.llm_server_info, config.sampling_params)
         self.survey_select = AnchorSurveySelect(config.llm_server_info, config.sampling_params)
 
     def _citation_count_by_eval_date(self, paper: dict):
@@ -133,20 +131,14 @@ class AnchorSurveyFetch:
         for paper in papers:
             try:
                 survey = await self.survey_download.download_single_paper(paper)
-            except Exception:
+            except Exception as e:
+                print(f"SurveyDownload {paper.get('title', '')} {e}")
                 survey = None
             if isinstance(survey, tuple):
                 titles, paper_skeleton = survey
                 if titles and paper_skeleton:
                     downloaded[paper["title"]] = {"titles": titles, "skeleton": paper_skeleton, "paper": paper}
         return downloaded
-
-    async def _anchor_papers(self, papers: dict, survey_title: str) -> list[dict]:
-        try:
-            selected = await self.paper_select.call(inputs={"query": survey_title, "papers": papers})
-        except Exception:
-            selected = list(papers.values())[:40]
-        return selected or list(papers.values())[:40]
 
     async def _get_paper_meta_by_id(self, papers: list[str], batch_size: int = 50):
         paper_meta = {}
@@ -155,40 +147,51 @@ class AnchorSurveyFetch:
             if not batch:
                 continue
             try:
-                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=batch_size)
-            except Exception:
+                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=min(batch_size, 200))
+            except Exception as e:
+                print(f"AnchorPaperMeta page={i} {e}")
                 continue
             for paper in results.get("results", []):
                 paper_meta[paper["id"]] = paper
         return paper_meta
 
-    async def _anchor_survey(self, survey_candidates: list[dict], survey_title: str):
-        real_surveys = [paper for paper in survey_candidates if self._is_survey(paper)]
+    async def __call__(self, survey_papers: list[dict], survey_title: str):
+        # 这里只处理参考综述候选，不再处理 library/domain papers。
+        real_surveys = [paper for paper in survey_papers if self._is_survey(paper)]
+        print(f"AnchorSurveyFetch: {len(real_surveys)} real surveys")
         if not real_surveys:
-            return {}, {}
+            return {"anchor_papers": {}, "anchor_surveys": {}}
+
         try:
             selected = await self.survey_select.call(inputs={"query": survey_title, "surveys": real_surveys})
-        except Exception:
-            selected = real_surveys[:5]
-        downloaded = await self._download_surveys(selected[:10])
+        except Exception as e:
+            print(f"AnchorSurveySelect {e}")
+            selected = []
+        print(f"AnchorSurveyFetch: {len(selected)} selected surveys")
+
+        # 最多保留 5 篇 anchor surveys，供后续 golden topics 使用。
+        downloaded = await self._download_surveys(selected[:5])
+        print(f"AnchorSurveyFetch: {len(downloaded)} downloaded surveys")
+
         selected_titles = set(downloaded)
         selected = [paper for paper in selected if paper["title"] in selected_titles]
+
+        # 基于 anchor surveys 的共引统计抽取 anchor papers。
         citation_counter = {}
         for paper in selected:
             for ref in paper.get("referenced_works", []):
                 citation_counter[ref] = citation_counter.get(ref, 0) + 1
+
         threshold = max(2, math.ceil(0.6 * max(1, len(selected))))
         anchor_ids = [paper_id for paper_id, count in citation_counter.items() if count >= threshold]
+        print(f"AnchorSurveyFetch: {len(anchor_ids)} anchor ids")
+
         anchor_meta = await self._get_paper_meta_by_id(anchor_ids)
         for paper_id, metadata in anchor_meta.items():
             metadata["survey_cited_by_count"] = citation_counter[paper_id]
-        return anchor_meta, downloaded
+        print(f"AnchorSurveyFetch: {len(anchor_meta)} anchor metas")
 
-    async def __call__(self, survey_papers: list[dict], library: dict, survey_title: str):
-        domain_papers = await self._anchor_papers(library, survey_title)
-        anchor_papers, anchor_surveys = await self._anchor_survey(survey_papers, survey_title)
         return {
-            "anchor_papers": anchor_papers,
-            "surveys": domain_papers,
-            "downloaded": anchor_surveys,
+            "anchor_papers": anchor_meta,
+            "anchor_surveys": downloaded,
         }

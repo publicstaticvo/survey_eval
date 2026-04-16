@@ -107,8 +107,8 @@ class SurveyEvaluationAgent:
             return result
 
         query_data = await self.query_expand(query)
-        anchor_data = await self.anchor_surveys(query_data["core"], query_data["library"], query)
-        golden_topic_task = asyncio.create_task(self.golden_topics(query, anchor_data, query_data["library"]))
+        anchor_data = await self.anchor_surveys(query_data["core"], query)
+        golden_topic_task = asyncio.create_task(self.golden_topics(query, anchor_data.get("anchor_surveys", {}), query_data["library"]))
         oracle_task = asyncio.create_task(self.dynamic_oracle(query, query_data["queries"], query_data["library"]))
 
         parse_task = asyncio.create_task(self.citation_parser(review_paper.get("citations", {})))

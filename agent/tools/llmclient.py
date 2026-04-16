@@ -29,16 +29,16 @@ class AsyncLLMClient(ABC):
         raise NotImplementedError
     
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(1),
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
-        retry=retry_if_exception(llm_should_retry) | retry_if_result(lambda x: not x)
+        retry=retry_if_exception(llm_should_retry)
     )
     async def _post(self, endpoint: str, payload: dict, context: dict):
         try:
             url = f"{self.llm.base_url.rstrip('/')}/v1/{endpoint}"
             headers = {"Authorization": f"Bearer {self.llm.api_key}"} | HEADERS
             async with RateLimit.AGENT_SEMAPHORE:
-                data = await async_request_template("post", url, headers, payload, self.timeout)            
+                data = await async_request_template("post", url, headers, payload, timeout=self.timeout)            
             if endpoint == "chat/completions":
                 data = data["choices"][0]["message"]["content"]
             return self._availability(data, context)

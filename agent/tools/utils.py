@@ -2,12 +2,11 @@ import json
 import random
 import re
 import time
-from typing import Any, Iterable, Iterator, List
-
 import Levenshtein
 import numpy as np
 import requests
 import unidecode
+from typing import Any, Iterable, Iterator, List, Dict
 
 
 def normalize_text(text: str) -> str:
@@ -155,6 +154,26 @@ def get_section_titles(content: dict) -> List[str]:
 
 def get_top_level_section_titles(content: dict) -> List[str]:
     return [section.get("title", "") for section in content.get("sections", []) if section.get("title")]
+
+
+def flatten_sections(paper: Dict[str, Any]) -> List[Dict[str, Any]]:
+    flattened = []
+
+    def _walk(section: Dict[str, Any], parent_titles: List[str]):
+        title = section.get("title", "").strip()
+        title_path = [*parent_titles, title] if title else list(parent_titles)
+        flattened.append(
+            {
+                "section_id": section.get("section_id"),
+                "title": title,
+                "title_path": " > ".join(x for x in title_path if x),
+                "depth": len(title_path),
+            }
+        )
+        for child in section.get("sections", []): _walk(child, title_path)
+
+    for section in paper.get("sections", []): _walk(section, [])
+    return flattened
 
 
 def get_first_section(content: dict) -> dict | None:
