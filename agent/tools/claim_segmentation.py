@@ -55,7 +55,7 @@ class ClaimSegmentation:
         normalized = []
         for citation in citations or []:
             if isinstance(citation, dict):
-                key = citation.get("key") or citation.get("name") or citation.get("title")
+                key = citation.get("key") or citation.get("ref_text")
             else:
                 key = citation
             if key:

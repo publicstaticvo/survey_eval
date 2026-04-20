@@ -161,8 +161,8 @@ class StructureCheck:
 
     async def _missing_topic_claim(self, topic: str, paper: Dict[str, Any]):
         text_blocks = []
-        if paper.get("abstract"):
-            text_blocks.append("\n\n".join(paragraph_to_text(p) for p in paper["abstract"]))
+        # if paper.get("abstract"):
+        #     text_blocks.append("\n\n".join(paragraph_to_text(p) for p in paper["abstract"]['paragraphs']))
         for section in [paper, *iter_sections(paper)]:
             section_text = "\n\n".join(paragraph_to_text(p) for p in section.get("paragraphs", []))
             if section_text:

@@ -92,7 +92,6 @@ class GoldenTopicGenerator:
         self.anchor_merge_threshold = 0.85
         self.base_overlap_threshold = 0.5
         self.bertopic_min_topic_size = 5
-        self.bertopic_max_topic_size = 10
         self.library_keep_ratio = 0.3
 
     def _normalize_title_for_keyword_match(self, title: str) -> str:
@@ -114,15 +113,27 @@ class GoldenTopicGenerator:
         """Flatten anchor-survey title paths while excluding generic section headings."""
         records = []
         seen = set()
+        raw_title_count = 0
+        generic_filtered = 0
+        duplicate_filtered = 0
+        kept_examples = []
+        filtered_examples = []
         for survey_title, survey_info in anchor_surveys.items():
             paper_title = survey_info.get("paper", {}).get("title", survey_title)
             for title_path in survey_info.get("titles", []):
+                raw_title_count += 1
                 if self._is_generic_anchor_title(title_path):
+                    generic_filtered += 1
+                    if len(filtered_examples) < 3:
+                        filtered_examples.append(title_path)
                     continue
                 normalized = normalize_text(title_path)
                 if not normalized or normalized in seen:
+                    duplicate_filtered += 1
                     continue
                 seen.add(normalized)
+                if len(kept_examples) < 3:
+                    kept_examples.append(title_path)
                 records.append(
                     {
                         "title_path": title_path,
@@ -130,6 +141,15 @@ class GoldenTopicGenerator:
                         "paper_title": paper_title,
                     }
                 )
+        print(
+            "GoldenTopicGenerator::Anchor titles "
+            f"raw={raw_title_count} kept={len(records)} "
+            f"generic_filtered={generic_filtered} duplicate_filtered={duplicate_filtered}"
+        )
+        if kept_examples:
+            print(f"GoldenTopicGenerator::Anchor kept examples: {kept_examples}")
+        elif filtered_examples:
+            print(f"GoldenTopicGenerator::Anchor filtered examples: {filtered_examples}")
         return records
 
     def _merge_similar_anchor_titles(self, title_records: List[Dict[str, Any]]) -> List[TopicRecord]:
@@ -212,10 +232,11 @@ class GoldenTopicGenerator:
         keep_num = max(1, math.ceil(len(scored_papers) * self.library_keep_ratio))
         kept = {paper_id: paper for paper_id, paper, _ in scored_papers[:keep_num]}
 
-        print("GoldenTopicGenerator::Library similarity scores")
-        for _, paper, score in scored_papers:
-            print(f"{score:.4f}\t{paper.get('title', '')}")
         print(f"GoldenTopicGenerator::Keep {keep_num}/{len(scored_papers)} papers for clustering")
+        print(
+            "GoldenTopicGenerator::Top kept papers: "
+            f"{[(paper.get('title', ''), round(score, 4)) for _, paper, score in scored_papers[:5]]}"
+        )
 
         metadata = [
             {
@@ -250,7 +271,6 @@ class GoldenTopicGenerator:
         umap_model = UMAP(n_neighbors=15, n_components=5, min_dist=0.0, metric="cosine", random_state=42)
         hdbscan_model = HDBSCAN(
             min_cluster_size=self.bertopic_min_topic_size,
-            max_cluster_size=self.bertopic_max_topic_size,
             metric="euclidean",
             prediction_data=True,
         )
@@ -265,6 +285,7 @@ class GoldenTopicGenerator:
             verbose=False,
         )
         topic_ids, _ = topic_model.fit_transform(documents, embeddings=embeddings)
+        noise_count = sum(1 for topic_id in topic_ids if topic_id == -1)
 
         topic_groups = defaultdict(list)
         for index, topic_id in enumerate(topic_ids):
@@ -284,6 +305,12 @@ class GoldenTopicGenerator:
                     "indices": indices,
                 }
             )
+        cluster_sizes = sorted((len(item["indices"]) for item in clustered_topics), reverse=True)
+        print(
+            "GoldenTopicGenerator::BERTopic "
+            f"documents={len(documents)} noise={noise_count} "
+            f"clusters={len(clustered_topics)} cluster_sizes={cluster_sizes}"
+        )
         return clustered_topics, "ok"
 
     async def _name_cluster_topics(self, query: str, clustered_topics: List[Dict[str, Any]], paper_titles: List[str]):
@@ -383,23 +410,32 @@ class GoldenTopicGenerator:
     async def __call__(self, query: str, anchor_surveys: Dict[str, Any], library: Dict[str, Dict[str, Any]]):
         """Build golden topics from anchor-survey headings and BERTopic-derived clusters."""
         anchor_surveys_count = len(anchor_surveys)
+        print(
+            "GoldenTopicGenerator::Input "
+            f"anchor_surveys={anchor_surveys_count} library={len(library)} "
+            f"keep_ratio={self.library_keep_ratio}"
+        )
+        if anchor_surveys_count:
+            print(f"GoldenTopicGenerator::Anchor survey titles: {list(anchor_surveys)[:3]}")
 
         anchor_title_records = self._flatten_anchor_titles(anchor_surveys)
         base_topics = self._merge_similar_anchor_titles(anchor_title_records)
+        print(f"GoldenTopicGenerator::Base topics count={len(base_topics)}")
 
         filtered_library, library_similarity = self._filter_library_by_query_similarity(query, library)
         filtered_papers = list(filtered_library.values())
-        documents = []
-        paper_titles = []
+        documents, paper_titles = [], []
         for paper in filtered_papers:
             title = (paper.get("title") or "").strip()
-            if not title:
-                continue
+            if not title: continue
             abstract = (paper.get("abstract") or "").strip()
             documents.append(f"{title}. {abstract}".strip())
             paper_titles.append(title)
+        print(f"GoldenTopicGenerator::Documents prepared={len(documents)}")
 
         seed_topic_list = self._build_seed_topic_list(base_topics) if anchor_surveys_count in {1, 2} else None
+        if seed_topic_list is not None:
+            print(f"GoldenTopicGenerator::Seed topics count={len(seed_topic_list)}")
         clustered_topics, bertopic_status = self._run_bertopic(documents, seed_topic_list)
         named_clusters = await self._name_cluster_topics(query, clustered_topics, paper_titles) if bertopic_status == "ok" else []
 
@@ -432,6 +468,11 @@ class GoldenTopicGenerator:
             supplementary_topics = raw_cluster_topics
             final_topics = supplementary_topics
             confidence = "low"
+        print(
+            "GoldenTopicGenerator::Output "
+            f"confidence={confidence} base={len(base_topics)} "
+            f"supplementary={len(supplementary_topics)} final={len(final_topics)}"
+        )
 
         return {
             "golden_topics": self._serialize_topics(final_topics),

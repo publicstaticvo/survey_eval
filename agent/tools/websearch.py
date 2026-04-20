@@ -87,7 +87,23 @@ class WebSearchFallback:
             "citations": {},
         }
 
+    def _normalize_arxiv_pdf_url(self, url: str) -> str:
+        parsed = urlparse(url or "")
+        host = parsed.netloc.lower()
+        if host not in {"arxiv.org", "www.arxiv.org"}:
+            return url
+        path = (parsed.path or "").strip()
+        for prefix in ("/abs/", "/html/", "/pdf/"):
+            if path.startswith(prefix):
+                paper_id = path[len(prefix):].strip("/")
+                if paper_id.endswith(".pdf"):
+                    paper_id = paper_id[:-4]
+                if paper_id:
+                    return f"https://arxiv.org/pdf/{paper_id}.pdf"
+        return url
+
     async def extract_content_from_url(self, url: str):
+        url = self._normalize_arxiv_pdf_url(url)
         async with RateLimit.WEBSEARCH_SEMAPHORE:
             session = SessionManager.get()
             async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as resp:

@@ -27,10 +27,9 @@ class SurveyDownload(PaperDownload):
         def _walk(section: dict, parent_titles: list[str]):
             title = (section.get("title") or "").strip()
             if title:
-                title_path = " > ".join([*parent_titles, title])
-                lowered = title_path.lower()
+                lowered = title.lower()
                 if self._check_title(lowered):
-                    titles.append(title_path)
+                    titles.append(title)
                 parent_titles = [*parent_titles, title]
             for child in section.get("sections", []):
                 _walk(child, parent_titles)
@@ -43,9 +42,9 @@ class SurveyDownload(PaperDownload):
         try:
             paper = self.paper_parser.parse(xml_content, mode="strict")
             paper_skeleton = paper.get_skeleton()
-            titles = set(self._flatten_title_paths(paper_skeleton))
+            titles = list(dict.fromkeys(self._flatten_title_paths(paper_skeleton)))
             print(f"This survey has {len(titles)} titles")
-            return list(titles), paper_skeleton
+            return titles, paper_skeleton
         except Exception as e:
             print(f"Fatal: no survey parser {e}")
             return [], None

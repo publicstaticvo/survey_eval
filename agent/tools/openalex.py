@@ -18,7 +18,7 @@ EMAIL_POOL = [
     "fqpcvtjj@hotmail.com",
     "ts.yu@siat.ac.cn",
     "yutianshu.yts@alibaba-inc.com",
-    "yts17@mails.tsinghua.edu.cn"
+    "yts17@mails.tsinghua.edu.cn",
     "yutianshu2025@ia.ac.cn",
     "yutianshu25@ucas.ac.cn",
     "dailyyulun@163.com",
@@ -106,12 +106,15 @@ async def openalex_search_paper(
         request_kwargs['per-page'] = per_page
     if select: request_kwargs['select'] = select
     # Go!
+    await RateLimit.wait_openalex_slot()
+    RateLimit.increment_openalex_count()
     async with RateLimit.OPENALEX_SEMAPHORE:
         results = await async_request_template("get", url, parameters=request_kwargs)
     
     if endpoint != "works": results = {"results": [results]}
     papers = []
     for x in results['results']:
+        if not x['title']: continue
         x['id'] = x['id'].replace(URL_DOMAIN, "")
         x['title'] = re.sub(r"\s+", " ", x['title'])
         if 'abstract_inverted_index' in x:

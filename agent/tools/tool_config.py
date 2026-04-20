@@ -66,6 +66,10 @@ class ToolConfig:
     # websearch
     websearch_url: str = "https://google.serper.dev/search"
     websearch_apikey: str = "62946589a85dc193e767cc5e430c6c2f20b0661c"
+    # openalex
+    openalex_rate_limit_enabled: bool = True
+    openalex_requests_per_second: float = 4.0
+    openalex_max_concurrency: int = 3
 
     @classmethod
     def from_yaml(cls, config_path):
@@ -106,4 +110,8 @@ class ToolConfig:
             redundancy_ngram=config['quality']['redundancy_ngram'],
             websearch_url=config['websearch']['url'],
             websearch_apikey=config['websearch']['api_key'],
+            openalex_rate_limit_enabled=config.get('openalex', {}).get('rate_limit_enabled', True),
+            openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 4.0),
+            openalex_max_concurrency=config.get('openalex', {}).get('max_concurrency', 3),
+            openalex_mailto=config.get('openalex', {}).get('mailto', "dailyyulun@gmail.com"),
         )
