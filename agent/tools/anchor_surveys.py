@@ -9,7 +9,7 @@ from .tool_config import ToolConfig
 from .llmclient import AsyncChat
 from .paper_download import PaperDownload
 from .utils import extract_json, extract_list
-from .openalex import openalex_search_paper, OPENALEX_SELECT, to_openalex
+from .openalex import OPENALEX_SELECT, get_openalex_client, to_openalex
 from .prompts import TOPIC_AGGREGATION_PROMPT, ANCHOR_SURVEY_SELECT, ANCHOR_PAPER_SELECT
 
 
@@ -109,8 +109,9 @@ class AnchorSurveyFetch:
 
     def __init__(self, config: ToolConfig):
         self.eval_date = config.evaluation_date
-        self.survey_download = SurveyDownload(config.grobid_url)
+        self.survey_download = SurveyDownload(config)
         self.survey_select = AnchorSurveySelect(config.llm_server_info, config.sampling_params)
+        self.openalex = get_openalex_client(config)
 
     def _citation_count_by_eval_date(self, paper: dict):
         eval_year = int(self.eval_date.year)
@@ -141,16 +142,17 @@ class AnchorSurveyFetch:
 
     async def _get_paper_meta_by_id(self, papers: list[str], batch_size: int = 50):
         paper_meta = {}
-        for i in range(0, len(papers), batch_size):
-            batch = papers[i : i + batch_size]
-            if not batch:
-                continue
+        async def _single(paper_id: str):
             try:
-                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=min(batch_size, 200))
+                return await self.openalex.get_entity(paper_id, entity_type="works")
             except Exception as e:
-                print(f"AnchorPaperMeta page={i} {e}")
-                continue
-            for paper in results.get("results", []):
+                print(f"AnchorPaperMeta {paper_id} {e}")
+                return None
+
+        tasks = [asyncio.create_task(_single(paper_id)) for paper_id in papers if paper_id]
+        for task in asyncio.as_completed(tasks):
+            paper = await task
+            if paper and paper.get("id"):
                 paper_meta[paper["id"]] = paper
         return paper_meta
 

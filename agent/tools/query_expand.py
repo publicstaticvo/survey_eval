@@ -6,7 +6,7 @@ from .utils import extract_json
 from .llmclient import AsyncChat
 from .tool_config import ToolConfig
 from .prompts import QUERY_EXPANSION_PROMPT, QUERY_SCHEMA, SURVEY_SPECIFIED_QUERY_EXPANSION
-from .openalex import to_openalex, OPENALEX_SELECT, openalex_search_paper
+from .openalex import OPENALEX_SELECT, get_openalex_client, to_openalex
 
 SURVEY_KEYWORDS = "survey|summary|review|overview|synthesis|taxonomy|study"
     
@@ -30,6 +30,7 @@ class QueryExpand:
         self.llm = QueryExpansionLLMClient(config.llm_server_info, config.sampling_params)
         self.survey_llm = SurveySpecifiedLLMClient(config.llm_server_info, config.sampling_params)
         self.eval_date = config.evaluation_date
+        self.openalex = get_openalex_client(config)
 
     async def _request_for_papers(self, query: str, uplimit: int, select=f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
         queries = to_openalex(query)
@@ -37,7 +38,7 @@ class QueryExpand:
         papers = []
         total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
+            results = await self.openalex.search_works("works", filter=search, per_page=min(200, uplimit), select=select, page=page)
             total = min(total, results.get("count", 0) or total)
             papers.extend(results.get("results", []))
             if len(papers) >= total:
@@ -54,7 +55,7 @@ class QueryExpand:
         papers = []
         total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
+            results = await self.openalex.search_works("works", filter=search, per_page=min(200, uplimit), select=select, page=page)
             total = min(total, results.get("count", 0) or total)
             papers.extend(results.get("results", []))
             if len(papers) >= total:

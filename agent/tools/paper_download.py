@@ -1,25 +1,27 @@
-import asyncio, aiohttp
-import random
+import asyncio
 import io
+import random
 from typing import Optional
-from tenacity import (
-    retry,
-    stop_after_attempt,           # 最大重试次数
-    wait_exponential,             # 指数退避
-    retry_if_exception,           # 遇到什么异常才重试
-    retry_if_result,              # 返回None的时候也要重试
-)
+
+import aiohttp
+from tenacity import retry, retry_if_exception, retry_if_result, stop_after_attempt, wait_exponential
+
 from .grobidpdf.paper_parser import PaperParser
+from .openalex import get_openalex_client
 from .request_utils import RateLimit, SessionManager
 
 parser = PaperParser()
 
 
 def grobid_should_retry(exception: Exception) -> bool:
-    if isinstance(exception, asyncio.TimeoutError): return True
-    if isinstance(exception, aiohttp.ClientError): return True
-    if isinstance(exception, aiohttp.ServerDisconnectedError): return True
-    if isinstance(exception, aiohttp.ClientResponseError) and exception.status in [429, 503]: return True
+    if isinstance(exception, asyncio.TimeoutError):
+        return True
+    if isinstance(exception, aiohttp.ClientError):
+        return True
+    if isinstance(exception, aiohttp.ServerDisconnectedError):
+        return True
+    if isinstance(exception, aiohttp.ClientResponseError) and exception.status in [429, 503]:
+        return True
     return False
 
 
@@ -27,37 +29,32 @@ def grobid_should_retry(exception: Exception) -> bool:
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
     retry=retry_if_exception(grobid_should_retry),
-    reraise=True
+    reraise=True,
 )
 async def parse_with_grobid(grobid_url, pdf_buffer: io.BytesIO) -> Optional[str]:
-    """通过 GROBID 解析 PDF（带重试）"""
+    """Use GROBID to parse a PDF buffer into XML."""
     url = f"{grobid_url}/api/processFulltextDocument"
     try:
-        # 添加随机延迟避免过载
         await asyncio.sleep(2 * random.random())
-        
-        # 重置 buffer 位置
         pdf_buffer.seek(0)
-        
-        # 构造 multipart/form-data
+
         data = aiohttp.FormData()
-        data.add_field('input', pdf_buffer.read(), filename='paper.pdf', content_type='application/pdf')
-        
+        data.add_field("input", pdf_buffer.read(), filename="paper.pdf", content_type="application/pdf")
+
         async with RateLimit.PARSE_SEMAPHORE:
             async with SessionManager.get().post(url, data=data, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 resp.raise_for_status()
                 return await resp.text()
-            
+
     except KeyboardInterrupt:
         raise
     except asyncio.TimeoutError:
         print("GROBID timeout, will retry")
-        raise  # 让 tenacity 处理重试
+        raise
     except aiohttp.ClientError as e:
         print(f"GROBID client error: {e}, will retry")
         raise
     except Exception as e:
-        # 其他错误不重试，直接返回 None
         print(f"GROBID unexpected error: {e}")
         return None
 
@@ -65,10 +62,10 @@ async def parse_with_grobid(grobid_url, pdf_buffer: io.BytesIO) -> Optional[str]
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_result(lambda x: x is None)
+    retry=retry_if_result(lambda x: x is None),
 )
 async def download_paper_to_memory(url: str, timeout: int = 600):
-    """下载 PDF 文件"""
+    """Download a PDF into memory."""
     try:
         async with RateLimit.DOWNLOAD_SEMAPHORE:
             async with SessionManager.get().get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
@@ -77,34 +74,37 @@ async def download_paper_to_memory(url: str, timeout: int = 600):
                 return io.BytesIO(content)
     except KeyboardInterrupt:
         raise
-    except Exception as e:
-        # print(f"Download failed {url}: {e}")
+    except Exception:
         return None
-    
+
 
 def yield_location(x):
     urls = set()
-    y = x["best_oa_location"]
-    if y and y['pdf_url']: 
-        urls.add(y['pdf_url'])
-        yield y['pdf_url']
-    for y in x['locations']:
-        if y['pdf_url'] and y['pdf_url'] not in urls: 
-            urls.add(y['pdf_url'])
-            yield y['pdf_url']
+    best = x.get("best_oa_location")
+    if best and best.get("pdf_url"):
+        urls.add(best["pdf_url"])
+        yield best["pdf_url"]
+    for item in x.get("locations", []):
+        if item.get("pdf_url") and item["pdf_url"] not in urls:
+            urls.add(item["pdf_url"])
+            yield item["pdf_url"]
 
 
-class PaperDownload:    
-
+class PaperDownload:
     def __init__(self, grobid_url):
         self.paper_parser = PaperParser()
-        self.grobid = grobid_url
+        if hasattr(grobid_url, "grobid_url"):
+            self.grobid = grobid_url.grobid_url
+            self.openalex = get_openalex_client(grobid_url)
+        else:
+            self.grobid = grobid_url
+            self.openalex = None
 
     def _post_hook(self, xml_content: str) -> dict:
         try:
             paper = self.paper_parser.parse(xml_content)
             if not paper:
-                print(f"No paper.")
+                print("No paper.")
                 return {}
             print(f"Parsed papers. It has {len(paper.children)} sections.")
         except Exception as e:
@@ -113,57 +113,64 @@ class PaperDownload:
         abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
         return {"full_content": paper.get_skeleton(), "abstract": abstract}
 
-    async def _try_one_url(self, url: str) -> Optional[str]:
-        """尝试从单个 URL 下载并解析论文"""
+    async def _try_one_url(self, url: str) -> dict:
+        """Try downloading and parsing a paper from one URL."""
         try:
-            # 步骤1: 下载 PDF
             pdf_buffer = await download_paper_to_memory(url)
             if not pdf_buffer:
                 print(f"{url} No pdf buffer")
-                return
+                return {"result": None, "download_error": True, "parse_error": False}
             print(f"Downloaded PDF from {url}")
-            
-            # 步骤2: 通过 GROBID 解析
+
             xml_content = await parse_with_grobid(self.grobid, pdf_buffer)
             if not xml_content:
                 print(f"{url} No xml content")
-                return
+                return {"result": None, "download_error": False, "parse_error": True}
             print(f"Parsed from {url}")
-            
-            return self._post_hook(xml_content)
-        
+            return {"result": self._post_hook(xml_content), "download_error": False, "parse_error": False}
+
         except KeyboardInterrupt:
             raise
-            
         except Exception as e:
             print(f"URL failed downloading from {url}: {e}")
-            return
-    
+            return {"result": None, "download_error": True, "parse_error": False}
 
-    async def download_single_paper(self, paper_meta: dict) -> Optional[str]:
-        """处理单篇论文：尝试所有 URL，返回第一个成功的"""
-        
-        # 为该论文的所有 URL 创建任务
+    async def download_single_paper(self, paper_meta: dict, openalex_id: str = "") -> Optional[dict]:
+        """Try all candidate URLs and return the first successfully parsed paper."""
         tasks = [asyncio.create_task(self._try_one_url(url)) for url in list(yield_location(paper_meta))]
-        
-        # 使用 as_completed 获取第一个成功的结果
+        saw_download_error = False
+        saw_parse_error = False
+
         try:
             for task in asyncio.as_completed(tasks):
                 try:
                     result = await task
-                    if result:
+                    if result.get("download_error"):
+                        saw_download_error = True
+                    if result.get("parse_error"):
+                        saw_parse_error = True
+                    if result.get("result"):
                         for other_task in tasks:
-                            if not other_task.done(): other_task.cancel()                                
-                        return result
+                            if not other_task.done():
+                                other_task.cancel()
+                        return result["result"]
                 except asyncio.CancelledError:
                     continue
                 except Exception as e:
                     print(f"URL failed at download_single_paper: {e}")
                     continue
         finally:
-            # 确保所有任务都被清理
             for task in tasks:
-                if not task.done(): task.cancel()
+                if not task.done():
+                    task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            
-        return  # 所有 URL 都失败
+
+        work_id = openalex_id or paper_meta.get("id", "")
+        if self.openalex is not None and work_id and saw_download_error and not saw_parse_error:
+            try:
+                xml_content = await self.openalex.download_work_content(work_id, download_type="grobid_xml")
+                return self._post_hook(xml_content)
+            except Exception as e:
+                print(f"OpenAlex content fallback failed for {work_id}: {e}")
+
+        return None

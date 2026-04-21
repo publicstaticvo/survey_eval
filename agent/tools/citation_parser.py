@@ -8,15 +8,16 @@ from .tool_config import ToolConfig
 from .websearch import WebSearchFallback
 from .paper_download import PaperDownload
 from .utils import valid_check, index_to_abstract
-from .openalex import openalex_search_paper, URL_DOMAIN, OPENALEX_SELECT
+from .openalex import OPENALEX_SELECT, get_openalex_client
 
 
 class CitationParser:
     SELECT = f"{OPENALEX_SELECT},best_oa_location,locations"
 
     def __init__(self, config: ToolConfig):
-        self.paper_downloader = PaperDownload(config.grobid_url)
+        self.paper_downloader = PaperDownload(config)
         self.websearch = WebSearchFallback(config)
+        self.openalex = get_openalex_client(config)
 
     def _empty_info(self, title: str) -> Dict[str, Any]:
         return {
@@ -55,15 +56,13 @@ class CitationParser:
             return info
 
         try:
-            results = await openalex_search_paper("works", {"title.search": paper_title}, select=self.SELECT, per_page=10)
+            paper_info = await self.openalex.find_work_by_title(paper_title, select=self.SELECT)
         except Exception:
-            results = {"results": []}
+            paper_info = None
 
-        for paper_info in results.get("results", []):
-            if not valid_check(paper_title, paper_info.get("title", "")):
-                continue
+        if paper_info and valid_check(paper_title, paper_info.get("title", "")):
             matched_metadata = dict(paper_info)
-            downloaded = await self.paper_downloader.download_single_paper(matched_metadata)
+            downloaded = await self.paper_downloader.download_single_paper(matched_metadata, openalex_id=matched_metadata.get("id"))
             if downloaded:
                 info["full_content"] = downloaded.get("full_content", {})
                 info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
@@ -73,7 +72,6 @@ class CitationParser:
             matched_metadata.pop("best_oa_location", None)
             info["metadata"] = matched_metadata
             info["source"] = "openalex"
-            break
         return self._finalize_info(info)
 
     async def _fallback_websearch(self, title: str, info: Dict[str, Any]) -> Dict[str, Any]:

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 from .sbert_client import SentenceTransformerClient
-from .openalex import openalex_search_paper
+from .openalex import get_openalex_client
 from .tool_config import ToolConfig
 from .utils import cosine_similarity_matrix
 
@@ -22,6 +22,7 @@ class DynamicOracleGenerator:
         self.eval_date = config.evaluation_date
         self.num_oracle_papers = config.num_oracle_papers
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
+        self.openalex = get_openalex_client(config)
 
     def _citation_count_by_eval_date(self, paper: dict):
         eval_year = int(self.eval_date.year)
@@ -38,21 +39,6 @@ class DynamicOracleGenerator:
         year = int(self.eval_date.strftime("%Y")) - int(publication_date[:4])
         return max(1, year + 1)
 
-    async def _fetch_by_ids(self, paper_ids: list[str], batch_size: int = 50):
-        fetched = {}
-        for i in range(0, len(paper_ids), batch_size):
-            batch = paper_ids[i : i + batch_size]
-            if not batch:
-                continue
-            try:
-                results = await openalex_search_paper("works", filter={"openalex": "|".join(batch)}, per_page=min(batch_size, 200))
-            except Exception:
-                continue
-            for paper in results.get("results", []):
-                if paper.get("publication_date") and paper["publication_date"] <= self.eval_date.strftime("%Y-%m-%d"):
-                    fetched[paper["id"]] = paper
-        return fetched
-
     async def _fetch_neighbors(self, paper_id: str):
         neighbors = {}
         filters = [
@@ -61,7 +47,7 @@ class DynamicOracleGenerator:
         ]
         for filter_kwargs in filters:
             try:
-                results = await openalex_search_paper("works", filter=filter_kwargs, per_page=200)
+                results = await self.openalex.search_works("works", filter=filter_kwargs, per_page=200)
             except Exception:
                 continue
             for paper in results.get("results", []):

@@ -18,7 +18,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from agent.tools.llmclient import AsyncChat
-from agent.tools.openalex import OPENALEX_SELECT, openalex_search_paper, to_openalex
+from agent.tools.openalex import OPENALEX_SELECT, get_openalex_client, to_openalex
 from agent.tools.prompts import QUERY_EXPANSION_PROMPT, SURVEY_SPECIFIED_QUERY_EXPANSION
 from agent.tools.query_expand import QUERY_SCHEMA, SURVEY_KEYWORDS
 from agent.tools.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
@@ -27,9 +27,10 @@ from agent.tools.tool_config import ToolConfig
 from agent.tools.utils import cosine_similarity_matrix, extract_json, valid_check
 
 
-DATASET_PATH = Path(__file__).resolve().parent / "surge.jsonl"
+DATASET_PATH = Path(__file__).resolve().parent / "surveygen.jsonl"
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
 SURVEY_SELECT = f"{OPENALEX_SELECT},best_oa_location,locations,relevance_score"
+OPENALEX_KEYS = ['NXd77zSxqdt2XLfu14Npp2', 'v8Fl7dmrRk2ERkT3npPapC']
 
 
 class QueryExpansionLLMClient(AsyncChat):
@@ -44,30 +45,26 @@ class QueryExpansionLLMClient(AsyncChat):
 
 
 class SurveyInfoFetcher:
-    def __init__(self, eval_date: datetime):
-        self.eval_date = eval_date
+    def __init__(self, config: ToolConfig):
+        self.openalex = get_openalex_client(config)
 
     def _normalize_title(self, title: str) -> str:
-        title = title.replace("\\\\", "")
+        title = title.replace("\\\\", " ")
         return re.sub(r"\s+", " ", re.sub(r"[:,.!?&]", " ", title or "")).strip()
 
-    async def __call__(self, title: str, publication_date: str) -> Dict[str, Any]:
+    async def __call__(self, title: str) -> Dict[str, Any]:
         normalized_title = self._normalize_title(title)
-        results = await openalex_search_paper(
-            "works",
-            filter={"title.search": normalized_title},
-            select=SURVEY_SELECT,
-            per_page=10,
-        )
-        for paper in results.get("results", []):
-            if not valid_check(normalized_title, paper.get("title", "")): continue
+        paper = await self.openalex.find_work_by_title(normalized_title, select=SURVEY_SELECT)
+        if paper and valid_check(normalized_title, paper.get("title", "")):
             return paper
+        return {}
 
 
 class StrictQueryExpand:
     def __init__(self, config: ToolConfig):
         self.llm = QueryExpansionLLMClient(config.llm_server_info, config.sampling_params)
         self.eval_date = config.evaluation_date
+        self.openalex = get_openalex_client(config)
 
     async def _request_for_papers(self, query: str, uplimit: int, select: str = f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
         queries = to_openalex(query)
@@ -75,7 +72,7 @@ class StrictQueryExpand:
         papers = []
         total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            results = await openalex_search_paper("works", search, per_page=min(200, uplimit), select=select, page=page)
+            results = await self.openalex.search_works("works", filter=search, per_page=min(200, uplimit), select=select, page=page)
             total = min(total, results.get("count", 0) or total)
             papers.extend(results.get("results", []))
             if len(papers) >= total:
@@ -109,6 +106,7 @@ class OracleFeatureCollector:
         self.eval_date = config.evaluation_date
         self.num_oracle_papers = config.num_oracle_papers
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
+        self.openalex = get_openalex_client(config)
 
     def _citation_count_by_eval_date(self, paper: dict):
         eval_year = int(self.eval_date.year)
@@ -132,7 +130,7 @@ class OracleFeatureCollector:
             {"cited_by": paper_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
         ]
         for filter_kwargs in filters:
-            results = await openalex_search_paper("works", filter=filter_kwargs, per_page=200)
+            results = await self.openalex.search_works("works", filter=filter_kwargs, per_page=200)
             for paper in results.get("results", []):
                 if paper.get("id"):
                     neighbors[paper["id"]] = paper
@@ -242,9 +240,9 @@ class OracleFeatureCollector:
         return oracle
 
 
-def iter_dataset(dataset_path: Path):
+def iter_dataset(dataset_path: Path, start: int):
     with dataset_path.open(encoding="utf-8") as f:
-        for index, line in enumerate(f):
+        for index, line in enumerate(f, start):
             if not line.strip(): continue
             yield index, json.loads(line)
 
@@ -265,32 +263,34 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
     if output_path.exists() and not overwrite:
         return {"status": "skipped", "index": index, "title": title, "output": str(output_path)}
 
-    eval_date = datetime.strptime(item["publication_date"], "%Y-%m-%d")
-    config = replace(base_config, evaluation_date=eval_date)
-    survey_fetcher = SurveyInfoFetcher(eval_date)
-    query_expand = StrictQueryExpand(config)
-    oracle_collector = OracleFeatureCollector(config)
-    stage = "survey_fetcher"
-    RateLimit.reset_openalex_count()
+    openalex = get_openalex_client(base_config)    
+    openalex.reset_request_count()
 
     try:
+        stage = "survey_fetcher"
+        survey_fetcher = SurveyInfoFetcher(base_config)
         print(f"[{index}] survey_fetcher:start")
-        survey_info = await survey_fetcher(title, item["publication_date"])
+        survey_info = await survey_fetcher(title)
         print(f"[{index}] survey_fetcher:done")
         stage = "query_expand"
+        query_expand = StrictQueryExpand(base_config)
         print(f"[{index}] query_expand:start")
         query_data = await query_expand(title)
         print(f"[{index}] query_expand:done")
         stage = "oracle_collector"
+        publication_date = item["publication_date"] or survey_info.get('publication_date')
+        eval_date = datetime.strptime(publication_date, "%Y-%m-%d")
+        config = replace(base_config, evaluation_date=eval_date)
+        oracle_collector = OracleFeatureCollector(config)
         print(f"[{index}] oracle_collector:start")
         oracle = await oracle_collector(title, query_data["library"], survey_info)
         print(f"[{index}] oracle_collector:done")
     except OpenAlexBudgetExceeded as exc:
-        request_count = RateLimit.get_openalex_count()
+        request_count = openalex.get_request_count()
         print(f"[{index}] openalex_requests={request_count}")
         raise
     except Exception as exc:
-        request_count = RateLimit.get_openalex_count()
+        request_count = openalex.get_request_count()
         print(f"[{index}] openalex_requests={request_count}")
         return {
             "status": "network_error",
@@ -301,7 +301,7 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
             "error": f"{type(exc).__name__}: {exc}",
         }
 
-    request_count = RateLimit.get_openalex_count()
+    request_count = openalex.get_request_count()
     print(f"[{index}] openalex_requests={request_count}")
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(oracle, f, ensure_ascii=False, indent=2)
@@ -317,7 +317,7 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
 
 
 async def main():
-    START, LIMIT = 133, 170
+    START, LIMIT = 205, 370
     base_config = ToolConfig()
     RateLimit.configure_openalex(
         requests_per_second=base_config.openalex_requests_per_second,
@@ -332,7 +332,7 @@ async def main():
     )
     await SessionManager.init()
     try:
-        for index, item in iter_dataset(DATASET_PATH):
+        for index, item in iter_dataset(DATASET_PATH, 205):
             if index < START: continue
             if index >= LIMIT: break
             output_path = output_path_for(index, item['title'])
@@ -355,7 +355,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    import os
-    os.environ['HTTP_PROXY'] = "http://127.0.0.1:7890"
-    os.environ['HTTPS_PROXY'] = "http://127.0.0.1:7890"
     asyncio.run(main())

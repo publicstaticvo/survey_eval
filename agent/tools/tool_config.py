@@ -70,6 +70,7 @@ class ToolConfig:
     openalex_rate_limit_enabled: bool = True
     openalex_requests_per_second: float = 4.0
     openalex_max_concurrency: int = 3
+    openalex_api_keys: list[str] = field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, config_path):
@@ -113,5 +114,5 @@ class ToolConfig:
             openalex_rate_limit_enabled=config.get('openalex', {}).get('rate_limit_enabled', True),
             openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 4.0),
             openalex_max_concurrency=config.get('openalex', {}).get('max_concurrency', 3),
-            openalex_mailto=config.get('openalex', {}).get('mailto', "dailyyulun@gmail.com"),
+            openalex_api_keys=config.get('openalex', {}).get('api_keys', []),
         )
