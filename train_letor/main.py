@@ -317,7 +317,7 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
 
 
 async def main():
-    START, LIMIT = 45, 205
+    START, LIMIT = 133, 170
     base_config = ToolConfig()
     RateLimit.configure_openalex(
         requests_per_second=base_config.openalex_requests_per_second,
@@ -332,16 +332,14 @@ async def main():
     )
     await SessionManager.init()
     try:
-        processed = 0
         for index, item in iter_dataset(DATASET_PATH):
             if index < START: continue
-            if processed >= LIMIT: break
+            if index >= LIMIT: break
             output_path = output_path_for(index, item['title'])
             if output_path.exists(): continue
             try:
                 result = await collect_single_survey(base_config, index, item)
                 print(json.dumps(result, ensure_ascii=False))
-                processed += 1
             except OpenAlexBudgetExceeded as exc:
                 payload = exc.payload or {}
                 print(json.dumps({
