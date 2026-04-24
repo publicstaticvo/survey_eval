@@ -66,16 +66,14 @@ class OpenAlex:
         ]
 
     async def ensure_ready(self):
-        if self._initialized:
-            return
+        if self._initialized: return
         async with self._init_lock:
-            if self._initialized:
-                return
+            if self._initialized: return
             for state in self.api_key_states:
                 try:
                     state.credits_remaining = await self.get_balance(state.api_key)
                     state.initialized = True
-                except Exception:
+                except Exception as e:
                     state.credits_remaining = 0
                     state.cooling_until = self._next_utc_midnight()
                     state.initialized = True

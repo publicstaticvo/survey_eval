@@ -11,7 +11,7 @@ def load_local(fn):
 
 
 # ---------- 1. 读取 JSONL ----------
-jsonl_path = 'train_letor.jsonl'          # 换成你的文件
+jsonl_path = 'train_unfiltered.jsonl'          # 换成你的文件
 group = []                         # 每个 query 的 doc 数
 X, y, qid_map = [], [], []         # 特征、label、query_id（从 0 开始连续）
 dataset = load_local(jsonl_path)

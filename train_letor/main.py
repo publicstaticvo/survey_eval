@@ -5,7 +5,7 @@ import math
 import re
 import sys
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -28,9 +28,15 @@ from agent.tools.utils import cosine_similarity_matrix, extract_json, valid_chec
 
 
 DATASET_PATH = Path(__file__).resolve().parent / "surveygen.jsonl"
-OUTPUT_DIR = Path(__file__).resolve().parent / "outputs"
+OUTPUT_DIR = Path(__file__).resolve().parent / "outputs_2y"
 SURVEY_SELECT = f"{OPENALEX_SELECT},best_oa_location,locations,relevance_score"
-OPENALEX_KEYS = ['NXd77zSxqdt2XLfu14Npp2', 'v8Fl7dmrRk2ERkT3npPapC']
+OPENALEX_KEYS = [
+    'NXd77zSxqdt2XLfu14Npp2', 
+    'v8Fl7dmrRk2ERkT3npPapC',
+    'xnaKKdDHuqcXQPY1Crplwu',
+    'OKsOaFG3SbaxrRoYSIUBfx',
+    'YFl8EWRMHmmZvEd9cljGXt'
+]
 
 
 class QueryExpansionLLMClient(AsyncChat):
@@ -68,15 +74,18 @@ class StrictQueryExpand:
 
     async def _request_for_papers(self, query: str, uplimit: int, select: str = f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
         queries = to_openalex(query)
-        search = [*[("default.search", q) for q in queries], ("to_publication_date", self.eval_date.strftime("%Y-%m-%d"))]
+        search = [
+            *[("default.search", q) for q in queries], 
+            ("to_publication_date", self.eval_date.strftime("%Y-%m-%d")),
+            ('from_publication_date', (self.eval_date - timedelta(days=730)).strftime("%Y-%m-%d"))
+        ]
         papers = []
         total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
             results = await self.openalex.search_works("works", filter=search, per_page=min(200, uplimit), select=select, page=page)
             total = min(total, results.get("count", 0) or total)
             papers.extend(results.get("results", []))
-            if len(papers) >= total:
-                break
+            if len(papers) >= total: break
         return papers[:uplimit]
 
     async def __call__(self, query: str, papers_for_each_query: int = 50):
@@ -125,11 +134,12 @@ class OracleFeatureCollector:
 
     async def _fetch_neighbors(self, paper_id: str):
         neighbors = {}
-        filters = [
-            {"cites": paper_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
-            {"cited_by": paper_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
-        ]
-        for filter_kwargs in filters:
+        for kw in ['cites', 'cited_by']:
+            filter_kwargs = {
+                kw: paper_id,
+                "to_publication_date": self.eval_date.strftime("%Y-%m-%d"),
+                "from_publication_date": (self.eval_date - timedelta(days=730)).strftime("%Y-%m-%d")
+            }
             results = await self.openalex.search_works("works", filter=filter_kwargs, per_page=200)
             for paper in results.get("results", []):
                 if paper.get("id"):
@@ -240,7 +250,7 @@ class OracleFeatureCollector:
         return oracle
 
 
-def iter_dataset(dataset_path: Path, start: int):
+def iter_dataset(dataset_path: Path, start: int = 0):
     with dataset_path.open(encoding="utf-8") as f:
         for index, line in enumerate(f, start):
             if not line.strip(): continue
@@ -272,11 +282,13 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
         print(f"[{index}] survey_fetcher:start")
         survey_info = await survey_fetcher(title)
         print(f"[{index}] survey_fetcher:done")
+        if not survey_info: raise ValueError("No survey info")
         stage = "query_expand"
         query_expand = StrictQueryExpand(base_config)
         print(f"[{index}] query_expand:start")
         query_data = await query_expand(title)
         print(f"[{index}] query_expand:done")
+        if not query_data: raise ValueError("No query data")
         stage = "oracle_collector"
         publication_date = item["publication_date"] or survey_info.get('publication_date')
         eval_date = datetime.strptime(publication_date, "%Y-%m-%d")
@@ -301,6 +313,8 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
             "error": f"{type(exc).__name__}: {exc}",
         }
 
+    # with open("surveys.jsonl", "a+", encoding='utf-8') as f:
+    #     f.write(json.dumps({"index": index, "metadata": survey_info}, ensure_ascii=False) + "\n")
     request_count = openalex.get_request_count()
     print(f"[{index}] openalex_requests={request_count}")
     with output_path.open("w", encoding="utf-8") as f:
@@ -318,7 +332,7 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
 
 async def main():
     START, LIMIT = 205, 370
-    base_config = ToolConfig()
+    base_config = ToolConfig(openalex_api_keys=OPENALEX_KEYS)
     RateLimit.configure_openalex(
         requests_per_second=base_config.openalex_requests_per_second,
         enabled=base_config.openalex_rate_limit_enabled,
