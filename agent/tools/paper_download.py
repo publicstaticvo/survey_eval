@@ -135,8 +135,26 @@ class PaperDownload:
             print(f"URL failed downloading from {url}: {e}")
             return {"result": None, "download_error": True, "parse_error": False}
 
-    async def download_single_paper(self, paper_meta: dict, openalex_id: str = "") -> Optional[dict]:
+    async def download_single_paper(
+        self,
+        paper_meta: dict | None = None,
+        openalex_id: str = "",
+        title: str = "",
+    ) -> Optional[dict]:
         """Try all candidate URLs and return the first successfully parsed paper."""
+        paper_meta = dict(paper_meta or {})
+        if not paper_meta:
+            if not title:
+                raise ValueError("download_single_paper requires at least one of paper_meta or title")
+            if self.openalex is None:
+                return None
+            paper_meta = await self.openalex.find_work_by_title(
+                title,
+                select="id,title,best_oa_location,locations",
+            ) or {}
+            if not paper_meta:
+                return None
+
         tasks = [asyncio.create_task(self._try_one_url(url)) for url in list(yield_location(paper_meta))]
         saw_download_error = False
         saw_parse_error = False

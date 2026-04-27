@@ -14,13 +14,13 @@
 {"title": "A Survey of Black-Box Adversarial Attacks on Computer Vision Models", "publication_date": "2019-12-03"}
 {"title": "A Comprehensive Survey on Pretrained Foundation Models: A History from BERT to ChatGPT", "publication_date": "2023-02-18"}
 {"title": "A Survey on Dynamic Network Embedding", "publication_date": "2020-06-15"}
-{"title": "A Survey of Moving Target Defenses forNetwork Security", "publication_date": "2019-05-02"}
+{"title": "A Survey of Moving Target Defenses for Network Security", "publication_date": "2019-05-02"}
 {"title": "A Survey on the Evolution of Stream Processing Systems", "publication_date": "2020-08-03"}
 {"title": "Deep Gait Recognition: A Survey", "publication_date": "2021-02-18"}
 {"title": "Transformers in Vision: A Survey", "publication_date": "2021-01-04"}
 {"title": "Image Classification with Deep Learning in the Presence of Noisy Labels: A Survey", "publication_date": "2019-12-11"}
 {"title": "Change Detection and Notification of Web Pages: A Survey", "publication_date": "2019-01-09"}
-{"title": "A Survey on Deep Learning-based Architecturesfor Semantic Segmentation on 2D images", "publication_date": "2019-12-21"}
+{"title": "A Survey on Deep Learning-based Architectures for Semantic Segmentation on 2D images", "publication_date": "2019-12-21"}
 {"title": "A Survey on Tiering and Caching in High-Performance Storage Systems", "publication_date": "2019-04-25"}
 {"title": "Multimodal Learning with Transformers: A Survey", "publication_date": "2022-06-13"}
 {"title": "Attention, please! A survey of Neural Attention Models in Deep Learning", "publication_date": "2021-03-31"}
@@ -31,7 +31,7 @@
 {"title": "Survey of Transient Execution Attacks", "publication_date": "2020-05-27"}
 {"title": "A Survey of Syntactic-Semantic Parsing Based on Constituent and Dependency Structures", "publication_date": "2020-06-19"}
 {"title": "Efficient Deep Learning: A Survey on Making Deep Learning Models Smaller, Faster, and Better", "publication_date": "2021-06-16"}
-{"title": "From Statistical Relational to Neurosymbolic Artificial Intelligence: a Survey.", "publication_date": "2021-08-25"}
+{"title": "From Statistical Relational to Neurosymbolic Artificial Intelligence: a Survey", "publication_date": "2021-08-25"}
 {"title": "Symbolic Logic meets Machine Learning: A Brief Survey in Infinite Domains", "publication_date": "2020-06-15"}
 {"title": "Context Dependent Semantic Parsing: A Survey", "publication_date": "2020-11-02"}
 {"title": "A survey of active learning algorithms for supervised remote sensing image classification", "publication_date": "2021-04-15"}
@@ -52,7 +52,7 @@
 {"title": "Proximity Perception in Human-Centered Robotics: A Survey on Sensing Systems and Applications ", "publication_date": "2021-08-16"}
 {"title": "A Survey of Transformers", "publication_date": "2021-06-08"}
 {"title": "How should my chatbot interact? A survey on social characteristics in human-chatbot interaction design", "publication_date": "2019-04-04"}
-{"title": "Community detection in node-attributed social networks: a~survey", "publication_date": "2019-12-20"}
+{"title": "Community detection in node-attributed social networks: a survey", "publication_date": "2019-12-20"}
 {"title": "A Survey of Deep Reinforcement Learning in Recommender Systems: A Systematic Review and Future Directions", "publication_date": "2021-09-08"}
 {"title": "Learning from Noisy Labels with Deep Neural Networks: A Survey", "publication_date": "2020-07-16"}
 {"title": "A Survey on Split Manufacturing: Attacks, Defenses, and Challenges", "publication_date": "2020-06-08"}
@@ -64,7 +64,7 @@
 {"title": "Deep Learning for Instance Retrieval: A Survey", "publication_date": "2021-01-27"}
 {"title": "Deep Learning for Vision-based Prediction: A Survey", "publication_date": "2020-06-30"}
 {"title": "A Survey of Machine Learning for Computer Architecture and Systems", "publication_date": "2021-02-16"}
-{"title": "Inspect, Understand, Overcome:A Survey of Practical Methodsfor AI Safety", "publication_date": "2021-04-29"}
+{"title": "Inspect, Understand, Overcome: A Survey of Practical Methods for AI Safety", "publication_date": "2021-04-29"}
 {"title": "Survey on Evaluation Methods for Dialogue Systems", "publication_date": "2019-05-10"}
 {"title": "A Survey on Recent Approaches for Natural Language Processing in Low-Resource Scenarios", "publication_date": "2020-10-23"}
 {"title": "DL-Traff: Survey and Benchmark of Deep Learning Models for Urban Traffic Prediction", "publication_date": "2021-08-20"}

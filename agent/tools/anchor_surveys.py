@@ -1,43 +1,40 @@
-import re
-import json
-import math
 import asyncio
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
+import math
+import random
+import aiohttp
+from datetime import timedelta
 
-from .tool_config import ToolConfig
 from .llmclient import AsyncChat
+from .openalex import OPENALEX_SELECT, get_openalex_client
 from .paper_download import PaperDownload
-from .utils import extract_json, extract_list
-from .openalex import OPENALEX_SELECT, get_openalex_client, to_openalex
-from .prompts import TOPIC_AGGREGATION_PROMPT, ANCHOR_SURVEY_SELECT, ANCHOR_PAPER_SELECT
+from .prompts import ANCHOR_SURVEY_SELECT
+from .request_utils import HEADERS, SessionManager
+from .tool_config import ToolConfig
+from .utils import extract_json, valid_check
 
 
 class SurveyDownload(PaperDownload):
-
     STRUCTURE_TITLES = ["introduction", "background", "conclusion", "discussion", "experiment", "result", "method", "limitation"]
 
     def _check_title(self, title: str):
-        for x in self.STRUCTURE_TITLES: title = title.replace(x, "")
+        for x in self.STRUCTURE_TITLES:
+            title = title.replace(x, "")
         return len(title) >= 10
 
     def _flatten_title_paths(self, paper_skeleton: dict):
         titles = []
 
-        def _walk(section: dict, parent_titles: list[str]):
+        def _walk(section: dict):
             title = (section.get("title") or "").strip()
-            if title:
-                lowered = title.lower()
-                if self._check_title(lowered):
-                    titles.append(title)
-                parent_titles = [*parent_titles, title]
+            if title and self._check_title(title.lower()):
+                titles.append(title)
             for child in section.get("sections", []):
-                _walk(child, parent_titles)
+                _walk(child)
 
         for section in paper_skeleton.get("sections", []):
-            _walk(section, [])
+            _walk(section)
         return titles
-    
+
     def _post_hook(self, xml_content: str):
         try:
             paper = self.paper_parser.parse(xml_content, mode="strict")
@@ -48,70 +45,88 @@ class SurveyDownload(PaperDownload):
         except Exception as e:
             print(f"Fatal: no survey parser {e}")
             return [], None
-        
-
-class AnchorPaperSelect(AsyncChat):
-
-    PROMPT: str = ANCHOR_PAPER_SELECT
-
-    def _availability(self, response: str, context: dict):
-        results = extract_json(response)
-        titles = [x['title'] for x in results['selected_papers']]
-        title_to_paper = {x['title']: x for x in context['papers'].values()}
-        return [title_to_paper[x] for x in titles if x in title_to_paper]
-    
-    def _organize_inputs(self, inputs):
-        prompt = self.PROMPT.format(query=inputs['query'], titles="\n".join(f"- {t['title']}" for t in inputs['papers'].values()))
-        return prompt, {"papers": inputs['papers']}
 
 
 class AnchorSurveySelect(AsyncChat):
-    """Cross-survey topic aggregate"""
+    """Select the most relevant surveys from candidate surveys."""
 
     PROMPT: str = ANCHOR_SURVEY_SELECT
 
     def _availability(self, response: str, context: dict):
         results = extract_json(response)
-        titles = [x['title'] for x in results['surveys']]
-        title_to_paper = {x['title']: x for x in context['surveys']}
+        titles = [x["title"] for x in results["surveys"]]
+        title_to_paper = {x["title"]: x for x in context["surveys"]}
         return [title_to_paper[x] for x in titles if x in title_to_paper]
-    
+
     def _organize_inputs(self, inputs):
-        prompt = self.PROMPT.format(query=inputs['query'], titles="\n".join(f"- {t['title']}" for t in inputs['surveys']))
-        return prompt, {"surveys": inputs['surveys']}
-        
-
-class TopicAggregateLLMClient(AsyncChat):
-    """Cross-survey topic aggregate"""
-
-    PROMPT: str = TOPIC_AGGREGATION_PROMPT
-
-    def _availability(self, response: str, context: dict):
-        topics = extract_json(response)
-        #  if len(set(x['representative_papers'])) >= 2
-        return [x['topic_name'] for x in topics['topics']]
-    
-    def _organize_inputs(self, inputs):
-        # 高置信度证据 == anchor survey的子标题
-        has_titles = {k: v for k, v in inputs['surveys'].items() if v is not None}
-        # 低置信度证据 == 其他survey
-        other_papers = [k for k, v in inputs['surveys'].items() if v is None] + [x['title'] for x in inputs['papers'] if x['title'] not in inputs['surveys']]
-        high = []
-        for k, v in has_titles.items():
-            titles = "\n".join(f"- {title}" for title in v["titles"])
-            high.append(f"Survey title: {k}\nSection titles:\n{titles}\n")
-        prompt = self.PROMPT.format(query=inputs['query'], anchors='\n'.join(high), surveys="\n".join(f'- {x}' for x in other_papers))
-        return prompt, {}
+        prompt = self.PROMPT.format(query=inputs["query"], titles="\n".join(f"- {t['title']}" for t in inputs["surveys"]))
+        return prompt, {"surveys": inputs["surveys"]}
 
 
 class AnchorSurveyFetch:
     SELECT = f"{OPENALEX_SELECT},best_oa_location,locations"
+    SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1"
 
     def __init__(self, config: ToolConfig):
         self.eval_date = config.evaluation_date
         self.survey_download = SurveyDownload(config)
         self.survey_select = AnchorSurveySelect(config.llm_server_info, config.sampling_params)
         self.openalex = get_openalex_client(config)
+
+    async def _semantic_scholar_get(self, endpoint: str, params: dict):
+        """Call Semantic Scholar and retry on 429."""
+        session = SessionManager.get()
+        url = f"{self.SEMANTIC_SCHOLAR_API}{endpoint}"
+        while True:
+            async with session.get(
+                url,
+                headers=HEADERS,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status == 429:
+                    await asyncio.sleep(random.uniform(1.0, 2.0))
+                    continue
+                resp.raise_for_status()
+                return await resp.json()
+
+    async def _search_semantic_scholar_surveys(self, query: str, limit: int = 20):
+        """Search survey-like papers from Semantic Scholar."""
+        search_query = f"{query} + (survey | summary | review | overview | \"comprehensive study\")"
+        from_date = (self.eval_date - timedelta(days=1096)).strftime("%Y-%m-%d")
+        payload = await self._semantic_scholar_get(
+            "/paper/search/bulk",
+            {"query": search_query, "limit": limit, "fields": "title,abstract", 
+             'sort': 'citationCount', 'minCitationCount': 40, 
+             'publicationDateOrYear': f'{from_date}:{self.eval_date.strftime("%Y-%m-%d")}'},
+        )
+        surveys = []
+        for item in payload.get("data") or []:
+            title = (item.get("title") or "").strip()
+            if title:
+                surveys.append({"title": title, "abstract": item.get("abstract")})
+        return surveys
+
+    async def _resolve_openalex_surveys(self, surveys: list[dict]):
+        """Resolve Semantic Scholar survey titles to OpenAlex works."""
+        resolved = []
+
+        async def _single(survey: dict):
+            try:
+                paper = await self.openalex.find_work_by_title(survey["title"], select=self.SELECT)
+            except Exception as e:
+                print(f"AnchorSurveyOpenAlex {survey['title']} {e}")
+                return None
+            if not paper or not valid_check(survey["title"], paper.get("title", "")):
+                return None
+            return paper
+
+        tasks = [asyncio.create_task(_single(survey)) for survey in surveys]
+        for task in asyncio.as_completed(tasks):
+            paper = await task
+            if paper and paper.get("id"):
+                resolved.append(paper)
+        return resolved
 
     def _citation_count_by_eval_date(self, paper: dict):
         eval_year = int(self.eval_date.year)
@@ -123,14 +138,11 @@ class AnchorSurveyFetch:
             return citation_count
         return sum(item["cited_by_count"] for item in paper.get("counts_by_year", []) if item["year"] <= eval_year)
 
-    def _is_survey(self, paper: dict):
-        return len(paper.get("referenced_works", [])) >= 40 and self._citation_count_by_eval_date(paper) >= 20
-
     async def _download_surveys(self, papers: list[dict]):
         downloaded = {}
         for paper in papers:
             try:
-                survey = await self.survey_download.download_single_paper(paper)
+                survey = await self.survey_download.download_single_paper(paper_meta=paper, title=paper.get("title", ""))
             except Exception as e:
                 print(f"SurveyDownload {paper.get('title', '')} {e}")
                 survey = None
@@ -140,8 +152,9 @@ class AnchorSurveyFetch:
                     downloaded[paper["title"]] = {"titles": titles, "skeleton": paper_skeleton, "paper": paper}
         return downloaded
 
-    async def _get_paper_meta_by_id(self, papers: list[str], batch_size: int = 50):
+    async def _get_paper_meta_by_id(self, papers: list[str]):
         paper_meta = {}
+
         async def _single(paper_id: str):
             try:
                 return await self.openalex.get_entity(paper_id, entity_type="works")
@@ -156,28 +169,32 @@ class AnchorSurveyFetch:
                 paper_meta[paper["id"]] = paper
         return paper_meta
 
-    async def __call__(self, survey_papers: list[dict], survey_title: str):
-        # 这里只处理参考综述候选，不再处理 library/domain papers。
-        real_surveys = [paper for paper in survey_papers if self._is_survey(paper)]
+    async def __call__(self, query: str):
+        try:
+            semantic_surveys = await self._search_semantic_scholar_surveys(query)
+        except Exception as e:
+            print(f"AnchorSurveySemantic {e}")
+            semantic_surveys = []
+        print(f"AnchorSurveyFetch: {len(semantic_surveys)} semantic scholar surveys")
+
+        real_surveys = await self._resolve_openalex_surveys(semantic_surveys)
         print(f"AnchorSurveyFetch: {len(real_surveys)} real surveys")
         if not real_surveys:
             return {"anchor_papers": {}, "anchor_surveys": {}}
 
         try:
-            selected = await self.survey_select.call(inputs={"query": survey_title, "surveys": real_surveys})
+            selected = await self.survey_select.call(inputs={"query": query, "surveys": real_surveys})
         except Exception as e:
             print(f"AnchorSurveySelect {e}")
             selected = []
         print(f"AnchorSurveyFetch: {len(selected)} selected surveys")
 
-        # 最多保留 5 篇 anchor surveys，供后续 golden topics 使用。
         downloaded = await self._download_surveys(selected[:5])
         print(f"AnchorSurveyFetch: {len(downloaded)} downloaded surveys")
 
         selected_titles = set(downloaded)
         selected = [paper for paper in selected if paper["title"] in selected_titles]
 
-        # 基于 anchor surveys 的共引统计抽取 anchor papers。
         citation_counter = {}
         for paper in selected:
             for ref in paper.get("referenced_works", []):
