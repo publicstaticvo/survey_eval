@@ -1,6 +1,5 @@
 import asyncio
 import json
-import math
 import re
 import sys
 from dataclasses import replace
@@ -8,18 +7,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-import networkx as nx
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.tools.openalex import OPENALEX_SELECT, get_openalex_client
-from agent.tools.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
-from agent.tools.sbert_client import SentenceTransformerClient
-from agent.tools.tool_config import ToolConfig
-from agent.tools.utils import cosine_similarity_matrix, valid_check
+from agent.tools.preprocess.anchor_surveys import AnchorSurveyFetch
+from agent.tools.preprocess.dynamic_candidate_pool import LetorCitationScorer, LiteratureCandidatePoolBuilder
+from agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
+from agent.tools.utility.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
+from agent.tools.utility.tool_config import ToolConfig
+from agent.tools.utility.utils import valid_check
 
 
 DATASET_PATH = Path(__file__).resolve().parent / "surveys_with_query.jsonl"
@@ -93,146 +91,6 @@ class StrictQueryExpand:
         }
 
 
-class OracleFeatureCollector:
-    def __init__(self, config: ToolConfig):
-        self.eval_date = config.evaluation_date
-        self.num_oracle_papers = config.num_oracle_papers
-        self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
-        self.openalex = get_openalex_client(config)
-
-    def _citation_count_by_eval_date(self, paper: dict):
-        eval_year = int(self.eval_date.year)
-        citation_count = paper.get("cited_by_count", 0) or 0
-        if citation_count:
-            for item in paper.get("counts_by_year", []):
-                if item["year"] > eval_year:
-                    citation_count -= item["cited_by_count"]
-            return citation_count
-        return sum(item["cited_by_count"] for item in paper.get("counts_by_year", []) if item["year"] <= eval_year)
-
-    def _paper_age(self, paper):
-        publication_date = paper.get("publication_date") or self.eval_date.strftime("%Y-%m-%d")
-        year = int(self.eval_date.strftime("%Y")) - int(publication_date[:4])
-        return max(1, year + 1)
-
-    async def _fetch_neighbors(self, paper_id: str):
-        neighbors = {}
-        for kw in ['cited_by']:  # , 'cites'
-            filter_kwargs = {
-                kw: paper_id,
-                "to_publication_date": self.eval_date.strftime("%Y-%m-%d"),
-                # "from_publication_date": (self.eval_date - timedelta(days=730)).strftime("%Y-%m-%d")
-            }
-            results = await self.openalex.search_works("works", filter=filter_kwargs, per_page=200, sort="cited_by_count:desc")
-            for paper in results.get("results", []):
-                if paper.get("id"):
-                    neighbors[paper["id"]] = paper
-        return neighbors, paper_id
-
-    async def _expand_library(self, query: str, library: Dict[str, Any]):
-        expanded = {**library}
-        if len(expanded) >= self.num_oracle_papers:
-            return expanded
-
-        neighbor_sources, neighbor_papers, co_neighbors, long_tail = {}, {}, {}, {}
-        tasks = [asyncio.create_task(self._fetch_neighbors(paper_id)) for paper_id in expanded]
-        for task in asyncio.as_completed(tasks):
-            neighbors, paper_id = await task
-            for neighbor_id, paper in neighbors.items():
-                if neighbor_id in expanded: continue
-                neighbor_papers[neighbor_id] = paper
-                neighbor_sources.setdefault(neighbor_id, set()).add(paper_id)
-
-        for paper_id, paper in neighbor_papers.items():
-            sources = neighbor_sources.get(paper_id, set())
-            paper["neighbors_count"] = len(sources)
-            if len(sources) >= 2:
-                co_neighbors[paper_id] = paper
-            elif len(sources) == 1:
-                long_tail[paper_id] = paper
-
-        ranked_co_neighbors = sorted(
-            co_neighbors.items(),
-            key=lambda item: item[1]["neighbors_count"] * 100 + math.log1p(max(0, self._citation_count_by_eval_date(item[1]))),
-            reverse=True,
-        )
-        for paper_id, paper in ranked_co_neighbors:
-            expanded[paper_id] = paper
-            if len(expanded) >= self.num_oracle_papers:
-                return expanded
-
-        if long_tail and len(expanded) < self.num_oracle_papers:
-            similarity = self._score_similarity(query, long_tail)
-            ranked_long_tail = sorted(
-                long_tail.items(),
-                key=lambda item: similarity.get(item[0], 0.0) * 10 + math.log1p(max(0, self._citation_count_by_eval_date(item[1]))),
-                reverse=True,
-            )
-            for paper_id, paper in ranked_long_tail:
-                paper["query_similarity"] = similarity.get(paper_id, 0.0)
-                expanded[paper_id] = paper
-                if len(expanded) >= self.num_oracle_papers:
-                    break
-        return expanded
-
-    def _score_similarity(self, query: str, papers: Dict[str, Any]):
-        sentences = []
-        paper_ids = list(papers)
-        for paper_id in paper_ids:
-            paper = papers[paper_id]
-            title = paper.get("title", "")
-            abstract = paper.get("abstract", "")
-            sentences.append(f"{title}. {abstract}".strip())
-        embeddings = self.sentence_transformer.embed([query, *sentences])
-        scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0].tolist()
-        return {paper_id: score for paper_id, score in zip(paper_ids, scores)}
-
-    def _local_citation_and_pagerank(self, oracle: Dict[str, Any]):
-        graph = nx.DiGraph()
-        graph.add_nodes_from(oracle)
-        local_citation_count = {paper_id: 0 for paper_id in oracle}
-        for source_id, paper in oracle.items():
-            for target_id in paper.get("referenced_works", []):
-                if target_id in oracle:
-                    graph.add_edge(source_id, target_id)
-                    local_citation_count[target_id] += 1
-        pagerank = nx.pagerank(graph, alpha=0.85) if graph.number_of_nodes() else {}
-        return local_citation_count, pagerank
-
-    async def __call__(self, query: str, library: Dict[str, Any], survey_info: Dict[str, Any]) -> Dict[str, Any]:
-        expanded = await self._expand_library(query, library)
-        similarity = self._score_similarity(query, expanded)
-        scored = []
-        for paper_id, paper in expanded.items():
-            sim = similarity.get(paper_id, 0.0)
-            prestige = math.log1p(max(0, self._citation_count_by_eval_date(paper)))
-            age = self._paper_age(paper)
-            scored.append((paper_id, sim + 0.05 * prestige + 0.02 / age))
-        scored.sort(key=lambda item: item[1], reverse=True)
-        oracle = {}
-        survey_references = set(survey_info.get("referenced_works", []))
-        for paper_id, selection_score in scored[: self.num_oracle_papers]:
-            paper = dict(expanded[paper_id])
-            paper["oracle_selection_score"] = selection_score
-            paper["is_referenced_by_survey"] = paper_id in survey_references
-            oracle[paper_id] = paper
-
-        local_citation_count, pagerank = self._local_citation_and_pagerank(oracle)
-        max_citation = max((self._citation_count_by_eval_date(paper) for paper in oracle.values()), default=1)
-        max_local_citation = max(local_citation_count.values(), default=1)
-        for paper_id, paper in oracle.items():
-            citation_count = self._citation_count_by_eval_date(paper)
-            f1 = math.log1p(citation_count) / math.log1p(max_citation or 1)
-            paper["features"] = [
-                similarity.get(paper_id, 0.0),
-                f1,
-                math.log1p(local_citation_count.get(paper_id, 0)) / math.log1p(max_local_citation or 1),
-                pagerank.get(paper_id, 0.0) * (self.num_oracle_papers / 10),
-                f1 / math.log1p(self._paper_age(paper) + 1),
-            ]
-        return oracle
-
-
 def iter_dataset(dataset_path: Path, start: int = 0):
     with dataset_path.open(encoding="utf-8") as f:
         for index, line in enumerate(f, start):
@@ -272,20 +130,24 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
         survey_info = await survey_fetcher(title)
         print(f"[{original_index}] survey_fetcher:done")
         if not survey_info: raise ValueError("No survey info")
-        stage = "query_expand"
-        query_expand = StrictQueryExpand(base_config)
-        print(f"[{original_index}] query_expand:start\n[{original_index}]", end=" ")
-        query_data = await query_expand(query)
-        print(f"[{original_index}] query_expand:done")
-        if not query_data: raise ValueError("No query data")
-        stage = "oracle_collector"
+        stage = "anchor_surveys"
         publication_date = item.get("publication_date") or survey_info.get("publication_date")
         eval_date = datetime.strptime(publication_date, "%Y-%m-%d")
         config = replace(base_config, evaluation_date=eval_date)
-        oracle_collector = OracleFeatureCollector(config)
-        print(f"[{original_index}] oracle_collector:start")
-        oracle = await oracle_collector(title, query_data["library"], survey_info)
-        print(f"[{original_index}] oracle_collector:done")
+        anchor_fetcher = AnchorSurveyFetch(config)
+        print(f"[{original_index}] anchor_surveys:start")
+        anchor_data = await anchor_fetcher(query)
+        print(f"[{original_index}] anchor_surveys:done")
+        stage = "candidate_pool"
+        candidate_builder = LiteratureCandidatePoolBuilder(config)
+        scorer = LetorCitationScorer(config)
+        print(f"[{original_index}] candidate_pool:start")
+        candidate_data = await candidate_builder(query, anchor_data=anchor_data)
+        print(f"[{original_index}] candidate_pool:done")
+        stage = "letor"
+        print(f"[{original_index}] letor:start")
+        oracle = scorer(query, candidate_data["candidate_pool"])
+        print(f"[{original_index}] letor:done")
     except OpenAlexBudgetExceeded as exc:
         request_count = openalex.get_request_count()
         print(f"[{original_index}] openalex_requests={request_count}")
@@ -313,7 +175,8 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
         "index": original_index,
         "title": title,
         "output": str(output_path),
-        "library_size": len(query_data["library"]),
+        "library_size": len(candidate_data.get("library", {})),
+        "candidate_pool_size": len(candidate_data.get("candidate_pool", {})),
         "oracle_size": len(oracle),
         "openalex_requests": request_count,
     }

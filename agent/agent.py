@@ -4,37 +4,37 @@ from pathlib import Path
 from typing import Any, Dict
 
 if __package__:
-    from .tools.anchor_surveys import AnchorSurveyFetch
-    from .tools.argument_eval import ArgumentStructureEvaluator
-    from .tools.citation_parser import CitationParser
-    from .tools.claim_segmentation import ClaimSegmentation
-    from .tools.dynamic_oracle_generator import DynamicOracleGenerator
-    from .tools.fact_check import FactualCorrectnessCritic
-    from .tools.golden_topics import GoldenTopicGenerator
-    from .tools.minimum_completion import MinimalCompletionCheck
-    from .tools.programmatic_quality import QualityCritic
-    from .tools.query_expand import QueryExpand
-    from .tools.request_utils import SessionManager
-    from .tools.source_critic import MissingPaperCheck
-    from .tools.structure_eval import StructureCheck
-    from .tools.tool_config import ToolConfig
-    from .tools.topic_coverage import TopicCoverageCritic
+    from .tools.eval.argument_eval import ArgumentStructureEvaluator
+    from .tools.eval.fact_check import FactualCorrectnessCritic
+    from .tools.eval.minimum_completion import minimum_completion
+    from .tools.eval.missing_papers import MissingPaperCheck
+    from .tools.eval.programmatic_quality import QualityCritic
+    from .tools.eval.structure_eval import StructureCheck
+    from .tools.eval.topic_coverage import TopicCoverageCritic
+    from .tools.preprocess.anchor_surveys import AnchorSurveyFetch
+    from .tools.preprocess.citation_parser import CitationParser
+    from .tools.preprocess.claim_segmentation import ClaimSegmentation
+    from .tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
+    from .tools.preprocess.golden_topics import GoldenTopicGenerator
+    from .tools.preprocess.query_expand import QueryExpand
+    from .tools.utility.request_utils import SessionManager
+    from .tools.utility.tool_config import ToolConfig
 else:
-    from tools.anchor_surveys import AnchorSurveyFetch
-    from tools.argument_eval import ArgumentStructureEvaluator
-    from tools.citation_parser import CitationParser
-    from tools.claim_segmentation import ClaimSegmentation
-    from tools.dynamic_oracle_generator import DynamicOracleGenerator
-    from tools.fact_check import FactualCorrectnessCritic
-    from tools.golden_topics import GoldenTopicGenerator
-    from tools.minimum_completion import MinimalCompletionCheck
-    from tools.programmatic_quality import QualityCritic
-    from tools.query_expand import QueryExpand
-    from tools.request_utils import SessionManager
-    from tools.source_critic import MissingPaperCheck
-    from tools.structure_eval import StructureCheck
-    from tools.tool_config import ToolConfig
-    from tools.topic_coverage import TopicCoverageCritic
+    from tools.eval.argument_eval import ArgumentStructureEvaluator
+    from tools.eval.fact_check import FactualCorrectnessCritic
+    from tools.eval.minimum_completion import minimum_completion
+    from tools.eval.missing_papers import MissingPaperCheck
+    from tools.eval.programmatic_quality import QualityCritic
+    from tools.eval.structure_eval import StructureCheck
+    from tools.eval.topic_coverage import TopicCoverageCritic
+    from tools.preprocess.anchor_surveys import AnchorSurveyFetch
+    from tools.preprocess.citation_parser import CitationParser
+    from tools.preprocess.claim_segmentation import ClaimSegmentation
+    from tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
+    from tools.preprocess.golden_topics import GoldenTopicGenerator
+    from tools.preprocess.query_expand import QueryExpand
+    from tools.utility.request_utils import SessionManager
+    from tools.utility.tool_config import ToolConfig
 
 
 @dataclass
@@ -43,11 +43,11 @@ class SurveyEvaluationAgent:
 
     def __post_init__(self):
         self._normalize_paths()
-        self.minimum_completion = MinimalCompletionCheck(self.config)
+        self.minimum_completion = minimum_completion
         self.query_expand = QueryExpand(self.config)
         self.anchor_surveys = AnchorSurveyFetch(self.config)
         self.golden_topics = GoldenTopicGenerator(self.config)
-        self.dynamic_oracle = DynamicOracleGenerator(self.config)
+        self.dynamic_oracle = DynamicCandidatePool(self.config)
         self.citation_parser = CitationParser(self.config)
         self.claim_segmentation = ClaimSegmentation(self.config)
         self.fact_check = FactualCorrectnessCritic(self.config)
@@ -94,7 +94,7 @@ class SurveyEvaluationAgent:
         return results
 
     async def evaluate(self, query: str, review_paper: Dict[str, Any], few_shot_examples: Dict[str, str] | None = None):
-        minimum_check = await self.minimum_completion(review_paper)
+        minimum_check = self.minimum_completion(review_paper)
         result = {
             "query": query,
             "minimum_check": minimum_check["minimum_check"],
@@ -106,21 +106,28 @@ class SurveyEvaluationAgent:
         if minimum_check["minimum_check"]["status"] != "pass":
             return result
 
-        query_data = await self.query_expand(query)
-        anchor_data = await self.anchor_surveys(query_data["core"], query)
-        golden_topic_task = asyncio.create_task(self.golden_topics(query, anchor_data.get("anchor_surveys", {}), query_data["library"]))
-        oracle_task = asyncio.create_task(self.dynamic_oracle(query, query_data["queries"], query_data["library"]))
+        anchor_data = await self.anchor_surveys(query)
+        oracle_task = asyncio.create_task(
+            self.dynamic_oracle(
+                query,
+                anchor_data=anchor_data,
+            )
+        )
 
         parse_task = asyncio.create_task(self.citation_parser(review_paper.get("citations", {})))
         claim_task = asyncio.create_task(self.claim_segmentation(review_paper))
         quality_task = asyncio.create_task(self.quality_eval._run(review_paper))
-        golden_topic_data, oracle_data, citation_data, claim_data, quality_data = await asyncio.gather(
-            golden_topic_task,
+        oracle_data, citation_data, claim_data, quality_data = await asyncio.gather(
             oracle_task,
             parse_task,
             claim_task,
             quality_task,
             return_exceptions=False,
+        )
+        golden_topic_data = await self.golden_topics(
+            query,
+            anchor_data.get("anchor_surveys", {}),
+            oracle_data.get("library", {}),
         )
 
         paper_content_map = citation_data["paper_content_map"]
@@ -135,7 +142,7 @@ class SurveyEvaluationAgent:
         ]
         source_data = self.source_critic(
             paper_content_map,
-            oracle_data,
+            oracle_data.get("oracle_papers", {}),
             anchor_data.get("anchor_papers", {}),
             golden_topic_data.get("golden_topics", []),
         )
@@ -151,7 +158,7 @@ class SurveyEvaluationAgent:
         )
 
         result["preprocessing"] = {
-            "query_expand": query_data,
+            "query_expand": {"queries": oracle_data.get("queries", []), "library": oracle_data.get("library", {})},
             "anchor_surveys": anchor_data,
             "golden_topics": golden_topic_data,
             "oracle_data": oracle_data,

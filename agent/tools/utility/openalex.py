@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import hashlib
 import io
 import json
 import random
@@ -11,13 +12,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
+import Levenshtein
 
 from .request_utils import HEADERS, OpenAlexBudgetExceeded, RateLimit, SessionManager
 from .tool_config import ToolConfig
-from .utils import index_to_abstract
+from .utils import normalize_text, valid_check
 
 
-OPENALEX_SELECT = "id,cited_by_count,counts_by_year,referenced_works,publication_date,created_date,abstract_inverted_index,title"
+OPENALEX_SELECT = "id,cited_by_count,counts_by_year,referenced_works,publication_date,created_date,abstract_inverted_index,title,authorships"
 URL_DOMAIN = "https://openalex.org/"
 OPENALEX_API_URL = "https://api.openalex.org"
 OPENALEX_CONTENT_URL = "https://contents.openalex.org"
@@ -31,6 +33,17 @@ TRANSIENT_EXCEPTION_TYPES = (
     AssertionError,
     KeyError,
 )
+
+
+def index_to_abstract(indexes: dict | None):
+    if not indexes:
+        return None
+    abstract_length = max(v[-1] for v in indexes.values())
+    abstract = ["<mask>" for _ in range(abstract_length + 1)]
+    for token, positions in indexes.items():
+        for i in positions:
+            abstract[i] = token
+    return " ".join(abstract)
 
 
 @dataclass
@@ -111,7 +124,150 @@ class OpenAlex:
             self._normalize_openalex_id(work_id)
             for work_id in paper.get("referenced_works", []) or []
         ]
+        paper["authorships"] = self._normalize_authorships(paper.get("authorships", []))
+        if paper.get("id") and not paper.get("ids"):
+            paper["ids"] = [paper["id"]]
         return paper
+
+    def _normalize_authorships(self, authorships: list[dict] | list[str] | None) -> list[str]:
+        authors = []
+        for item in authorships or []:
+            if isinstance(item, str):
+                name = item
+            elif isinstance(item, dict):
+                author = item.get("author") or {}
+                name = author.get("display_name") or ""
+            else:
+                name = ""
+            name = re.sub(r"\s+", " ", name or "").strip()
+            if name: authors.append(name)
+        return list(dict.fromkeys(authors))
+
+    def _paper_year(self, paper: dict) -> int | None:
+        publication_date = paper.get("publication_date") or ""
+        if isinstance(publication_date, str) and len(publication_date) >= 4 and publication_date[:4].isdigit():
+            return int(publication_date[:4])
+        return None
+
+    def _same_work(self, left: dict, right: dict) -> bool:
+        left_title = normalize_text(left.get("title", ""))
+        right_title = normalize_text(right.get("title", ""))
+        if not left_title or not right_title:
+            return False
+        max_title_len = max(len(left_title), len(right_title), 1)
+        if Levenshtein.distance(left_title, right_title) > max(1, int(0.1 * max_title_len)):
+            return False
+
+        left_authors = {normalize_text(author) for author in left.get("authorships", []) if normalize_text(author)}
+        right_authors = {normalize_text(author) for author in right.get("authorships", []) if normalize_text(author)}
+        if left_authors and right_authors:
+            overlap = len(left_authors & right_authors) / max(1, min(len(left_authors), len(right_authors)))
+            if overlap < 0.8:
+                return False
+
+        left_year = self._paper_year(left)
+        right_year = self._paper_year(right)
+        if left_year is not None and right_year is not None and abs(left_year - right_year) > 1:
+            return False
+        return True
+
+    def _minhash_buckets(self, title: str, num_hashes: int = 24, band_size: int = 4) -> list[tuple[int, tuple[int, ...]]]:
+        tokens = set(re.findall(r"[a-z0-9]+", normalize_text(title)))
+        if not tokens:
+            tokens = {normalize_text(title)}
+        signature = []
+        for seed in range(num_hashes):
+            values = []
+            for token in tokens:
+                digest = hashlib.blake2b(f"{seed}:{token}".encode("utf-8"), digest_size=8).hexdigest()
+                values.append(int(digest, 16))
+            signature.append(min(values) if values else 0)
+        return [
+            (band_idx, tuple(signature[band_idx: band_idx + band_size]))
+            for band_idx in range(0, num_hashes, band_size)
+        ]
+
+    def merge_duplicate_works(self, papers: list[dict], original_title: str = "") -> dict | None:
+        merged = self.deduplicate_works(papers, original_title=original_title)
+        if not merged:
+            return None
+        if len(merged) == 1:
+            return merged[0]
+        return self._merge_work_cluster(merged, original_title)
+
+    def deduplicate_works(self, papers: list[dict], original_title: str = "") -> list[dict]:
+        papers = [dict(paper) for paper in papers if paper and paper.get("title")]
+        if not papers:
+            return []
+
+        parent = list(range(len(papers)))
+
+        def find(idx: int) -> int:
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        def union(left: int, right: int):
+            root_left, root_right = find(left), find(right)
+            if root_left != root_right:
+                parent[root_right] = root_left
+
+        buckets = {}
+        for idx, paper in enumerate(papers):
+            for bucket in self._minhash_buckets(paper.get("title", "")):
+                buckets.setdefault(bucket, []).append(idx)
+        for indexes in buckets.values():
+            for pos, left in enumerate(indexes):
+                for right in indexes[pos + 1:]:
+                    if self._same_work(papers[left], papers[right]):
+                        union(left, right)
+
+        clusters = {}
+        for idx in range(len(papers)):
+            clusters.setdefault(find(idx), []).append(papers[idx])
+        return [self._merge_work_cluster(cluster, original_title) for cluster in clusters.values()]
+
+    def _merge_work_cluster(self, papers: list[dict], original_title: str = "") -> dict:
+        base = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
+        merged = dict(base)
+        ids = []
+        referenced_works = set()
+        authors = []
+        locations = []
+        seen_locations = set()
+        for paper in papers:
+            ids.extend(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
+            referenced_works.update(paper.get("referenced_works", []) or [])
+            authors.extend(paper.get("authorships", []) or [])
+            for location in paper.get("locations", []) or []:
+                key = json.dumps(location, sort_keys=True, ensure_ascii=False) if isinstance(location, dict) else str(location)
+                if key not in seen_locations:
+                    seen_locations.add(key)
+                    locations.append(location)
+
+        ids = list(dict.fromkeys(ids))
+        merged["ids"] = ids
+        if ids:
+            merged["id"] = ids[0]
+        merged["referenced_works"] = sorted(referenced_works)
+        merged["authorships"] = list(dict.fromkeys(authors))
+        if locations:
+            merged["locations"] = locations
+
+        dates = [paper.get("publication_date") for paper in papers if paper.get("publication_date")]
+        if dates:
+            merged["publication_date"] = min(dates)
+
+        title_anchor = original_title or papers[0].get("title", "")
+        merged["title"] = min(
+            (paper.get("title", "") for paper in papers if paper.get("title")),
+            key=lambda value: Levenshtein.distance(normalize_text(title_anchor), normalize_text(value)),
+        )
+        cited_source = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
+        merged["cited_by_count"] = cited_source.get("cited_by_count", 0) or 0
+        merged["counts_by_year"] = cited_source.get("counts_by_year", []) or []
+        return merged
 
     def _wrap_search_results(self, entity_type: str, payload: dict) -> dict:
         results = payload.get("results", []) if isinstance(payload, dict) else []
@@ -360,7 +516,7 @@ class OpenAlex:
         if do_sample:
             params["sample"] = per_page
             params["seed"] = random.randint(0, 32767)
-        elif per_page > 25: params["per-page"] = per_page
+        elif per_page: params["per-page"] = per_page
         if select: params["select"] = select
         estimated_cost = self._estimate_search_cost(search, filter)
         payload, _ = await self._request_json(
@@ -389,9 +545,24 @@ class OpenAlex:
     async def find_work_by_title(self, title: str, select: str | None = OPENALEX_SELECT) -> dict | None:
         results = await self.autocomplete("works", title)
         if not results.get("results"): return
-        entity_id = self._normalize_openalex_id(results["results"][0].get("id", ""))
-        if not entity_id: return
-        return await self.get_entity(entity_id, entity_type="works", select=select)
+        entity_ids = []
+        for item in results.get("results", []):
+            candidate_title = item.get("display_name") or item.get("title") or item.get("name") or ""
+            if not valid_check(title, candidate_title): continue
+            entity_id = self._normalize_openalex_id(item.get("id", ""))
+            if entity_id: entity_ids.append(entity_id)
+        if not entity_ids:
+            return
+
+        async def _single(entity_id: str):
+            try:
+                return await self.get_entity(entity_id, entity_type="works", select=select)
+            except Exception:
+                return None
+
+        tasks = [asyncio.create_task(_single(entity_id)) for entity_id in dict.fromkeys(entity_ids)]
+        papers = [paper for paper in await asyncio.gather(*tasks) if paper]
+        return self.merge_duplicate_works(papers, original_title=title)
 
     async def download_work_content(
         self,

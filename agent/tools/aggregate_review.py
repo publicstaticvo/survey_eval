@@ -1,8 +1,8 @@
 import jsonschema
-from .agent_state import AgentState
-from .llmclient import AsyncChat
 from .prompts import FINAL_AGGREGATION_PROMPT, FINAL_AGGREGATION_SCHEMA
-from .utils import extract_json
+from .utility.agent_state import AgentState
+from .utility.llmclient import AsyncChat
+from .eval.utils import extract_json
 
 
 class FinalAggregate(AsyncChat):

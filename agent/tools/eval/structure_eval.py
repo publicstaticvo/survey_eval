@@ -2,9 +2,9 @@ import asyncio
 import jsonschema
 from typing import List, Dict, Any
 
-from .prompts import *
-from .tool_config import ToolConfig
-from .llmclient import AsyncChat
+from ..prompts import *
+from ..utility.llmclient import AsyncChat
+from ..utility.tool_config import ToolConfig
 from .fact_check import FactCheckLLMClient
 from .utils import extract_json, iter_sections, paragraph_to_text
 

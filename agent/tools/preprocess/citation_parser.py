@@ -4,11 +4,11 @@ import tqdm
 import asyncio
 from typing import Dict, Any
 
-from .tool_config import ToolConfig
 from .websearch import WebSearchFallback
-from .paper_download import PaperDownload
-from .utils import valid_check, index_to_abstract
-from .openalex import OPENALEX_SELECT, get_openalex_client
+from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
+from ..utility.paper_download import PaperDownload
+from ..utility.tool_config import ToolConfig
+from .utils import valid_check
 
 
 class CitationParser:

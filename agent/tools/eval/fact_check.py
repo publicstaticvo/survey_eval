@@ -1,11 +1,11 @@
 from typing import List, Dict, Any
 
-from .tool_config import ToolConfig
-from .llmclient import AsyncChat
 from .evidence_check import EvidenceCheck
-from .prompts import FACTUAL_CORRECTNESS_PROMPT
+from ..prompts import FACTUAL_CORRECTNESS_PROMPT
+from ..utility.llmclient import AsyncChat
+from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.tool_config import ToolConfig
 from .utils import extract_json, split_content_to_paragraph, paragraph_to_text, cosine_similarity_matrix
-from .sbert_client import SentenceTransformerClient
 
 
 class FactCheckLLMClient(AsyncChat):

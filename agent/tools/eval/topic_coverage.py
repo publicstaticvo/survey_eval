@@ -1,8 +1,8 @@
 from typing import Dict, Any, List
 
-from .sbert_client import SentenceTransformerClient
-from .golden_topics import TopicRecord
-from .tool_config import ToolConfig
+from ..preprocess.golden_topics import TopicRecord
+from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.tool_config import ToolConfig
 from .utils import cosine_similarity_matrix
 
 debug = True

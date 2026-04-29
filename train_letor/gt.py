@@ -14,11 +14,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.tools.llmclient import AsyncChat
-from agent.tools.openalex import OpenAlex, get_openalex_client
-from agent.tools.request_utils import HEADERS, OpenAlexBudgetExceeded, RateLimit, SessionManager
-from agent.tools.tool_config import ToolConfig
-from agent.tools.utils import extract_json, valid_check
+from agent.tools.utility.llmclient import AsyncChat
+from agent.tools.utility.openalex import OpenAlex, get_openalex_client
+from agent.tools.utility.request_utils import HEADERS, OpenAlexBudgetExceeded, RateLimit, SessionManager
+from agent.tools.utility.tool_config import ToolConfig
+from agent.tools.preprocess.utils import extract_json
+from agent.tools.utility.utils import valid_check
 
 
 DATASET_PATH = Path(__file__).resolve().parent / "surveygen.jsonl"

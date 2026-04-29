@@ -12,10 +12,10 @@ from hdbscan import HDBSCAN
 from sklearn.feature_extraction.text import CountVectorizer
 from umap import UMAP
 
-from .llmclient import AsyncChat
-from .prompts import TOPIC_LABEL_FROM_CLUSTER_PROMPT
-from .sbert_client import SentenceTransformerClient
-from .tool_config import ToolConfig
+from ..prompts import TOPIC_LABEL_FROM_CLUSTER_PROMPT
+from ..utility.llmclient import AsyncChat
+from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.tool_config import ToolConfig
 from .utils import cosine_similarity_matrix, extract_json, normalize_text
 
 
@@ -91,7 +91,7 @@ class GoldenTopicGenerator:
         self.topic_label_llm = TopicLabelLLMClient(config.llm_server_info, config.sampling_params)
         self.anchor_merge_threshold = 0.85
         self.base_overlap_threshold = 0.5
-        self.bertopic_min_topic_size = 5
+        self.bertopic_min_topic_size = 10
         self.library_keep_ratio = 0.3
 
     def _normalize_title_for_keyword_match(self, title: str) -> str:

@@ -27,35 +27,35 @@ def _load_jsonl(name: str):
 
 
 if __package__:
-    from .tools.anchor_surveys import AnchorSurveyFetch
-    from .tools.argument_eval import ArgumentStructureEvaluator
-    from .tools.citation_parser import CitationParser
-    from .tools.claim_segmentation import ClaimSegmentation
-    from .tools.dynamic_oracle_generator import DynamicOracleGenerator
-    from .tools.fact_check import FactualCorrectnessCritic
-    from .tools.golden_topics import GoldenTopicGenerator
-    from .tools.minimum_completion import minimum_completion
-    from .tools.query_expand import QueryExpand
-    from .tools.request_utils import SessionManager
-    from .tools.source_critic import MissingPaperCheck
-    from .tools.structure_eval import StructureCheck
-    from .tools.tool_config import ToolConfig
-    from .tools.topic_coverage import TopicCoverageCritic
+    from .tools.eval.argument_eval import ArgumentStructureEvaluator
+    from .tools.eval.fact_check import FactualCorrectnessCritic
+    from .tools.eval.minimum_completion import minimum_completion
+    from .tools.eval.missing_papers import MissingPaperCheck
+    from .tools.eval.structure_eval import StructureCheck
+    from .tools.eval.topic_coverage import TopicCoverageCritic
+    from .tools.preprocess.anchor_surveys import AnchorSurveyFetch
+    from .tools.preprocess.citation_parser import CitationParser
+    from .tools.preprocess.claim_segmentation import ClaimSegmentation
+    from .tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
+    from .tools.preprocess.golden_topics import GoldenTopicGenerator
+    from .tools.preprocess.query_expand import QueryExpand
+    from .tools.utility.request_utils import SessionManager
+    from .tools.utility.tool_config import ToolConfig
 else:
-    from tools.anchor_surveys import AnchorSurveyFetch
-    from tools.argument_eval import ArgumentStructureEvaluator
-    from tools.citation_parser import CitationParser
-    from tools.claim_segmentation import ClaimSegmentation
-    from tools.dynamic_oracle_generator import DynamicOracleGenerator
-    from tools.fact_check import FactualCorrectnessCritic
-    from tools.golden_topics import GoldenTopicGenerator
-    from tools.minimum_completion import minimum_completion
-    from tools.query_expand import QueryExpand
-    from tools.request_utils import SessionManager
-    from tools.source_critic import MissingPaperCheck
-    from tools.structure_eval import StructureCheck
-    from tools.tool_config import ToolConfig
-    from tools.topic_coverage import TopicCoverageCritic
+    from tools.eval.argument_eval import ArgumentStructureEvaluator
+    from tools.eval.fact_check import FactualCorrectnessCritic
+    from tools.eval.minimum_completion import minimum_completion
+    from tools.eval.missing_papers import MissingPaperCheck
+    from tools.eval.structure_eval import StructureCheck
+    from tools.eval.topic_coverage import TopicCoverageCritic
+    from tools.preprocess.anchor_surveys import AnchorSurveyFetch
+    from tools.preprocess.citation_parser import CitationParser
+    from tools.preprocess.claim_segmentation import ClaimSegmentation
+    from tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
+    from tools.preprocess.golden_topics import GoldenTopicGenerator
+    from tools.preprocess.query_expand import QueryExpand
+    from tools.utility.request_utils import SessionManager
+    from tools.utility.tool_config import ToolConfig
 
 
 async def testQueryExpand(config, survey_title):
@@ -64,17 +64,19 @@ async def testQueryExpand(config, survey_title):
 
 
 async def testAnchorSurveyFetch(config, survey_title):
-    qe = _load_json("qe.json")
-    results = await AnchorSurveyFetch(config)(qe["core"], survey_title)
+    results = await AnchorSurveyFetch(config)(survey_title)
     _write_json("anchor_papers.json", results["anchor_papers"])
     _write_json("anchor_surveys.json", results["anchor_surveys"])
 
 
 async def testDynamicOracleGenerator(config, survey_title):
-    qe = _load_json("qe.json")
-    oracles = await DynamicOracleGenerator(config)(survey_title, qe["library"])
-    assert len(oracles["oracle_papers"]) == 1000, len(oracles["oracle_papers"])
-    _write_json("oracles.json", oracles["oracle_papers"])
+    anchor_papers = _load_json("anchor_papers.json")
+    anchor_surveys = _load_json("anchor_surveys.json")
+    oracles = await DynamicCandidatePool(config)(
+        survey_title,
+        anchor_data={"anchor_papers": anchor_papers, "anchor_surveys": anchor_surveys},
+    )
+    _write_json("oracles.json", oracles["candidate_pool"])
 
 
 async def testGoldenTopicGenerator(config, query):
@@ -180,8 +182,8 @@ async def main():
         # print(minimum_completion(paper))
         # await testQueryExpand(config, survey_title)  # 不需要sbert不需要grobid
         # print("testQueryExpand passed")
-        await testAnchorSurveyFetch(config, survey_title)  # 需要sbert需要grobid
-        print("testAnchorSurveyFetch passed")
+        # await testAnchorSurveyFetch(config, survey_title)  # 需要sbert需要grobid
+        # print("testAnchorSurveyFetch passed")
         # await testDynamicOracleGenerator(config, survey_title)  # 需要sbert不需要grobid
         # print("testDynamicOracleGenerator passed")
         await testGoldenTopicGenerator(config, query)  # 需要sbert不需要grobid

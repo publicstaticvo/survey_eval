@@ -21,7 +21,7 @@ class AgentState(BaseModel):
         - full_content: full_content (Dict[str, str]) / abstract (str) / title (str)
     """ 
     paper_content_map: Dict[str, str] = Field(default_factory=dict)     # From Retriever (Map: ID -> Text)
-    oracle_data: Dict[str, Any] = Field(default_factory=dict)           # From Oracle
+    candidate_pool: Dict[str, Any] = Field(default_factory=dict)           # From Oracle
     claims: List[Dict] = Field(default_factory=list)                    # From Segmentation
     anchor_papers: List[str] = Field(default_factory=list) 
 

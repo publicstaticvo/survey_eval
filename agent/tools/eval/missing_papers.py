@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Any
 
-from .sbert_client import SentenceTransformerClient
-from .tool_config import ToolConfig
+from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.tool_config import ToolConfig
 from .utils import cosine_similarity_matrix
 
 
@@ -54,10 +54,27 @@ class MissingPaperCheck:
 
     def __call__(self, citations: dict, oracle_data: dict, anchor_papers: dict, topics: list):
         print(f"{len(anchor_papers)} anchor papers")
-        cited_id_set = {info.get("metadata", {}).get("id") for info in citations.values() if info.get("metadata")}
-        missing_anchors = [paper for paper in anchor_papers.values() if paper.get("id") not in cited_id_set]
-        missing_anchor_ids = {paper.get("id") for paper in missing_anchors}
-        missing_oracles = [v for v in oracle_data.values() if v['id'] not in cited_id_set.union(missing_anchor_ids)]
+        cited_id_set = set()
+        for info in citations.values():
+            metadata = info.get("metadata") or {}
+            ids = metadata.get("ids") or ([metadata["id"]] if metadata.get("id") else [])
+            cited_id_set.update(ids)
+
+        missing_anchors = []
+        missing_anchor_ids = set()
+        for paper in anchor_papers.values():
+            ids = set(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
+            if ids and ids & cited_id_set:
+                continue
+            missing_anchors.append(paper)
+            missing_anchor_ids.update(ids)
+
+        missing_oracles = []
+        for paper in oracle_data.values():
+            ids = set(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
+            if ids and ids & cited_id_set.union(missing_anchor_ids):
+                continue
+            missing_oracles.append(paper)
         missing_oracles = self._filter_oracles(citations, missing_oracles, topics)
         missing_oracles.sort(key=lambda paper: paper.get("rank", 0.0), reverse=True)
         return {"source_evals": {"missing_oracles": missing_oracles, "missing_anchors": missing_anchors}}

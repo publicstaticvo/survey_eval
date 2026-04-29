@@ -2,15 +2,15 @@ import asyncio
 import argparse
 
 try:
-    from .tools.grobidpdf.paper_parser import PaperParser
-    from .tools.request_utils import SessionManager
-    from .tools.tool_config import ToolConfig
+    from .tools.utility.grobidpdf.paper_parser import PaperParser
+    from .tools.utility.request_utils import SessionManager
+    from .tools.utility.tool_config import ToolConfig
     from .agent import build_agent
     from .config import Config
 except ImportError:
-    from tools.grobidpdf.paper_parser import PaperParser
-    from tools.request_utils import SessionManager
-    from tools.tool_config import ToolConfig
+    from tools.utility.grobidpdf.paper_parser import PaperParser
+    from tools.utility.request_utils import SessionManager
+    from tools.utility.tool_config import ToolConfig
     from agent import build_agent
     from config import Config
 

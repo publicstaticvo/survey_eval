@@ -5,10 +5,9 @@ import numpy as np
 from typing import List, Tuple
 from collections import Counter
 
-from .tool_config import ToolConfig
-from .sbert_client import SentenceTransformerClient
-from .utils import split_content_to_paragraph
-from .utils import cosine_similarity_matrix
+from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.tool_config import ToolConfig
+from .utils import split_content_to_paragraph, cosine_similarity_matrix
 
 
 class ProgrammaticReadabilityCritic:

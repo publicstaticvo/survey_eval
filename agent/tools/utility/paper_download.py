@@ -6,8 +6,8 @@ from typing import Optional
 import aiohttp
 from tenacity import retry, retry_if_exception, retry_if_result, stop_after_attempt, wait_exponential
 
-from .grobidpdf.paper_parser import PaperParser
-from .openalex import get_openalex_client
+from .grobidpdf import PaperParser
+from .openalex import OPENALEX_SELECT, get_openalex_client
 from .request_utils import RateLimit, SessionManager
 
 parser = PaperParser()
@@ -150,7 +150,7 @@ class PaperDownload:
                 return None
             paper_meta = await self.openalex.find_work_by_title(
                 title,
-                select="id,title,best_oa_location,locations",
+                select=f"{OPENALEX_SELECT},best_oa_location,locations",
             ) or {}
             if not paper_meta:
                 return None

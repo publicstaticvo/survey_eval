@@ -1,9 +1,9 @@
 from typing import Any, Dict, List
 
 from .evidence_check import EvidenceCheck
-from .llmclient import AsyncChat
-from .prompts import CORE_ARGUMENT_PROMPT, MAIN_CONTRIBUTION_PROMPT, RESEARCH_GAP_PROMPT
-from .tool_config import ToolConfig
+from ..prompts import CORE_ARGUMENT_PROMPT, MAIN_CONTRIBUTION_PROMPT, RESEARCH_GAP_PROMPT
+from ..utility.llmclient import AsyncChat
+from ..utility.tool_config import ToolConfig
 from .utils import extract_json, get_first_section, safe_text, section_to_text
 
 

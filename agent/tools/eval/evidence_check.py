@@ -1,6 +1,6 @@
 import re
 from difflib import SequenceMatcher
-from .tool_config import ToolConfig
+from ..utility.tool_config import ToolConfig
 
 
 class EvidenceCheck:

@@ -3,11 +3,10 @@ import asyncio
 import jsonschema
 from typing import Any, List, Dict
 
-from .prompts import CLAIM_CLASSIFICATION_PROMPT
+from ..prompts import CLAIM_CLASSIFICATION_PROMPT
+from ..utility.llmclient import AsyncChat
+from ..utility.tool_config import ToolConfig
 from .utils import split_content_to_paragraph, extract_json
-from .sbert_client import SentenceTransformerClient
-from .tool_config import ToolConfig
-from .llmclient import AsyncChat
 
 
 def range_check(claim: str, paragraph: List[Dict[str, Any]], anchor_id: int) -> bool:
@@ -75,8 +74,7 @@ class ClaimSegmentation:
 
     async def __call__(self, paper_content: Dict[str, Any]):
         paragraphs = split_content_to_paragraph(paper_content)
-        claims = []
-        errors = []
+        claims, errors = [], []
         for paragraph_id, paragraph in enumerate(paragraphs):
             for sentence_id, sentence in enumerate(paragraph):
                 citation_keys = self._normalize_citations(sentence.get("citations", []))

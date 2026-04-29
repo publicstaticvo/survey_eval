@@ -13,10 +13,10 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.tools.openalex import OPENALEX_SELECT, get_openalex_client
-from agent.tools.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
-from agent.tools.tool_config import ToolConfig
-from agent.tools.utils import cosine_similarity_matrix
+from agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
+from agent.tools.utility.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
+from agent.tools.utility.tool_config import ToolConfig
+from agent.tools.preprocess.utils import cosine_similarity_matrix
 from train_letor.gt import OPENALEX_KEYS
 from train_letor.main import OracleFeatureCollector, StrictQueryExpand
 
