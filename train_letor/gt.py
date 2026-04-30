@@ -20,6 +20,7 @@ from agent.tools.utility.request_utils import HEADERS, OpenAlexBudgetExceeded, R
 from agent.tools.utility.tool_config import ToolConfig
 from agent.tools.preprocess.utils import extract_json
 from agent.tools.utility.utils import valid_check
+from main import SURVEY_SELECT
 
 
 DATASET_PATH = Path(__file__).resolve().parent / "surveygen.jsonl"

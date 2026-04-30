@@ -34,8 +34,7 @@ class QueryExpand:
         select: str = f"{OPENALEX_SELECT},relevance_score",
     ) -> List[Dict[str, Any]]:
         search = query.strip()
-        if not search:
-            return []
+        if not search: return []
 
         papers = []
         total = uplimit
@@ -47,7 +46,7 @@ class QueryExpand:
                 select=select,
                 page=page,
                 filter={
-                    "from_publication_date": (self.eval_date - timedelta(days=730)).strftime("%Y-%m-%d"),
+                    "from_publication_date": (self.eval_date - timedelta(days=731)).strftime("%Y-%m-%d"),
                     "to_publication_date": (self.eval_date - timedelta(days=90)).strftime("%Y-%m-%d"),
                 },
             )

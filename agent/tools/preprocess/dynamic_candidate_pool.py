@@ -1,10 +1,12 @@
 import math
+import asyncio
 from typing import Any, Dict
 
 import lightgbm
 import networkx as nx
 import numpy as np
 
+from .build_sources import AnchorSurveySource, DirectSeedGraphSource, RecentSemanticSource
 from ..utility.openalex import get_openalex_client
 from ..utility.sbert_client import SentenceTransformerClient
 from ..utility.tool_config import ToolConfig
@@ -22,13 +24,38 @@ SOURCE_PRIORITY = {
 
 
 class LiteratureCandidateDeduplicate:
+    def __init__(self, config: ToolConfig):
+        self.openalex = get_openalex_client(config)
 
     def _preferred_source(self, sources: list[str]) -> str:
         return min(sources, key=lambda source: SOURCE_PRIORITY.get(source, 999)) if sources else ""
 
+    def _source_set(self, paper: dict) -> set[str]:
+        sources = set(paper.get("candidate_sources", []) or [])
+        if paper.get("candidate_source"):
+            sources.add(paper["candidate_source"])
+        return sources
+
+    def _merge_exact_duplicate(self, existing: dict, incoming: dict) -> dict:
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if key not in merged or merged[key] in (None, "", [], {}):
+                merged[key] = value
+
+        sources = self._source_set(existing) | self._source_set(incoming)
+        merged["candidate_sources"] = sorted(sources, key=lambda source: SOURCE_PRIORITY.get(source, 999))
+        merged["candidate_source"] = self._preferred_source(merged["candidate_sources"])
+        merged["anchor_survey_count"] = max(existing.get("anchor_survey_count", 0) or 0, incoming.get("anchor_survey_count", 0) or 0)
+        merged["survey_cited_by_count"] = max(existing.get("survey_cited_by_count", 0) or 0, incoming.get("survey_cited_by_count", 0) or 0)
+        merged["neighbor_seed_count"] = max(existing.get("neighbor_seed_count", 0) or 0, incoming.get("neighbor_seed_count", 0) or 0)
+        neighbor_ids = set(existing.get("neighbor_seed_ids", []) or []) | set(incoming.get("neighbor_seed_ids", []) or [])
+        if neighbor_ids:
+            merged["neighbor_seed_ids"] = sorted(neighbor_ids)
+        return merged
+
     def _merge_sources_after_dedup(self, paper: dict, raw_pool: dict[str, dict[str, Any]]):
         ids = paper.get("ids") or ([paper["id"]] if paper.get("id") else [])
-        sources = set(paper.get("candidate_sources", []) or [])
+        sources = self._source_set(paper)
         anchor_count = paper.get("anchor_survey_count", 0) or 0
         neighbor_count = paper.get("neighbor_seed_count", 0) or 0
         neighbor_ids = set(paper.get("neighbor_seed_ids", []) or [])
@@ -36,7 +63,7 @@ class LiteratureCandidateDeduplicate:
             original = raw_pool.get(original_id)
             if not original:
                 continue
-            sources.update(original.get("candidate_sources", []) or [])
+            sources.update(self._source_set(original))
             if original.get("anchor_survey_count", 0):
                 anchor_count = max(anchor_count, original.get("anchor_survey_count", 0))
             if original.get("neighbor_seed_count", 0):
@@ -61,7 +88,11 @@ class LiteratureCandidateDeduplicate:
         raw_pool = {}
         for source in [source_1_anchor, source_2_seed, source_3_new]:
             for paper_id, paper in source.items():
-                raw_pool[paper_id] = paper
+                raw_pool[paper_id] = (
+                    self._merge_exact_duplicate(raw_pool[paper_id], paper)
+                    if paper_id in raw_pool
+                    else dict(paper)
+                )
         deduped = self.openalex.deduplicate_works(list(raw_pool.values()), original_title=query)
         candidate_pool = {}
         for paper in deduped:
@@ -71,9 +102,9 @@ class LiteratureCandidateDeduplicate:
         return {"candidate_pool": candidate_pool}
 
 
-class LetorCitationScorer:
+class LetorCandidateScorer:
     def __init__(self, config: ToolConfig):
-        self.letor = lightgbm.Booster(model_file=config.letor_path)
+        self.letor = config.letor_path
         self.eval_date = config.evaluation_date
         self.num_oracle_papers = config.num_oracle_papers
         self.sentence_transformer = SentenceTransformerClient(config.sbert_server_url)
@@ -105,19 +136,37 @@ class LetorCitationScorer:
         scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0].tolist()
         return {paper_id: score for paper_id, score in zip(paper_ids, scores)}
 
+    def _build_alias_to_canonical_id(self, candidate_pool: Dict[str, Any]) -> dict[str, str]:
+        alias_to_canonical = {}
+        for canonical_id, paper in candidate_pool.items():
+            aliases = set(paper.get("ids") or [])
+            if paper.get("id"):
+                aliases.add(paper["id"])
+            aliases.add(canonical_id)
+            for alias in aliases:
+                if alias and alias not in alias_to_canonical:
+                    alias_to_canonical[alias] = canonical_id
+        return alias_to_canonical
+
     def _local_citation_and_pagerank(self, candidate_pool: Dict[str, Any]):
+        alias_to_canonical = self._build_alias_to_canonical_id(candidate_pool)
         graph = nx.DiGraph()
         graph.add_nodes_from(candidate_pool)
         local_citation_count = {paper_id: 0 for paper_id in candidate_pool}
         for source_id, paper in candidate_pool.items():
+            canonical_references = set()
             for target_id in paper.get("referenced_works", []):
-                if target_id in candidate_pool:
-                    graph.add_edge(source_id, target_id)
-                    local_citation_count[target_id] += 1
+                canonical_target_id = alias_to_canonical.get(target_id)
+                if canonical_target_id and canonical_target_id != source_id:
+                    canonical_references.add(canonical_target_id)
+            paper["canonical_referenced_works"] = sorted(canonical_references)
+            for target_id in canonical_references:
+                graph.add_edge(source_id, target_id)
+                local_citation_count[target_id] += 1
         pagerank = nx.pagerank(graph, alpha=0.85) if graph.number_of_nodes() else {}
         return local_citation_count, pagerank
 
-    def __call__(self, query: str, candidate_pool: Dict[str, Any]) -> dict[str, Any]:
+    def __call__(self, query: str, candidate_pool: Dict[str, Any], calc_rank: bool = True) -> dict[str, Any]:
         if not candidate_pool: return {}
         scored_pool = {paper_id: dict(paper) for paper_id, paper in candidate_pool.items()}
         similarity = self._score_similarity(query, scored_pool)
@@ -142,28 +191,49 @@ class LetorCitationScorer:
             ]
             features.append(paper["features"])
 
-        ranks = self.letor.predict(np.asarray(features)).tolist()
-        for paper_id, rank in zip(paper_ids, ranks):
-            scored_pool[paper_id]["rank"] = rank
+        if calc_rank:
+            if isinstance(self.letor, str): self.letor = lightgbm.Booster(model_file=self.letor)
+            ranks = self.letor.predict(np.asarray(features)).tolist()
+            for paper_id, rank in zip(paper_ids, ranks):
+                scored_pool[paper_id]["rank"] = rank
+            return scored_pool
+        
+        for paper_id, feature in zip(paper_ids, features):
+            scored_pool[paper_id]['feature'] = feature
         return scored_pool
 
 
 class DynamicCandidatePool:
     def __init__(self, config: ToolConfig):
-        self.pool_builder = LiteratureCandidateDeduplicate(config)
-        self.scorer = LetorCitationScorer(config)
+        self.anchor_source = AnchorSurveySource(config)
+        self.direct_seed_source = DirectSeedGraphSource(config)
+        self.recent_semantic_source = RecentSemanticSource(config)
+        self.deduplicator = LiteratureCandidateDeduplicate(config)
+        self.scorer = LetorCandidateScorer(config)
 
     async def __call__(
         self,
         query: str,
-        anchor_data: dict[str, Any] | None = None,
+        download_anchor_surveys: bool = True,
+        calc_rank: bool = True,
     ) -> dict:
-        candidate_data = await self.pool_builder(query, anchor_data=anchor_data)
-        oracle_papers = self.scorer(query, candidate_data["candidate_pool"])
-        return {
-            "candidate_pool": candidate_data["candidate_pool"],
-            "oracle_papers": oracle_papers,
-            "queries": candidate_data.get("queries", []),
-            "library": candidate_data.get("library", {}),
-            "new_papers": candidate_data.get("new_papers", {}),
-        }
+        # anchor_data = await self.anchor_source(query, download=download_anchor_surveys)
+        # seed_library, neighbor_papers = await self.direct_seed_source(query)
+        # recent_data = await self.recent_semantic_source(query)
+        anchor_data, (seed_library, neighbor_papers), recent_data = await asyncio.gather(
+            self.anchor_source(query, download=download_anchor_surveys),
+            self.direct_seed_source(query),
+            self.recent_semantic_source(query)
+        )
+        source_1_anchor = anchor_data.get("anchor_papers", {}) or {}
+        source_2_seed_graph = {**neighbor_papers, **seed_library}
+        source_3_new = recent_data.get("new_papers", {}) or {}
+
+        candidate_data = await self.deduplicator(
+            query,
+            source_1_anchor=source_1_anchor,
+            source_2_seed=source_2_seed_graph,
+            source_3_new=source_3_new,
+        )
+        oracle_papers = self.scorer(query, candidate_data["candidate_pool"], calc_rank=calc_rank)
+        return {"candidate_pool": oracle_papers, "anchor_surveys": anchor_data['anchor_surveys']}

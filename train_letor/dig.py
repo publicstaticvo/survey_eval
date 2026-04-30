@@ -1,6 +1,5 @@
 import asyncio
 import json
-import math
 import re
 import sys
 from dataclasses import replace
@@ -13,12 +12,13 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from agent.tools.preprocess.build_sources import DirectSeedGraphSource
+from agent.tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool, LetorCandidateScorer
 from agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
 from agent.tools.utility.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
 from agent.tools.utility.tool_config import ToolConfig
 from agent.tools.preprocess.utils import cosine_similarity_matrix
 from train_letor.gt import OPENALEX_KEYS
-from train_letor.main import OracleFeatureCollector, StrictQueryExpand
 
 
 SURVEYS_PATH = Path(__file__).resolve().parent / "surveys.jsonl"
@@ -82,21 +82,12 @@ async def build_direct_oracle_for_item(
     output_dir: Path = OUTPUTS_DIRECT_DIR,
 ):
     config = get_eval_config(source_item)
-    query_expand = StrictQueryExpand(config)
+    seed_source = DirectSeedGraphSource(config)
     query = (survey_item.get("query") or "").strip()
     if not query:
         raise ValueError("survey_item has no query")
 
-    papers = await query_expand._request_for_papers(
-        query,
-        uplimit=config.num_oracle_papers,
-        select=f"{OPENALEX_SELECT},relevance_score,abstract_inverted_index",
-    )
-    oracle = {}
-    for paper in papers:
-        paper_id = paper.get("id")
-        if paper_id:
-            oracle[paper_id] = paper | {"query": query}
+    oracle = await seed_source.search_seed_papers(query, uplimit=config.num_oracle_papers)
 
     output_path = output_path_for(output_dir, survey_item["index"], survey_item["title"])
     with output_path.open("w", encoding="utf-8") as f:
@@ -111,140 +102,26 @@ async def build_unlimited_oracle_for_item(
 ):
     config = get_eval_config(source_item)
     oracle_limit = config.num_oracle_papers
-    query_expand = StrictQueryExpand(config)
-    oracle_helper = OracleFeatureCollector(config)
+    dynamic_pool = DynamicCandidatePool(config)
     query = (survey_item.get("query") or "").strip()
     if not query:
         raise ValueError("survey_item has no query")
 
-    seed_papers = await query_expand._request_for_papers(
-        query,
-        uplimit=100,
-        select=f"{OPENALEX_SELECT},relevance_score,abstract_inverted_index",
-    )
-    seed_library = {paper["id"]: paper | {"query": query} for paper in seed_papers if paper.get("id")}
-    seed_ids = set(seed_library)
-
-    openalex = get_openalex_client(config)
-    neighbor_papers: dict[str, dict[str, Any]] = {}
-    cites_seed_sources: dict[str, set[str]] = {}
-    cited_by_seed_sources: dict[str, set[str]] = {}
-
-    async def _fetch_neighbors(seed_id: str):
-        cited_by_seed = {}
-        cites_seed = {}
-
-        results = await openalex.search_works(
-            "works",
-            filter={"cited_by": seed_id, "to_publication_date": config.evaluation_date.strftime("%Y-%m-%d")},
-            per_page=200,
-            select=f"{OPENALEX_SELECT},abstract_inverted_index",
-            sort="cited_by_count:desc",
-        )
-        count = results['count']
-        for paper in results.get("results", []):
-            if paper.get("id"):
-                cited_by_seed[paper["id"]] = paper
-        
-        if count > 200:
-            for i in range(2, (count - 1) // 200 + 2):
-                results = await openalex.search_works(
-                    "works",
-                    filter={"cited_by": seed_id, "to_publication_date": config.evaluation_date.strftime("%Y-%m-%d")},
-                    per_page=200, page=i,
-                    select=f"{OPENALEX_SELECT},abstract_inverted_index",                    
-                    sort="cited_by_count:desc",
-                )
-                count = results['count']
-                for paper in results.get("results", []):
-                    if paper.get("id"):
-                        cited_by_seed[paper["id"]] = paper
-
-        # results = await openalex.search_works(
-        #     "works",
-        #     filter={"cites": seed_id, "to_publication_date": config.evaluation_date.strftime("%Y-%m-%d")},
-        #     per_page=200,
-        #     select=f"{OPENALEX_SELECT},abstract_inverted_index",
-        #     sort="cited_by_count:desc",
-        # )
-        # for paper in results.get("results", []):
-        #     if paper.get("id"):
-        #         cites_seed[paper["id"]] = paper
-
-        return seed_id, cited_by_seed, cites_seed
-
-    tasks = [asyncio.create_task(_fetch_neighbors(seed_id)) for seed_id in seed_library]
-    for task in asyncio.as_completed(tasks):
-        seed_id, cited_by_seed, cites_seed = await task
-        for paper_id, paper in cited_by_seed.items():
-            if paper_id in seed_ids: continue
-            neighbor_papers[paper_id] = paper
-            cited_by_seed_sources.setdefault(paper_id, set()).add(seed_id)
-        for paper_id, paper in cites_seed.items():
-            if paper_id in seed_ids: continue
-            neighbor_papers[paper_id] = paper
-            cites_seed_sources.setdefault(paper_id, set()).add(seed_id)
-
-    co_neighbors, long_tail = {}, {}
-    for paper_id, paper in neighbor_papers.items():
-        connected_seed_ids = cites_seed_sources.get(paper_id, set()) | cited_by_seed_sources.get(paper_id, set())
-        paper["connected_seed_count"] = len(connected_seed_ids)
-        paper["cited_by_seed_count"] = len(cited_by_seed_sources.get(paper_id, set()))
-        paper["cites_seed_count"] = len(cites_seed_sources.get(paper_id, set()))
-        if paper["connected_seed_count"] >= 2:
-            co_neighbors[paper_id] = paper
-        else:
-            long_tail[paper_id] = paper
-
-    selected_count, selected_reason, selected_included = 0, {}, {}
-    for paper_id in seed_library:
-        selected_count += 1
-        selected_reason[paper_id] = "seed"
-        selected_included[paper_id] = selected_count <= oracle_limit
-    print(f"{selected_count} seeds", end=',')
-
-    ranked_co_neighbors = sorted(
-        co_neighbors.items(),
-        key=lambda item: item[1]["connected_seed_count"] * 100 + math.log1p(max(0, oracle_helper._citation_count_by_eval_date(item[1]))),
-        reverse=True,
-    )
-    for paper_id, _ in ranked_co_neighbors:
-        selected_count += 1
-        selected_reason[paper_id] = "neighbors"
-        selected_included[paper_id] = selected_count <= oracle_limit
-
-    print(f"{selected_count} co-neighbors", end=',')
-    if long_tail:
-        similarity = oracle_helper._score_similarity(query, long_tail)
-        ranked_long_tail = sorted(
-            long_tail.items(),
-            key=lambda item: similarity.get(item[0], 0.0) * 10 + math.log1p(max(0, oracle_helper._citation_count_by_eval_date(item[1]))),
+    pool_data = await dynamic_pool(query, download_anchor_surveys=False, calc_rank=True)
+    scored_pool = pool_data["oracle_papers"]
+    included_ids = {
+        paper_id
+        for paper_id, _ in sorted(
+            scored_pool.items(),
+            key=lambda item: item[1].get("rank", 0.0),
             reverse=True,
-        )
-        for paper_id, paper in ranked_long_tail:
-            paper["query_similarity"] = similarity.get(paper_id, 0.0)
-            selected_count += 1
-            selected_reason[paper_id] = "neighbors"
-            selected_included[paper_id] = selected_count <= oracle_limit
-        print(f"{selected_count} long-tails", end=',')
-    print()
-
+        )[:oracle_limit]
+    }
     unlimited = {}
-    for paper_id, paper in seed_library.items():
+    for paper_id, paper in scored_pool.items():
         paper_copy = dict(paper)
-        paper_copy["oracle_included"] = selected_included.get(paper_id, False)
-        paper_copy["oracle_reason"] = "seed"
-        paper_copy["oracle_limit"] = oracle_limit
-        paper_copy["oracle_1000_included"] = paper_copy["oracle_included"]
-        paper_copy["oracle_1000_reason"] = paper_copy["oracle_reason"]
-        paper_copy["cited_by_seed_count"] = sum(1 for other_paper in seed_library.values() if paper_id in (other_paper.get("referenced_works") or []))
-        paper_copy["cites_seed_count"] = sum(1 for ref_id in paper_copy.get("referenced_works", []) if ref_id in seed_ids)
-        unlimited[paper_id] = paper_copy
-
-    for paper_id, paper in neighbor_papers.items():
-        paper_copy = dict(paper)
-        paper_copy["oracle_included"] = selected_included.get(paper_id, False)
-        paper_copy["oracle_reason"] = selected_reason.get(paper_id, "")
+        paper_copy["oracle_included"] = paper_id in included_ids
+        paper_copy["oracle_reason"] = paper_copy.get("candidate_source", "")
         paper_copy["oracle_limit"] = oracle_limit
         paper_copy["oracle_1000_included"] = paper_copy["oracle_included"]
         paper_copy["oracle_1000_reason"] = paper_copy["oracle_reason"]
@@ -263,7 +140,7 @@ async def build_reference_cites_dict(
 ) -> dict[str, Any]:
     config = get_eval_config(source_item)
     openalex = get_openalex_client(config)
-    oracle_helper = OracleFeatureCollector(config)
+    oracle_helper = LetorCandidateScorer(config)
     references = survey_item.get("references") or []
     query = (survey_item.get("query") or "").strip()
     publication_date = ""

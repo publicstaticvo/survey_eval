@@ -11,12 +11,10 @@ if __package__:
     from .tools.eval.programmatic_quality import QualityCritic
     from .tools.eval.structure_eval import StructureCheck
     from .tools.eval.topic_coverage import TopicCoverageCritic
-    from .tools.preprocess.anchor_surveys import AnchorSurveyFetch
     from .tools.preprocess.citation_parser import CitationParser
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
     from .tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
     from .tools.preprocess.golden_topics import GoldenTopicGenerator
-    from .tools.preprocess.query_expand import QueryExpand
     from .tools.utility.request_utils import SessionManager
     from .tools.utility.tool_config import ToolConfig
 else:
@@ -27,12 +25,10 @@ else:
     from tools.eval.programmatic_quality import QualityCritic
     from tools.eval.structure_eval import StructureCheck
     from tools.eval.topic_coverage import TopicCoverageCritic
-    from tools.preprocess.anchor_surveys import AnchorSurveyFetch
     from tools.preprocess.citation_parser import CitationParser
     from tools.preprocess.claim_segmentation import ClaimSegmentation
     from tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
     from tools.preprocess.golden_topics import GoldenTopicGenerator
-    from tools.preprocess.query_expand import QueryExpand
     from tools.utility.request_utils import SessionManager
     from tools.utility.tool_config import ToolConfig
 
@@ -44,10 +40,8 @@ class SurveyEvaluationAgent:
     def __post_init__(self):
         self._normalize_paths()
         self.minimum_completion = minimum_completion
-        self.query_expand = QueryExpand(self.config)
-        self.anchor_surveys = AnchorSurveyFetch(self.config)
         self.golden_topics = GoldenTopicGenerator(self.config)
-        self.dynamic_oracle = DynamicCandidatePool(self.config)
+        self.dynamic_candidate_pool = DynamicCandidatePool(self.config)
         self.citation_parser = CitationParser(self.config)
         self.claim_segmentation = ClaimSegmentation(self.config)
         self.fact_check = FactualCorrectnessCritic(self.config)
@@ -106,13 +100,7 @@ class SurveyEvaluationAgent:
         if minimum_check["minimum_check"]["status"] != "pass":
             return result
 
-        anchor_data = await self.anchor_surveys(query)
-        oracle_task = asyncio.create_task(
-            self.dynamic_oracle(
-                query,
-                anchor_data=anchor_data,
-            )
-        )
+        oracle_task = asyncio.create_task(self.dynamic_candidate_pool(query, download_anchor_surveys=True))
 
         parse_task = asyncio.create_task(self.citation_parser(review_paper.get("citations", {})))
         claim_task = asyncio.create_task(self.claim_segmentation(review_paper))
@@ -124,6 +112,10 @@ class SurveyEvaluationAgent:
             quality_task,
             return_exceptions=False,
         )
+        anchor_data = {
+            "anchor_papers": oracle_data.get("anchor_papers", {}),
+            "anchor_surveys": oracle_data.get("anchor_surveys", {}),
+        }
         golden_topic_data = await self.golden_topics(
             query,
             anchor_data.get("anchor_surveys", {}),

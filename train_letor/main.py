@@ -12,12 +12,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from agent.tools.preprocess.anchor_surveys import AnchorSurveyFetch
-from agent.tools.preprocess.dynamic_candidate_pool import LetorCitationScorer, LiteratureCandidatePoolBuilder
+
+from agent.tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
 from agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
 from agent.tools.utility.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
-from agent.tools.utility.tool_config import ToolConfig
 from agent.tools.utility.utils import valid_check
+from agent.tools import ToolConfig
 
 
 DATASET_PATH = Path(__file__).resolve().parent / "surveys_with_query.jsonl"
@@ -30,7 +30,7 @@ OPENALEX_KEYS = [
     'OKsOaFG3SbaxrRoYSIUBfx',
     'YFl8EWRMHmmZvEd9cljGXt'
 ]
-ENUMERATE_START, START, LIMIT = 205, 205, 215
+ENUMERATE_START, START, LIMIT = 0, 0, 370
 
 
 class SurveyInfoFetcher:
@@ -41,54 +41,12 @@ class SurveyInfoFetcher:
         title = title.replace("\\\\", " ")
         return re.sub(r"\s+", " ", re.sub(r"[:,.!?&]", " ", title or "")).strip()
 
-    async def __call__(self, title: str) -> Dict[str, Any]:
+    async def __call__(self, title: str) -> dict:
         normalized_title = self._normalize_title(title)
         paper = await self.openalex.find_work_by_title(normalized_title, select=SURVEY_SELECT)
         if paper and valid_check(normalized_title, paper.get("title", "")):
             return paper
         return {}
-
-
-class StrictQueryExpand:
-    def __init__(self, config: ToolConfig):
-        self.eval_date = config.evaluation_date
-        self.openalex = get_openalex_client(config)
-
-    async def _request_for_papers(self, query: str, uplimit: int = 100, select: str = f"{OPENALEX_SELECT},relevance_score") -> List[Dict[str, Any]]:
-        search = query.strip()
-        if not search:
-            return []
-
-        papers = []
-        total = uplimit
-        for page in range(1, (uplimit - 1) // 200 + 2):
-            results = await self.openalex.search_works(
-                "works",
-                search=search,
-                per_page=min(200, uplimit),
-                select=select,
-                page=page,
-                filter={"to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
-            )
-            total = min(total, results.get("count", 0) or total)
-            papers.extend(results.get("results", []))
-            if len(papers) >= total:
-                break
-        return papers[:uplimit]
-
-    async def __call__(self, query: str, num_seed_papers: int = 100):
-        search_query = (query or "").strip()
-        print(f"The search query is: {search_query}")
-
-        papers = await self._request_for_papers(search_query, num_seed_papers)
-        library = {}
-        for paper in papers:
-            if paper.get("id"):
-                library[paper["id"]] = paper | {"query": search_query}
-        return {
-            "queries": [search_query] if library else [],
-            "library": library,
-        }
 
 
 def iter_dataset(dataset_path: Path, start: int = 0):
@@ -125,29 +83,23 @@ async def collect_single_survey(base_config: ToolConfig, index: int, item: Dict[
     try:
         stage = "survey_fetcher"
         print(f"[{original_index}] title: {title}")
-        survey_fetcher = SurveyInfoFetcher(base_config)
-        print(f"[{original_index}] survey_fetcher:start")
-        survey_info = await survey_fetcher(title)
-        print(f"[{original_index}] survey_fetcher:done")
-        if not survey_info: raise ValueError("No survey info")
-        stage = "anchor_surveys"
-        publication_date = item.get("publication_date") or survey_info.get("publication_date")
+        publication_date = item.get("publication_date")
+        if not publication_date:
+            survey_fetcher = SurveyInfoFetcher(base_config)
+            print(f"[{original_index}] survey_fetcher:start")
+            survey_info = await survey_fetcher(title)
+            print(f"[{original_index}] survey_fetcher:done")
+            if not survey_info: raise ValueError("No survey info")
+            publication_date = survey_info.get("publication_date")
+            if not publication_date: raise ValueError("No publication_date")
         eval_date = datetime.strptime(publication_date, "%Y-%m-%d")
         config = replace(base_config, evaluation_date=eval_date)
-        anchor_fetcher = AnchorSurveyFetch(config)
-        print(f"[{original_index}] anchor_surveys:start")
-        anchor_data = await anchor_fetcher(query)
-        print(f"[{original_index}] anchor_surveys:done")
         stage = "candidate_pool"
-        candidate_builder = LiteratureCandidatePoolBuilder(config)
-        scorer = LetorCitationScorer(config)
+        candidate_pool = DynamicCandidatePool(config)
         print(f"[{original_index}] candidate_pool:start")
-        candidate_data = await candidate_builder(query, anchor_data=anchor_data)
-        print(f"[{original_index}] candidate_pool:done")
-        stage = "letor"
-        print(f"[{original_index}] letor:start")
-        oracle = scorer(query, candidate_data["candidate_pool"])
-        print(f"[{original_index}] letor:done")
+        candidate_data = await candidate_pool(query, download_anchor_surveys=False, calc_rank=False)
+        oracle = candidate_data["candidate_pool"]
+        print(f"[{original_index}] candidate_pool:done with {len(oracle)} candidate pool")
     except OpenAlexBudgetExceeded as exc:
         request_count = openalex.get_request_count()
         print(f"[{original_index}] openalex_requests={request_count}")

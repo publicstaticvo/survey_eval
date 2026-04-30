@@ -63,7 +63,7 @@ class AnchorSurveySelect(AsyncChat):
         return prompt, {"surveys": inputs["surveys"]}
 
 
-class AnchorSurveyFetch:
+class AnchorSurveySource:
     SELECT = f"{OPENALEX_SELECT},best_oa_location,locations"
     SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1"
 
@@ -155,13 +155,55 @@ class AnchorSurveyFetch:
                 return None
 
         tasks = [asyncio.create_task(_single(paper_id)) for paper_id in papers if paper_id]
-        for task in asyncio.as_completed(tasks):
+        import tqdm
+        for task in tqdm.tqdm(asyncio.as_completed(tasks)):
             paper = await task
             if paper and paper.get("id"):
                 paper_meta[paper["id"]] = paper
         return paper_meta
 
-    async def __call__(self, query: str):
+    async def _fetch_cited_by_neighbors(self, survey_id: str) -> dict[str, dict[str, Any]]:
+        papers = {}
+        page, total = 1, 1
+        while (page - 1) * 200 < total:
+            results = await self.openalex.search_works(
+                "works",
+                filter={"cited_by": survey_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
+                per_page=200,
+                page=page,
+                select=ORACLE_SELECT,
+                sort="cited_by_count:desc",
+            )
+            total = results.get("count", 0) or 0
+            for paper in results.get("results", []):
+                if paper.get("id"):
+                    papers[paper["id"]] = paper
+            page += 1
+        return papers
+
+    async def _collect_anchor_reference_papers(self, surveys: list[dict]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+        paper_meta, citation_counter = {}, {}
+
+        async def _single(survey: dict):
+            survey_id = survey.get("id")
+            if not survey_id:
+                return survey_id, {}
+            try:
+                return survey_id, await self._fetch_cited_by_neighbors(survey_id)
+            except Exception as e:
+                print(f"AnchorSurveyRefs {survey.get('title', survey_id)} {e}")
+                return survey_id, {}
+
+        tasks = [asyncio.create_task(_single(survey)) for survey in surveys]
+        for task in asyncio.as_completed(tasks):
+            _, references = await task
+            for paper_id, paper in references.items():
+                paper_meta.setdefault(paper_id, paper)
+                citation_counter[paper_id] = citation_counter.get(paper_id, 0) + 1
+
+        return paper_meta, citation_counter
+
+    async def __call__(self, query: str, download: bool = True):
         try:
             semantic_surveys = await self._search_semantic_scholar_surveys(query)
         except Exception as e:
@@ -182,27 +224,28 @@ class AnchorSurveyFetch:
         if not openalex_selected:
             return {"anchor_papers": {}, "anchor_surveys": {}}
 
-        citation_counter = {}
-        for paper in openalex_selected:
-            for ref in paper.get("referenced_works", []):
-                citation_counter[ref] = citation_counter.get(ref, 0) + 1
-
-        cited_ids = list(citation_counter)
-        print(f"AnchorSurveyFetch: {len(cited_ids)} cited ids")
-        anchor_meta = await self._get_paper_meta_by_id(cited_ids)
+        anchor_meta, citation_counter = await self._collect_anchor_reference_papers(openalex_selected)
+        print(f"AnchorSurveyFetch: {len(citation_counter)} cited ids")
         for paper_id, metadata in anchor_meta.items():
             metadata["survey_cited_by_count"] = citation_counter[paper_id]
+            metadata["anchor_survey_count"] = citation_counter[paper_id]
             metadata["candidate_source"] = "high_consensus" if citation_counter[paper_id] >= 2 else "single_anchor"
+            metadata["candidate_sources"] = [metadata["candidate_source"]]
 
         for paper in openalex_selected:
             survey_paper = dict(paper)
             survey_paper["survey_cited_by_count"] = len(openalex_selected)
+            survey_paper["anchor_survey_count"] = len(openalex_selected)
             survey_paper["candidate_source"] = "anchor_survey"
+            survey_paper["candidate_sources"] = ["anchor_survey"]
             anchor_meta[survey_paper["id"]] = survey_paper
         print(f"AnchorSurveyFetch: {len(anchor_meta)} anchor metas")
 
-        downloaded = await self._download_surveys(openalex_selected[:5])
-        print(f"AnchorSurveyFetch: {len(downloaded)} downloaded surveys")
+        if download:
+            downloaded = await self._download_surveys(openalex_selected[:5])
+            print(f"AnchorSurveyFetch: {len(downloaded)} downloaded surveys")
+        else: downloaded = []
+        print(f"source 1 done with {len(anchor_meta)}")
 
         return {
             "anchor_papers": anchor_meta,
@@ -288,6 +331,7 @@ class DirectSeedGraphSource:
     async def __call__(self, query: str) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
         seed_library = await self.search_seed_papers(query, uplimit=100)
         neighbors = await self.graph_expansion(seed_library)
+        print(f"source 2 done with {len(seed_library)} and {len(neighbors)}")
         return seed_library, neighbors
 
 
@@ -303,4 +347,5 @@ class RecentSemanticSource:
             item["candidate_source"] = "new_papers"
             item["candidate_sources"] = ["new_papers"]
             papers[paper_id] = item
+        print(f"source 3 done with {len(papers)}")
         return {"queries": query_data.get("queries", []), "new_papers": papers}

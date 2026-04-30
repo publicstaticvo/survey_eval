@@ -33,7 +33,7 @@ if __package__:
     from .tools.eval.missing_papers import MissingPaperCheck
     from .tools.eval.structure_eval import StructureCheck
     from .tools.eval.topic_coverage import TopicCoverageCritic
-    from .tools.preprocess.anchor_surveys import AnchorSurveyFetch
+    from .tools.preprocess.build_sources import AnchorSurveyFetch
     from .tools.preprocess.citation_parser import CitationParser
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
     from .tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
@@ -48,7 +48,7 @@ else:
     from tools.eval.missing_papers import MissingPaperCheck
     from tools.eval.structure_eval import StructureCheck
     from tools.eval.topic_coverage import TopicCoverageCritic
-    from tools.preprocess.anchor_surveys import AnchorSurveyFetch
+    from tools.preprocess.build_sources import AnchorSurveyFetch
     from tools.preprocess.citation_parser import CitationParser
     from tools.preprocess.claim_segmentation import ClaimSegmentation
     from tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
