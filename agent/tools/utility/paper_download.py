@@ -1,14 +1,29 @@
 import asyncio
 import io
 import random
+import re
+import traceback
+import tarfile
+import tempfile
 from typing import Optional
+from pathlib import Path
+from urllib.parse import urlparse
+import sys
 
 import aiohttp
 from tenacity import retry, retry_if_exception, retry_if_result, stop_after_attempt, wait_exponential
 
-from .grobidpdf import PaperParser
-from .openalex import OPENALEX_SELECT, get_openalex_client
-from .request_utils import RateLimit, SessionManager
+if __package__:
+    from .grobidpdf import PaperParser
+    from .latex_parser import LatexPaperParser
+    from .openalex import OPENALEX_SELECT, get_openalex_client
+    from .request_utils import RateLimit, SessionManager
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    from survey_eval.agent.tools.utility.grobidpdf import PaperParser
+    from survey_eval.agent.tools.utility.latex_parser import LatexPaperParser
+    from survey_eval.agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
+    from survey_eval.agent.tools.utility.request_utils import RateLimit, SessionManager
 
 parser = PaperParser()
 
@@ -78,6 +93,24 @@ async def download_paper_to_memory(url: str, timeout: int = 600):
         return None
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_result(lambda x: x is None),
+)
+async def download_bytes_to_memory(url: str, timeout: int = 180) -> Optional[bytes]:
+    try:
+        async with RateLimit.DOWNLOAD_SEMAPHORE:
+            async with SessionManager.get().get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                resp.raise_for_status()
+                return await resp.read()
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print(f"{url} No source buffer: {exc}")
+        return None
+
+
 def yield_location(x):
     urls = set()
     best = x.get("best_oa_location")
@@ -88,6 +121,35 @@ def yield_location(x):
         if item.get("pdf_url") and item["pdf_url"] not in urls:
             urls.add(item["pdf_url"])
             yield item["pdf_url"]
+
+
+def extract_arxiv_id_from_url(url: str) -> str:
+    parsed = urlparse(url or "")
+    host = parsed.netloc.lower()
+    if host not in {"arxiv.org", "www.arxiv.org"}:
+        return ""
+    match = re.search(r"/(?:abs|pdf|html|src)/([^/?#]+)", parsed.path)
+    if not match:
+        return ""
+    arxiv_id = match.group(1).removesuffix(".pdf")
+    return arxiv_id.strip()
+
+
+def extract_arxiv_ids(paper_meta: dict) -> list[str]:
+    ids = []
+    for url in yield_location(paper_meta):
+        arxiv_id = extract_arxiv_id_from_url(url)
+        if arxiv_id:
+            ids.append(arxiv_id)
+    for key in ("doi", "arxiv_id"):
+        value = paper_meta.get(key)
+        if isinstance(value, str) and re.match(r"^\d{4}\.\d{4,5}(v\d+)?$", value.strip()):
+            ids.append(value.strip())
+    external_ids = paper_meta.get("external_ids") or paper_meta.get("externalIds") or {}
+    for key, value in external_ids.items():
+        if str(key).lower() == "arxiv" and value:
+            ids.append(str(value).strip())
+    return list(dict.fromkeys(ids))
 
 
 class PaperDownload:
@@ -112,6 +174,109 @@ class PaperDownload:
             raise
         abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
         return {"full_content": paper.get_skeleton(), "abstract": abstract}
+
+    def _latex_post_hook(self, paper) -> dict:
+        if not paper:
+            return {}
+        abstract = None
+        if paper.abstract:
+            abstract = "\n\n".join(
+                " ".join(getattr(sentence, "text", "") for sentence in paragraph.sentences)
+                for paragraph in paper.abstract.children
+                if hasattr(paragraph, "sentences")
+            )
+        skeleton = paper.get_skeleton()
+        print(f"Parsed TeX source. It has {len(skeleton.get('sections', []))} sections.")
+        return {"full_content": skeleton, "abstract": abstract}
+
+    def _safe_extract_tar(self, buffer: bytes, target_dir: Path) -> None:
+        with tarfile.open(fileobj=io.BytesIO(buffer), mode="r:gz") as archive:
+            target_root = target_dir.resolve()
+            for member in archive.getmembers():
+                member_path = (target_root / member.name).resolve()
+                if target_root not in member_path.parents and member_path != target_root:
+                    raise RuntimeError(f"Unsafe tar member path: {member.name}")
+            archive.extractall(target_root)
+
+    def _read_text_file(self, path: Path) -> str:
+        for encoding in ("utf-8", "latin-1"):
+            try:
+                return path.read_text(encoding=encoding)
+            except UnicodeDecodeError:
+                continue
+        return path.read_text(errors="ignore")
+
+    def _find_main_tex(self, source_dir: Path) -> Path | None:
+        tex_files = [path for path in source_dir.rglob("*.tex") if path.is_file()]
+        if not tex_files:
+            return None
+
+        scored = []
+        preferred_names = {"main.tex", "ms.tex", "paper.tex", "article.tex", "root.tex", "uq_survey.tex"}
+        for path in tex_files:
+            try:
+                content = self._read_text_file(path)
+            except Exception:
+                continue
+            has_document = "\\begin{document}" in content
+            score = 0
+            if has_document:
+                score += 100
+            if path.name.lower() in preferred_names:
+                score += 30
+            if "\\documentclass" in content:
+                score += 20
+            if "\\section" in content:
+                score += min(content.count("\\section") * 5, 40)
+            score += min(len(content) // 2000, 20)
+            scored.append((score, path))
+        if not scored:
+            return tex_files[0]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored[0][1]
+
+    async def _try_arxiv_source(self, arxiv_id: str) -> dict:
+        src_url = f"https://arxiv.org/src/{arxiv_id}"
+        try:
+            buffer = await download_bytes_to_memory(src_url)
+            if not buffer:
+                return {"result": None, "download_error": True, "parse_error": False}
+            print(f"Downloaded TeX source from {src_url}")
+            tmp_parent = Path("C:/tmp") if Path("C:/tmp").exists() else None
+            with tempfile.TemporaryDirectory(
+                prefix=f"arxiv_{re.sub(r'[^0-9A-Za-z]+', '_', arxiv_id)}_",
+                dir=str(tmp_parent) if tmp_parent else None,
+                ignore_cleanup_errors=True,
+            ) as tmp:
+                source_dir = Path(tmp)
+                try:
+                    self._safe_extract_tar(buffer, source_dir)
+                except tarfile.TarError:
+                    if buffer[:5] == b"%PDF-":
+                        print(f"{src_url} returned PDF instead of TeX source")
+                        return {"result": None, "download_error": False, "parse_error": True}
+                    tex_path = source_dir / "source.tex"
+                    tex_path.write_bytes(buffer)
+                tex_count = len([path for path in source_dir.rglob("*.tex") if path.is_file()])
+                main_tex = self._find_main_tex(source_dir)
+                if not main_tex:
+                    print(f"{src_url} No TeX file")
+                    return {"result": None, "download_error": False, "parse_error": True}
+                print(f"Parsing TeX source main file {main_tex.name} from {tex_count} TeX files")
+                latex_content = self._read_text_file(main_tex)
+                parser = LatexPaperParser(latex_content, base_path=str(main_tex.parent))
+                paper = parser.parse()
+                result = self._latex_post_hook(paper)
+                if result:
+                    return {"result": result, "download_error": False, "parse_error": False}
+                return {"result": None, "download_error": False, "parse_error": True}
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print(f"arXiv source failed for {arxiv_id}: {exc}")
+            trace_lines = traceback.format_exc().strip().splitlines()
+            print("\n".join(trace_lines[-8:]))
+            return {"result": None, "download_error": False, "parse_error": True}
 
     async def _try_one_url(self, url: str) -> dict:
         """Try downloading and parsing a paper from one URL."""
@@ -155,6 +320,12 @@ class PaperDownload:
             if not paper_meta:
                 return None
 
+        arxiv_ids = extract_arxiv_ids(paper_meta)
+        for arxiv_id in arxiv_ids:
+            result = await self._try_arxiv_source(arxiv_id)
+            if result.get("result"):
+                return result["result"]
+
         tasks = [asyncio.create_task(self._try_one_url(url)) for url in list(yield_location(paper_meta))]
         saw_download_error = False
         saw_parse_error = False
@@ -192,3 +363,27 @@ class PaperDownload:
                 print(f"OpenAlex content fallback failed for {work_id}: {e}")
 
         return None
+
+
+async def _debug_arxiv_source(arxiv_id: str = "2512.15567"):
+    await SessionManager.init()
+    try:
+        downloader = PaperDownload("")
+        result = await asyncio.wait_for(downloader._try_arxiv_source(arxiv_id), timeout=240)
+        parsed = bool(result.get("result"))
+        print(f"arxiv_id={arxiv_id} parsed={parsed}")
+        if parsed:
+            skeleton = result["result"]["full_content"]
+            print(f"title={skeleton.get('title')}")
+            print(f"sections={len(skeleton.get('sections', []))}")
+            if not skeleton.get("sections"):
+                raise RuntimeError("Parsed TeX source but found no sections")
+        else:
+            raise RuntimeError(f"Failed to download or parse arXiv source {arxiv_id}")
+    finally:
+        await SessionManager.close()
+
+
+if __name__ == "__main__":
+    work_ids = ["2308.04268", "2302.13425", '2306.04459']
+    asyncio.run(_debug_arxiv_source(work_ids[1]))

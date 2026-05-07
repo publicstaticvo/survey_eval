@@ -95,7 +95,7 @@ class DynamicOracleGenerator:
     async def _request_for_papers(self, query, uplimit) -> List[Dict[str, Any]]:
         filter_params = {
             "default.search": to_openalex(query),
-            "to_publication_date": self.eval_date.strftime("%Y-%m-%d"), 
+            "to_publication_date": self.eval_date.strftime("%Y-%m-%d"),
         }
         select = f"{OPENALEX_SELECT},relevance_score"
         oracle = []

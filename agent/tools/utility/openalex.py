@@ -22,7 +22,7 @@ from .utils import normalize_text, valid_check
 OPENALEX_SELECT = "id,cited_by_count,counts_by_year,referenced_works,publication_date,created_date,abstract_inverted_index,title,authorships"
 URL_DOMAIN = "https://openalex.org/"
 OPENALEX_API_URL = "https://api.openalex.org"
-OPENALEX_CONTENT_URL = "https://contents.openalex.org"
+OPENALEX_CONTENT_URL = "https://content.openalex.org"
 FREE_CREDITS_PER_DAY = 10000
 
 TRANSIENT_EXCEPTION_TYPES = (
@@ -282,7 +282,42 @@ class OpenAlex:
             return None
         if isinstance(filter_value, dict):
             filter_value = list(filter_value.items())
-        return ",".join(f"{key}:{value}" for key, value in filter_value)
+        normalized = []
+        for key, value in filter_value:
+            if isinstance(value, (list, tuple, set)):
+                value = "|".join(str(item) for item in value if item is not None)
+            normalized.append((str(key), value))
+        return ",".join(f"{key}:{value}" for key, value in normalized)
+
+    def _split_filter_kwargs(self, request_kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        filter_keys = {
+            "from_publication_date",
+            "to_publication_date",
+            "from_created_date",
+            "to_created_date",
+            "from_updated_date",
+            "to_updated_date",
+            "from_publication_year",
+            "to_publication_year",
+            "cites",
+            "cited_by",
+            "openalex",
+            "doi",
+            "pmid",
+            "pmcid",
+            "ids.openalex",
+            "title.search",
+            "default.search",
+            "cited_by_count",
+        }
+        filters = {}
+        params = {}
+        for key, value in request_kwargs.items():
+            if key in filter_keys or "." in key:
+                filters[key] = value
+            else:
+                params[key] = value
+        return params, filters
 
     def _filter_has_search_key(self, filter_value: list[tuple] | dict | None) -> bool:
         if not filter_value: return False
@@ -509,7 +544,13 @@ class OpenAlex:
         **request_kwargs,
     ) -> dict:
         assert per_page <= 200, "Per page is at most 200"
-        params = dict(request_kwargs)
+        params, kw_filters = self._split_filter_kwargs(dict(request_kwargs))
+        if kw_filters:
+            if filter is None: filter = kw_filters
+            elif isinstance(filter, dict):
+                filter = {**filter, **kw_filters}
+            else:
+                filter = [*filter, *kw_filters.items()]
         filter_string = self._format_filter(filter)
         if filter_string: params["filter"] = filter_string
         if search: params["search"] = search
@@ -564,16 +605,68 @@ class OpenAlex:
         papers = [paper for paper in await asyncio.gather(*tasks) if paper]
         return self.merge_duplicate_works(papers, original_title=title)
 
+    async def get_citations(
+        self,
+        work_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        fields: str | None = OPENALEX_SELECT,
+        **request_kwargs,
+    ) -> dict:
+        page = offset // max(1, limit) + 1
+        return await self.search_works(
+            "works",
+            filter={"cites": work_id},
+            per_page=limit,
+            select=fields,
+            page=page,
+            **request_kwargs,
+        )
+
+    async def get_references(
+        self,
+        work_id: str,
+        offset: int = 0,
+        limit: int = 100,
+        fields: str | None = OPENALEX_SELECT,
+        **request_kwargs,
+    ) -> dict:
+        page = offset // max(1, limit) + 1
+        return await self.search_works(
+            "works",
+            filter={"cited_by": work_id},
+            per_page=limit,
+            select=fields,
+            page=page,
+            **request_kwargs,
+        )
+
+    async def get_works_batch(
+        self,
+        work_ids: list[str],
+        fields: str | None = OPENALEX_SELECT,
+        **request_kwargs,
+    ) -> dict:
+        async def _single(work_id: str):
+            try:
+                return await self.get_entity(work_id, entity_type="works", select=fields, **request_kwargs)
+            except Exception:
+                return None
+
+        tasks = [asyncio.create_task(_single(work_id)) for work_id in dict.fromkeys(work_ids) if work_id]
+        results = [paper for paper in await asyncio.gather(*tasks) if paper]
+        return {"count": len(results), "results": results}
+
     async def download_work_content(
         self,
         work_id: str,
-        download_type: str = "grobid_xml",
+        download_type: str = "grobid-xml",
         output_target: str = "",
     ) -> str:
         from .paper_download import parse_with_grobid
 
         payload, _ = await self._request_bytes(
-            f"{OPENALEX_CONTENT_URL}/{work_id}.{download_type}",
+            f"{OPENALEX_CONTENT_URL}/works/{work_id}.{download_type}",
             {},
             fixed_cost=100,
             require_api_key=True,

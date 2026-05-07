@@ -1,6 +1,6 @@
 from typing import List, Dict, Any
 
-from .evidence_check import EvidenceCheck
+from ..utility.evidence_check import EvidenceCheck
 from ..prompts import FACTUAL_CORRECTNESS_PROMPT
 from ..utility.llmclient import AsyncChat
 from ..utility.sbert_client import SentenceTransformerClient

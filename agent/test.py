@@ -80,9 +80,9 @@ async def testDynamicOracleGenerator(config, survey_title):
 
 
 async def testGoldenTopicGenerator(config, query):
-    qe = _load_json("qe.json")
-    anchor_surveys = _load_json("anchor_surveys.json")
-    results = await GoldenTopicGenerator(config)(query, anchor_surveys, qe["library"])
+    with (PDF_DIR / "Transformer.json").open(encoding="utf-8") as f:
+        paper = json.load(f)
+    results = await GoldenTopicGenerator(config)(query, paper)
     _write_json("topics.json", results)
 
 
@@ -132,32 +132,21 @@ async def testFactualCorrectnessCritic(config):
 
 async def testMissingPaperCheck(config):
     citations = _load_json("cites.json")
-    oracle_papers = _load_json("oracles.json")
-    anchor_papers = _load_json("anchor_papers.json")
     topics = _load_json("topics.json")
-    result = MissingPaperCheck(config)(
-        citations=citations,
-        oracle_data=oracle_papers,
-        anchor_papers=anchor_papers,
-        topics=topics.get("golden_topics", []),
-    )
+    topic_eval = _load_json("topic_coverage.json")
+    query = topics.get("query") or "Transformers Natural Language Processing"
+    result = await MissingPaperCheck(config)(query, citations, topics, topic_eval)
     _write_json("missing_paper_check.json", result['source_evals'])
 
 
 async def testTopicCoverageCritic(config, paper):
     topics = _load_json("topics.json")
-    result = await TopicCoverageCritic(config)(topics.get("golden_topics", []), paper)
+    result = await TopicCoverageCritic(config)(topics, paper)
     _write_json("topic_coverage.json", result)
 
 
 async def testStructureCheck(config, paper):
-    topic_coverage = _load_json("topic_coverage.json")
-    missing_topics = [
-        item["topic"]
-        for item in topic_coverage.get("topic_evals", {}).get("topic_coverage", [])
-        if item.get("status") == "missing"
-    ]
-    result = await StructureCheck(config)(paper, missing_topics)
+    result = await StructureCheck(config)(paper)
     _write_json("structure_eval.json", result)
 
 

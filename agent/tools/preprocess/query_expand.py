@@ -6,7 +6,8 @@ import jsonschema
 
 from ..prompts import QUERY_EXPANSION_PROMPT, QUERY_SCHEMA
 from ..utility.llmclient import AsyncChat
-from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
+from ..utility.academic_engine import get_academic_engine
+from ..utility.openalex import OPENALEX_SELECT
 from ..utility.tool_config import ToolConfig
 from .utils import extract_json
 
@@ -25,7 +26,7 @@ class QueryExpand:
     def __init__(self, config: ToolConfig):
         self.eval_date = config.evaluation_date
         self.llm = QueryExpansionLLMClient(config.llm_server_info, config.sampling_params)
-        self.openalex = get_openalex_client(config)
+        self.academic_engine = get_academic_engine(config)
 
     async def _request_for_papers(
         self,
@@ -39,7 +40,7 @@ class QueryExpand:
         papers = []
         total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            results = await self.openalex.search_works(
+            results = await self.academic_engine.search_works(
                 "works",
                 search=search,
                 per_page=min(200, uplimit),

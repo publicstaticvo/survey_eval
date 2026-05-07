@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 
 from .build_sources import AnchorSurveySource, DirectSeedGraphSource, RecentSemanticSource
-from ..utility.openalex import get_openalex_client
+from ..utility.academic_engine import get_academic_engine
 from ..utility.sbert_client import SentenceTransformerClient
 from ..utility.tool_config import ToolConfig
 from .utils import cosine_similarity_matrix
@@ -25,7 +25,7 @@ SOURCE_PRIORITY = {
 
 class LiteratureCandidateDeduplicate:
     def __init__(self, config: ToolConfig):
-        self.openalex = get_openalex_client(config)
+        self.academic_engine = get_academic_engine(config)
 
     def _preferred_source(self, sources: list[str]) -> str:
         return min(sources, key=lambda source: SOURCE_PRIORITY.get(source, 999)) if sources else ""
@@ -93,7 +93,10 @@ class LiteratureCandidateDeduplicate:
                     if paper_id in raw_pool
                     else dict(paper)
                 )
-        deduped = self.openalex.deduplicate_works(list(raw_pool.values()), original_title=query)
+        if hasattr(self.academic_engine, "deduplicate_works"):
+            deduped = self.academic_engine.deduplicate_works(list(raw_pool.values()), original_title=query)
+        else:
+            deduped = list(raw_pool.values())
         candidate_pool = {}
         for paper in deduped:
             paper = self._merge_sources_after_dedup(paper, raw_pool)

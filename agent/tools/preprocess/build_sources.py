@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 
 from .query_expand import QueryExpand
 from ..prompts import ANCHOR_SURVEY_SELECT
+from ..utility.academic_engine import get_academic_engine
 from ..utility.llmclient import AsyncChat
 from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
 from ..utility.paper_download import PaperDownload
@@ -48,6 +49,18 @@ class SurveyDownload(PaperDownload):
             print(f"Fatal: no survey parser {e}")
             return [], None
 
+    def _latex_post_hook(self, paper):
+        try:
+            if not paper:
+                return [], None
+            paper_skeleton = paper.get_skeleton()
+            titles = list(dict.fromkeys(self._flatten_title_paths(paper_skeleton)))
+            print(f"This TeX survey has {len(titles)} titles")
+            return titles, paper_skeleton
+        except Exception as e:
+            print(f"Fatal: no TeX survey parser {e}")
+            return [], None
+
 
 class AnchorSurveySelect(AsyncChat):
     PROMPT: str = ANCHOR_SURVEY_SELECT
@@ -72,6 +85,7 @@ class AnchorSurveySource:
         self.survey_download = SurveyDownload(config)
         self.survey_select = AnchorSurveySelect(config.llm_server_info, config.sampling_params)
         self.openalex = get_openalex_client(config)
+        self.academic_engine = get_academic_engine(config)
 
     async def _semantic_scholar_get(self, endpoint: str, params: dict):
         session = SessionManager.get()
@@ -164,21 +178,20 @@ class AnchorSurveySource:
 
     async def _fetch_cited_by_neighbors(self, survey_id: str) -> dict[str, dict[str, Any]]:
         papers = {}
-        page, total = 1, 1
-        while (page - 1) * 200 < total:
-            results = await self.openalex.search_works(
-                "works",
-                filter={"cited_by": survey_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
-                per_page=200,
-                page=page,
-                select=ORACLE_SELECT,
-                sort="cited_by_count:desc",
+        offset, total = 0, 1
+        while offset < total:
+            results = await self.academic_engine.get_references(
+                survey_id,
+                offset=offset,
+                limit=200,
+                fields=ORACLE_SELECT,
+                to_publication_date=self.eval_date.strftime("%Y-%m-%d"),
             )
             total = results.get("count", 0) or 0
             for paper in results.get("results", []):
                 if paper.get("id"):
                     papers[paper["id"]] = paper
-            page += 1
+            offset += 200
         return papers
 
     async def _collect_anchor_reference_papers(self, surveys: list[dict]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
@@ -256,13 +269,13 @@ class AnchorSurveySource:
 class DirectSeedGraphSource:
     def __init__(self, config: ToolConfig):
         self.eval_date = config.evaluation_date
-        self.openalex = get_openalex_client(config)
+        self.academic_engine = get_academic_engine(config)
 
     async def search_seed_papers(self, query: str, uplimit: int = 100) -> dict[str, dict[str, Any]]:
         papers = {}
         total = uplimit
         for page in range(1, (uplimit - 1) // 200 + 2):
-            results = await self.openalex.search_works(
+            results = await self.academic_engine.search_works(
                 "works",
                 search=query.strip(),
                 per_page=min(200, uplimit),
@@ -283,21 +296,20 @@ class DirectSeedGraphSource:
 
     async def _fetch_cited_by_neighbors(self, seed_id: str) -> dict[str, dict[str, Any]]:
         neighbors = {}
-        page, total = 1, 1
-        while (page - 1) * 200 < total:
-            results = await self.openalex.search_works(
-                "works",
-                filter={"cited_by": seed_id, "to_publication_date": self.eval_date.strftime("%Y-%m-%d")},
-                per_page=200,
-                page=page,
-                select=ORACLE_SELECT,
-                sort="cited_by_count:desc",
+        offset, total = 0, 1
+        while offset < total:
+            results = await self.academic_engine.get_references(
+                seed_id,
+                offset=offset,
+                limit=200,
+                fields=ORACLE_SELECT,
+                to_publication_date=self.eval_date.strftime("%Y-%m-%d"),
             )
             total = results.get("count", 0) or 0
             for paper in results.get("results", []):
                 if paper.get("id"):
                     neighbors[paper["id"]] = paper
-            page += 1
+            offset += 200
         return neighbors
 
     async def graph_expansion(self, seed_library: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:

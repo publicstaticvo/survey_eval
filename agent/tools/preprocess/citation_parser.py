@@ -7,6 +7,7 @@ from typing import Dict, Any
 from .websearch import WebSearchFallback
 from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
 from ..utility.paper_download import PaperDownload
+from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
 from .utils import valid_check
 
@@ -18,6 +19,7 @@ class CitationParser:
         self.paper_downloader = PaperDownload(config)
         self.websearch = WebSearchFallback(config)
         self.openalex = get_openalex_client(config)
+        self.semantic_scholar = get_semantic_scholar_client(config)
 
     def _empty_info(self, title: str) -> Dict[str, Any]:
         return {
@@ -48,9 +50,24 @@ class CitationParser:
             info["full_content"] = {}
         return info
 
-    async def _search_paper_from_api(self, citation_info: str | Dict[str, Any]) -> Dict[str, Any]:
-        title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
-        info = self._empty_info(title)
+    async def _download_openalex_paper(self, info: Dict[str, Any], metadata: dict, source: str) -> Dict[str, Any]:
+        matched_metadata = dict(metadata)
+        downloaded = await self.paper_downloader.download_single_paper(
+            matched_metadata,
+            openalex_id=matched_metadata.get("id") if source == "openalex" else "",
+        )
+        if downloaded:
+            info["full_content"] = downloaded.get("full_content", {})
+            info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
+        else:
+            info["abstract"] = matched_metadata.get("abstract", "") or ""
+        matched_metadata.pop("locations", None)
+        matched_metadata.pop("best_oa_location", None)
+        info["metadata"] = matched_metadata
+        info["source"] = source
+        return self._finalize_info(info)
+
+    async def _search_paper_from_openalex(self, title: str, info: Dict[str, Any]) -> Dict[str, Any]:
         paper_title = self._normalize_title(title)
         if not paper_title:
             return info
@@ -61,17 +78,44 @@ class CitationParser:
             paper_info = None
 
         if paper_info and valid_check(paper_title, paper_info.get("title", "")):
-            matched_metadata = dict(paper_info)
-            downloaded = await self.paper_downloader.download_single_paper(matched_metadata, openalex_id=matched_metadata.get("id"))
-            if downloaded:
-                info["full_content"] = downloaded.get("full_content", {})
-                info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
-            else:
-                info["abstract"] = matched_metadata.get("abstract", "") or ""
-            matched_metadata.pop("locations", None)
-            matched_metadata.pop("best_oa_location", None)
-            info["metadata"] = matched_metadata
-            info["source"] = "openalex"
+            return await self._download_openalex_paper(info, paper_info, "openalex")
+        return self._finalize_info(info)
+
+    async def _search_paper_from_semantic_scholar(self, title: str, info: Dict[str, Any]) -> Dict[str, Any]:
+        paper_title = self._normalize_title(title)
+        if not paper_title:
+            return info
+        try:
+            results = await self.semantic_scholar.autocomplete("paper", paper_title)
+            candidates = results.get("results", [])
+        except Exception:
+            candidates = []
+
+        matched = None
+        for candidate in candidates:
+            if valid_check(paper_title, candidate.get("title", "") or candidate.get("display_name", "")):
+                matched = candidate
+                break
+        if not matched:
+            return self._finalize_info(info)
+
+        try:
+            paper_info = await self.semantic_scholar.get_work_by_id(matched["id"])
+        except Exception:
+            paper_info = matched
+
+        updated = dict(info)
+        updated["metadata"] = paper_info
+        updated["abstract"] = paper_info.get("abstract", "") or updated.get("abstract", "")
+        updated["source"] = "semantic_scholar"
+        return self._finalize_info(updated)
+
+    async def _search_paper_from_api(self, citation_info: str | Dict[str, Any]) -> Dict[str, Any]:
+        title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
+        info = self._empty_info(title)
+        info = await self._search_paper_from_openalex(title, info)
+        if info["status"] > 0:
+            info = await self._search_paper_from_semantic_scholar(title, info)
         return self._finalize_info(info)
 
     async def _fallback_websearch(self, title: str, info: Dict[str, Any]) -> Dict[str, Any]:

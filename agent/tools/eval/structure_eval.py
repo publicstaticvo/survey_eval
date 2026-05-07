@@ -5,7 +5,6 @@ from typing import List, Dict, Any
 from ..prompts import *
 from ..utility.llmclient import AsyncChat
 from ..utility.tool_config import ToolConfig
-from .fact_check import FactCheckLLMClient
 from .utils import extract_json, iter_sections, paragraph_to_text
 
 
@@ -91,28 +90,11 @@ class PaperOrganizeLLMClient(AsyncChat):
         return self.PROMPT.format(text=sections_text), {"num_sections": len(inputs)}
 
 
-class MissingTopicLLMClient(FactCheckLLMClient):
-    PROMPT: str = MISSING_TOPIC_CLAIM
-
-    def _availability(self, response, context):
-        data = extract_json(response)
-        if data.get("has_claim") and data.get("evidence"):
-            evidence = data["evidence"] if isinstance(data["evidence"], list) else [data["evidence"]]
-            verified, _ = self.check.verify(evidence, context["text"])
-            if verified:
-                return True
-        return False
-
-    def _organize_inputs(self, inputs):
-        return self.PROMPT.format(**inputs), {"text": inputs["text"]}
-
-
 class StructureCheck:
     def __init__(self, config: ToolConfig):
         self.method_llm = MethodClient(config.llm_server_info, config.sampling_params)
         self.section_organize_llm = SectionOrganizeLLMClient(config.llm_server_info, config.sampling_params)
         self.paper_organize_llm = PaperOrganizeLLMClient(config.llm_server_info, config.sampling_params)
-        self.missing_topic_llm = MissingTopicLLMClient(config)
 
     def _leaf_sections(self, paper: Dict[str, List]):
         for section in iter_sections(paper):
@@ -159,29 +141,6 @@ class StructureCheck:
             return {"status": False, "reason": "paper_no_clear_structure", "details": paper_organize.get("justification", "")}
         return {"status": True, "details": {"section_results": method_organize, "paper_organization": paper_organize}}
 
-    async def _missing_topic_claim(self, topic: str, paper: Dict[str, Any]):
-        text_blocks = []
-        # if paper.get("abstract"):
-        #     text_blocks.append("\n\n".join(paragraph_to_text(p) for p in paper["abstract"]['paragraphs']))
-        for section in [paper, *iter_sections(paper)]:
-            section_text = "\n\n".join(paragraph_to_text(p) for p in section.get("paragraphs", []))
-            if section_text:
-                text_blocks.append(section_text)
-        for block in text_blocks:
-            try:
-                result = await self.missing_topic_llm.call(inputs={"topic": topic, "text": block})
-            except Exception:
-                result = False
-            if result:
-                return None
-        return topic
-
-    async def __call__(self, paper: Dict[str, List], missing_topics: List[str]) -> Dict[str, List]:
+    async def __call__(self, paper: Dict[str, List], missing_topics: List[str] | None = None) -> Dict[str, List]:
         structure = await self._structural_check(paper)
-        tasks = [asyncio.create_task(self._missing_topic_claim(topic, paper)) for topic in missing_topics]
-        real_missing_topics = []
-        for task in asyncio.as_completed(tasks):
-            result = await task
-            if result:
-                real_missing_topics.append(result)
-        return {"structure_evals": {"missing_topics": real_missing_topics, "structure_check": structure}}
+        return {"structure_evals": {"structure_check": structure}}

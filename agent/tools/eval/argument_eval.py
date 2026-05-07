@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from .evidence_check import EvidenceCheck
+from ..utility.evidence_check import EvidenceCheck
 from ..prompts import CORE_ARGUMENT_PROMPT, MAIN_CONTRIBUTION_PROMPT, RESEARCH_GAP_PROMPT
 from ..utility.llmclient import AsyncChat
 from ..utility.tool_config import ToolConfig

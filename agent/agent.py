@@ -13,8 +13,7 @@ if __package__:
     from .tools.eval.topic_coverage import TopicCoverageCritic
     from .tools.preprocess.citation_parser import CitationParser
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
-    from .tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
-    from .tools.preprocess.golden_topics import GoldenTopicGenerator
+    from .tools.golden_topics import GoldenTopicGenerator
     from .tools.utility.request_utils import SessionManager
     from .tools.utility.tool_config import ToolConfig
 else:
@@ -27,8 +26,7 @@ else:
     from tools.eval.topic_coverage import TopicCoverageCritic
     from tools.preprocess.citation_parser import CitationParser
     from tools.preprocess.claim_segmentation import ClaimSegmentation
-    from tools.preprocess.dynamic_candidate_pool import DynamicCandidatePool
-    from tools.preprocess.golden_topics import GoldenTopicGenerator
+    from tools.golden_topics import GoldenTopicGenerator
     from tools.utility.request_utils import SessionManager
     from tools.utility.tool_config import ToolConfig
 
@@ -41,7 +39,6 @@ class SurveyEvaluationAgent:
         self._normalize_paths()
         self.minimum_completion = minimum_completion
         self.golden_topics = GoldenTopicGenerator(self.config)
-        self.dynamic_candidate_pool = DynamicCandidatePool(self.config)
         self.citation_parser = CitationParser(self.config)
         self.claim_segmentation = ClaimSegmentation(self.config)
         self.fact_check = FactualCorrectnessCritic(self.config)
@@ -100,49 +97,24 @@ class SurveyEvaluationAgent:
         if minimum_check["minimum_check"]["status"] != "pass":
             return result
 
-        oracle_task = asyncio.create_task(self.dynamic_candidate_pool(query, download_anchor_surveys=True))
-
         parse_task = asyncio.create_task(self.citation_parser(review_paper.get("citations", {})))
         claim_task = asyncio.create_task(self.claim_segmentation(review_paper))
         quality_task = asyncio.create_task(self.quality_eval._run(review_paper))
-        oracle_data, citation_data, claim_data, quality_data = await asyncio.gather(
-            oracle_task,
+        topic_task = asyncio.create_task(self.golden_topics(query, review_paper))
+        citation_data, claim_data, quality_data, golden_topic_data = await asyncio.gather(
             parse_task,
             claim_task,
             quality_task,
-            return_exceptions=False,
-        )
-        anchor_data = {
-            "anchor_papers": oracle_data.get("anchor_papers", {}),
-            "anchor_surveys": oracle_data.get("anchor_surveys", {}),
-        }
-        golden_topic_data = await self.golden_topics(
-            query,
-            anchor_data.get("anchor_surveys", {}),
-            oracle_data.get("library", {}),
+            topic_task,
         )
 
         paper_content_map = citation_data["paper_content_map"]
         claims = claim_data["claims"]
         fact_checks = await self._fact_check_claims(claims, paper_content_map)
 
-        topic_data = await self.topic_coverage(golden_topic_data.get("golden_topics", []), review_paper)
-        missing_topics = [
-            item["topic"]
-            for item in topic_data["topic_evals"].get("topic_coverage", [])
-            if item["status"] == "missing"
-        ]
-        source_data = self.source_critic(
-            paper_content_map,
-            oracle_data.get("oracle_papers", {}),
-            anchor_data.get("anchor_papers", {}),
-            golden_topic_data.get("golden_topics", []),
-        )
-        structure_data = await self.structure_eval(
-            review_paper,
-            anchor_data.get("anchor_papers", {}),
-            missing_topics,
-        )
+        topic_data = await self.topic_coverage(golden_topic_data, review_paper)
+        source_data = await self.source_critic(query, paper_content_map, golden_topic_data, topic_data)
+        structure_data = await self.structure_eval(review_paper)
         argument_data = await self.argument_eval(
             review_paper,
             minimum_check_details=minimum_check["minimum_check"].get("details", {}),
@@ -150,10 +122,11 @@ class SurveyEvaluationAgent:
         )
 
         result["preprocessing"] = {
-            "query_expand": {"queries": oracle_data.get("queries", []), "library": oracle_data.get("library", {})},
-            "anchor_surveys": anchor_data,
+            "anchor_surveys": {
+                "anchor_papers": golden_topic_data.get("anchor_papers", {}),
+                "anchor_surveys": golden_topic_data.get("anchor_surveys", {}),
+            },
             "golden_topics": golden_topic_data,
-            "oracle_data": oracle_data,
             "paper_content_map": paper_content_map,
             "claims": claims,
         }

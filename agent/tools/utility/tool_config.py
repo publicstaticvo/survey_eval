@@ -55,6 +55,8 @@ class ToolConfig:
     # topic coverage
     topic_weak_sim_threshold: float = 0.45
     topic_sim_threshold: float = 0.55
+    new_paper_topic_similarity_threshold: float = 0.55
+    new_paper_reference_overlap_threshold: float = 0.6
     # fact check
     mean_cov_weight: float = 0.7
     non_compat_punishment: float = 0.6
@@ -71,6 +73,8 @@ class ToolConfig:
     openalex_requests_per_second: float = 4.0
     openalex_max_concurrency: int = 3
     openalex_api_keys: list[str] = field(default_factory=list)
+    default_academic_search_engine: str = "openalex"
+    semantic_scholar_api_key: str = ""
 
     @classmethod
     def from_yaml(cls, config_path):
@@ -106,6 +110,8 @@ class ToolConfig:
             topn=config['source_selection']['topn'],
             topic_weak_sim_threshold=config['topic_coverage']['topic_weak_sim_threshold'],
             topic_sim_threshold=config['topic_coverage']['topic_sim_threshold'],
+            new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
+            new_paper_reference_overlap_threshold=config.get('source_selection', {}).get('new_paper_reference_overlap_threshold', 0.6),
             sentence_similarity_threshold=config['quality']['sentence_similarity_threshold'],
             paragraph_similarity_threshold=config['quality']['paragraph_similarity_threshold'],
             redundancy_ngram=config['quality']['redundancy_ngram'],
@@ -115,4 +121,9 @@ class ToolConfig:
             openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 4.0),
             openalex_max_concurrency=config.get('openalex', {}).get('max_concurrency', 3),
             openalex_api_keys=config.get('openalex', {}).get('api_keys', []),
+            default_academic_search_engine=config.get('academic_search', {}).get(
+                'default_engine',
+                config.get('default_academic_search_engine', 'openalex'),
+            ),
+            semantic_scholar_api_key=config.get('semantic_scholar', {}).get('api_key', ''),
         )
