@@ -7,6 +7,7 @@ from .paper_elements import Paper, Section, Paragraph, Sentence
 
 class PaperParser:
     NS = {'tei': 'http://www.tei-c.org/ns/1.0'}
+    HEAD_INDEX_RE = re.compile(r"^\s*(?P<index>(?:\d+\.)*\d+)\.?\s+(?P<name>.+?)\s*$")
     
     # Keywords that often indicate non-section headings
     NON_SECTION_KEYWORDS = [
@@ -216,16 +217,71 @@ class PaperParser:
                 title = ''.join(title_element.itertext()).strip() if title_element is not None else ""
                 self._citation_map[ref_id] = {"title": title}
 
-    def get_titles(self, xml_content: str) -> List[str]:
+    def _clean_title(self, value: str) -> str:
+        return re.sub(r"\s+", " ", value or "").strip()
+
+    def _title_record(self, section_index: str, section_name: str) -> dict[str, str] | None:
+        section_index = self._clean_title(section_index)
+        section_name = self._clean_title(section_name)
+        if not section_name:
+            return None
+        return {"section_index": section_index, "section_name": section_name}
+
+    def _split_indexed_title(self, text: str, attr_index: str = "") -> dict[str, str] | None:
+        text = self._clean_title(text)
+        attr_index = self._clean_title(attr_index)
+        if attr_index:
+            name = re.sub(rf"^\s*{re.escape(attr_index)}\s+\.?\s*", "", text).strip()
+            return self._title_record(attr_index, name or text)
+        match = self.HEAD_INDEX_RE.match(text)
+        if match:
+            return self._title_record(match.group("index"), match.group("name"))
+        return self._title_record("", text)
+
+    def _unique_title_records(self, records: List[dict[str, str]]) -> List[dict[str, str]]:
+        has_index = any(item.get("section_index") for item in records)
+        unique, seen_indexes, seen_names = [], set(), set()
+        for item in records:
+            section_index = item.get("section_index", "")
+            section_name = item.get("section_name", "")
+            if has_index:
+                if not section_index or section_index in seen_indexes:
+                    continue
+                seen_indexes.add(section_index)
+            else:
+                key = section_name.lower()
+                if key in seen_names:
+                    continue
+                seen_names.add(key)
+            unique.append(item)
+        return unique
+
+    def get_titles(self, xml_content: str) -> List[dict[str, str]]:
         root = ET.fromstring(xml_content)
         body = root.find('.//tei:text/tei:body', self.NS)
         if body is None:
-            return
-        
+            return []
+
         heads = []
-        for div in body.findall('./tei:div', self.NS):
-            for child in div:
-                if child.tag == f"{{{self.NS['tei']}}}head":
-                    heads.append(' '.join(child.itertext()).lower())
-        
-        return heads
+        for head in body.findall(".//tei:head", self.NS):
+            text = self._clean_title(" ".join(head.itertext()))
+            if not text:
+                continue
+            record = self._split_indexed_title(text, head.get("n", ""))
+            if record:
+                heads.append(record)
+
+        indexed = [item for item in heads if item.get("section_index")]
+        if indexed:
+            records = indexed
+            existing = {item["section_index"] for item in indexed}
+            for paragraph in body.findall(".//tei:div/tei:p", self.NS):
+                text = self._clean_title(" ".join(paragraph.itertext()))
+                record = self._split_indexed_title(text)
+                if record and record.get("section_index") and record["section_index"] not in existing:
+                    records.append(record)
+                    existing.add(record["section_index"])
+        else:
+            records = heads
+
+        return self._unique_title_records(records)

@@ -57,6 +57,8 @@ class ToolConfig:
     topic_sim_threshold: float = 0.55
     new_paper_topic_similarity_threshold: float = 0.55
     new_paper_reference_overlap_threshold: float = 0.6
+    citation_velocity_keep_ratio: float = 0.4
+    use_openalex_count_by_year: bool = True
     # fact check
     mean_cov_weight: float = 0.7
     non_compat_punishment: float = 0.6
@@ -73,7 +75,7 @@ class ToolConfig:
     openalex_requests_per_second: float = 4.0
     openalex_max_concurrency: int = 3
     openalex_api_keys: list[str] = field(default_factory=list)
-    default_academic_search_engine: str = "openalex"
+    default_academic_search_engine: str = "semantic scholar"
     semantic_scholar_api_key: str = ""
 
     @classmethod
@@ -112,6 +114,8 @@ class ToolConfig:
             topic_sim_threshold=config['topic_coverage']['topic_sim_threshold'],
             new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
             new_paper_reference_overlap_threshold=config.get('source_selection', {}).get('new_paper_reference_overlap_threshold', 0.6),
+            citation_velocity_keep_ratio=config.get('source_selection', {}).get('citation_velocity_keep_ratio', 0.4),
+            use_openalex_count_by_year=config.get('source_selection', {}).get('use_openalex_count_by_year', True),
             sentence_similarity_threshold=config['quality']['sentence_similarity_threshold'],
             paragraph_similarity_threshold=config['quality']['paragraph_similarity_threshold'],
             redundancy_ngram=config['quality']['redundancy_ngram'],

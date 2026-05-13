@@ -143,4 +143,4 @@ class StructureCheck:
 
     async def __call__(self, paper: Dict[str, List], missing_topics: List[str] | None = None) -> Dict[str, List]:
         structure = await self._structural_check(paper)
-        return {"structure_evals": {"structure_check": structure}}
+        return {"structure_evals": structure}

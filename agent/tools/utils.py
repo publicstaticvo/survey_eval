@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import re, json
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -41,15 +41,16 @@ GENERIC_SECTION_KEYWORDS = [
 
 
 def normalize_heading(title: str) -> str:
-    value = re.sub(r"^[\s\d.ivxIVX]+[.)-]?\s*", "", title or "")
+    value = (title or "").strip()
+    value = re.sub(r"^\d+(?:\.\d+)*[.)-]?\s+", "", value)
+    value = re.sub(r"^(?:[ivxlcdm]+)[.)-]\s+", "", value, flags=re.IGNORECASE)
     value = value.replace("&", " and ").replace("/", " ").replace("-", " ")
     return re.sub(r"\s+", " ", value).strip().lower()
 
 
 def is_generic_heading(title: str) -> bool:
     normalized = normalize_heading(title)
-    if not normalized:
-        return True
+    if not normalized: return True
     return any(keyword in normalized for keyword in GENERIC_SECTION_KEYWORDS)
 
 
@@ -115,9 +116,8 @@ def top_level_section_blocks(paper: dict[str, Any]) -> list[dict[str, str]]:
 
 def paper_id_aliases(paper: dict[str, Any]) -> set[str]:
     ids = set(paper.get("ids") or [])
-    if paper.get("id"):
-        ids.add(paper["id"])
-    return {str(item).replace("https://openalex.org/", "") for item in ids if item}
+    if paper.get("id"): ids.add(paper["id"])
+    return {str(item) for item in ids if item}
 
 
 def citation_id_set(citations: dict[str, Any]) -> set[str]:
@@ -154,3 +154,29 @@ def unique_by_id(papers: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if paper.get("id"):
             result[paper["id"]] = paper
     return result
+
+
+def extract_json(text: str) -> dict:
+    """从文本中提取 JSON 对象"""
+    if not text:
+        return {}
+    
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fenced:
+        try:
+            return json.loads(fenced[-1])
+        except Exception:
+            pass
+    
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    
+    candidate = text[start : end + 1].replace("'", '"')
+    candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+    return json.loads(candidate)

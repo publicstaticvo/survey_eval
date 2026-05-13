@@ -13,6 +13,7 @@ from agent.tools.utility.tool_config import ToolConfig
 
 PARTIAL_DIR = Path(__file__).resolve().parent / "outputs_partial"
 PAPER_DIR = Path(__file__).resolve().parent / "paper"
+OVERWRITE = True
 
 
 SECTION_TOPIC_PROMPT = """
@@ -91,6 +92,7 @@ class SurveyTopicReportBuilder:
         return PARTIAL_DIR / f"{safe_name}.partial.json"
 
     def _load_state(self, path: Path) -> dict[str, Any]:
+        if OVERWRITE: return {"stage": "init"}
         if not path.exists():
             return {"stage": "init"}
         try:
@@ -217,10 +219,10 @@ class SurveyTopicReportBuilder:
                     ensure_ascii=False,
                 )
             )
-        anchor_data = await self.anchor_source(survey_item.get("query", survey_item.get("title", "")), download=True)
+        anchor_data = await self.anchor_source(survey_item.get("query", survey_item.get("title", "")))
         anchor_surveys = []
         for item in anchor_data.get("anchor_surveys", {}).values():
-            paper_meta = item.get("paper") or {}
+            paper_meta = item.get("meta") or {}
             if paper_meta.get("id"):
                 self._debug_paper("anchor_survey", paper_meta)
                 anchor_surveys.append(paper_meta["id"])
@@ -238,18 +240,28 @@ class SurveyTopicReportBuilder:
     async def build_anchor_survey_records(self, domain_name: str, anchor_data: dict[str, Any]) -> list[dict[str, Any]]:
         records = []
         for downloaded in anchor_data.get("anchor_surveys", {}).values():
-            paper_meta = downloaded.get("paper") or {}
-            skeleton = downloaded.get("skeleton") or {}
+            paper_meta = downloaded.get("meta") or {}
+            titles = downloaded.get("titles") or []
             survey_id = paper_meta.get("id") or paper_meta.get("title") or downloaded.get("title")
             if not survey_id:
                 continue
             self._debug_paper("anchor_survey_record", {"id": survey_id, "title": paper_meta.get("title", "")})
+            sections = [
+                {
+                    "heading": item.get("section_name", "") if isinstance(item, dict) else str(item),
+                    "is_topic_section": True,
+                    "cited_papers": [],
+                    "inferred_topic": "",
+                }
+                for item in titles
+                if (item.get("section_name", "") if isinstance(item, dict) else str(item)).strip()
+            ]
             records.append(
                 {
                     "survey_id": survey_id,
                     "title": paper_meta.get("title", ""),
                     "domain": domain_name,
-                    "sections": await self._build_sections(skeleton),
+                    "sections": sections,
                     "anchor_surveys": [],
                     "_anchor_data": {},
                 }

@@ -1,77 +1,141 @@
-# query_expand.py
-QUERY_EXPANSION_PROMPT = '''You are a Senior Research Librarian specializing in Systematic Literature Reviews. 
-Your goal is to generate 4 distinct, high-recall search queries for the topic or literature review: "{query}"
-
-### CONTEXT
-- **Goal**: Build a sufficiently broad candidate pool of papers to support downstream identification of anchor papers, oracle papers, and research topics.
-- **Search Strategy**: Prioritize recall over precision.
-- **Constraint**: Queries should be semantically distinct and cover complementary perspectives of the same research area.
-- **Constraint**: Do NOT use wildcards ('*' or '?'). The search engine does not support them.
-
-### SEARCH STRATEGY: "CORE + BRIDGES"
-Generate exactly 4 search queries to cover the topic's core evidence and its disconnected theoretical foundations.
-
-1. **The Core Anchor (2 Queries)**
-   - Target the intersection of the **Subject** AND the **Population/Context**.
-   - Use standard synonyms for both.
-   - **Goal:** Find the dense cluster of applied research papers.
-   - *Constraint:* MUST include both Subject and Population terms.
-
-2. **The Theoretical Bridge (1 Query)**
-   - Target the **Parent Discipline** or **Mechanism** that explains *why* the intervention works.
-   - **Goal:** Find broad theoretical papers (e.g., "Health Promotion," "Behavioral Theory") that may not mention the specific population.
-   - *Constraint:* You MAY drop the "Population" term. You MUST keep the "Subject" or "Parent Field" term.
-
-3. **The Methodological Bridge (1 Query)**
-   - Target the **Tools**, **Designs**, or **Evaluation Standards** used.
-   - **Goal:** Find protocols, validation studies, or general tools (e.g., "MMAT", "Consolidated Framework").
-   - *Constraint:* You MAY drop the "Subject" term if focusing on a tool used in this Population.
-
-### PROHIBITED:
-- Do NOT generate "Ghost Queries" that have NO anchor (e.g., just "Policy" AND "Evaluation").
-- Do NOT use specific publication years or "Recent".
-
-### OUTPUT FORMAT
-Provide a JSON object with a brief strategy for the expansion and the queries.
-
-```json
-{{
-  "strategy": "Brief explanation of how the queries jointly maximize coverage of the research landscape.",
-  "core_anchor": ["query 1", "query 2"],
-  "theoretical_bridge": "query 3",
-  "methodological_bridge": "query 4"
-}}
-```
-'''
-
 # golden_topics.py
-TOPIC_LABEL_FROM_CLUSTER_PROMPT = """You are naming a literature-review topic from one BERTopic cluster.
+TOPIC_CLUSTER_PROMPT = """You are a Senior Research Librarian specializing in Systematic Literature Reviews. You are given a set of reference surveys, each with an ID, title, and a filtered list of section headings. Your task is to identify the core research topics covered across these surveys by clustering semantically related headings.
 
-Target query:
-{query}
+### Input format
+[
+  {
+    "survey_id": "<id>",
+    "survey_title": "<title>",
+    "section_headings": ["<heading1>", "<heading2>", ...]
+  },
+  ...
+]
 
-Cluster keywords:
-{keywords}
+### Instructions
 
-Representative paper titles:
-{titles}
+- Group semantically equivalent or closely related non-generic headings into topics.
+- A heading is generic if it does not name a specific research area, method, task, or concept (e.g. "Overview", "Summary", "Preliminaries", "Notation", "Conclusion", "Future Work", "Discussion", "Limitations", "Appendix"). Exclude such headings even if they passed the pre-filter.
+- Each topic must represent a coherent, specific research concept, task, method family, or application area.
+- Every topic must include one or more sources as evidence.
+- Each source must copy the original section title CHARACTER FOR CHARACTER exactly as given in the input. Do not paraphrase, normalize, or correct the original wording.
+- Do not invent section titles that do not appear in the input.
+- Do not split a single heading across multiple topics unless it clearly names two distinct concepts.
+- A heading may appear in at most one topic. Choose the most specific topic it belongs to.
+- Prefer concise, human-readable topic names in English noun phrase form (e.g. "Knowledge Distillation", "Low-Resource Machine Translation", "Evaluation Benchmarks").
+- Topics that appear in only one survey and have no semantically related counterpart in any other survey may be included if the heading is specific and substantive.
+- Return an empty topics list if the headings are insufficient to form any meaningful topic.
 
-Instructions:
-- Produce one short human-friendly topic name suitable for a survey section title.
-- Prefer a noun phrase, usually 2 to 8 words.
-- The topic name must stay within the semantic scope of the target query.
-- Do not output a list of keywords.
-- Avoid vague labels like "methods", "approaches", or "applications" unless the titles clearly support that.
-- If the cluster is noisy, still provide the best concise topic name from the dominant pattern.
+### Output Format
 
-Return a JSON object only:
+Output a single JSON object with no additional commentary, explanation, or markdown formatting:
+
 ```json
 {{
-  "topic_name": "...",
-  "reason": "brief explanation"
+  "topics": [
+    {{
+      "topic": "topic_name",
+      "sources": [
+        {{"survey_id": "S1", "section_title": "exact original heading"}},
+        ...
+      ]
+    }}
+  ]
 }}
 ```
 """
+
+TOPIC_CLUSTER_SCHEMA = {
+    "type": "object",
+    "required": ['topics'],
+    "properties": {
+        "topics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ['topic', 'sources'],
+                "properties": {
+                    "topic": {"type": "string", "minLength": 1},
+                    "sources": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "required": ["survey_id", 'section_title'],
+                            "properties": {
+                                "survey_id": {"type": "string", "pattern": r"^S\d+$"},
+                                "section_title": {"type": "string", "minLength": 1}
+                            },
+                            "additionalProperties": False
+                        }
+                    }
+                },
+                "additionalProperties": False
+            }
+        }
+    },
+    "additionalProperties": False
+}
+
+# self_evidence.py
+SCOPE_CLAIM_EXTRACT = """You are a Senior Research Librarian specializing in Systematic Literature Reviews. You are given some paragraphs from a literature review.
+
+### Input
+{text}
+
+### Task
+Extract sentences that explicitly describe the paper's section-by-section organization or covered aspects. Follow these rules:
+
+1. section_map: For each sentence that maps a section number to a topic (e.g., "Section 2 discusses X"), add an entry where:
+   - key: the full section number as a string, preserving all levels (e.g., "2", "3.1", "4.2.1")
+   - value: the topic or aspect described for that section
+
+2. aspect_list: If the text describes covered aspects or topics WITHOUT section numbers (e.g., "this survey covers A, B, and C"), list each aspect as a separate string.
+
+3. Do NOT extract generic paper-organization sections as topics. Exclude items whose value is only or mainly: introduction, background, preliminary/preliminaries, related work, methods/methodology, experiments/evaluation/results, discussion, conclusion, future work/future directions, limitations, open problems/open questions, appendix, references, acknowledgments.
+
+4. evidence: Copy the source sentences that support the above extractions. Use the exact original wording; escape any internal quotation marks with a backslash.
+
+5. If the text contains no organizational or scope statements, return empty objects.
+
+### Positive examples
+- "Section 3 reviews parameter-efficient fine-tuning methods." -> {{"3": "parameter-efficient fine-tuning methods"}}
+- "We cover retrieval-augmented generation, tool use, and agent evaluation." -> ["retrieval-augmented generation", "tool use", "agent evaluation"]
+
+### Negative examples
+- "Section 2 introduces background, Section 7 discusses open challenges, and Section 8 concludes the paper." -> do not extract Section 2, Section 7, or Section 8.
+- "The paper is organized as follows: Section 1 is the introduction and Section 6 is the conclusion." -> return empty section_map and aspect_list.
+
+### Output Format
+Return valid JSON only, no other text:
+
+```json
+{{
+  "section_map": {{"2": "topic", "3.1": "topic"}},
+  "aspect_list": ["aspect"],
+  "evidence": ["verbatim sentence"]
+}}
+```
+"""
+
+SCOPE_CLAIM_SCHEMA = {
+    "type": "object",
+    "required": ["section_map", "aspect_list", "evidence"],
+    "properties": {
+        "section_map": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "minLength": 1},
+        },
+        "aspect_list": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+        },
+        "evidence": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+        },
+    },
+    "additionalProperties": False,
+}
 
 # claim_segmentation.py
 CLAIM_CLASSIFICATION_PROMPT = """You are a careful scientific reviewer. Determine whether the target sentence is a claim that should be fact-checked against its single citation.
@@ -101,155 +165,44 @@ Mark `true` only if all of the following hold:
 Mark `false` for background definitions, loose motivation, author opinions, or cases where the citation is just an example.
 """
 
-# anchor_survey.py
-ANCHOR_PAPER_SELECT = """You are an expert researcher preparing to evaluate a survey paper titled:
-
-"{query}"
-
-Before evaluating this survey, you need to understand the CORE LITERATURE of the field it claims to cover.
-
-You are given a list of academic papers retrieved using the survey's topic query. Your task is to filter this list and select a subset of papers that together represent the CORE RESEARCH LANDSCAPE of the field.
-
-These selected papers will later be used to:
-- identify foundational and widely-accepted works,
-- infer which papers are considered important by the field,
-- derive anchor papers and anchor topics.
-
-You are NOT selecting papers to cite in the survey.
-You are selecting papers that someone evaluating this survey MUST be aware of.
-
----
-
-### Input
-
-My paper list are:
-
-{titles}
-
----
-
-### Selection Goal
-
-Select approximately **30–80 papers** that collectively serve as **"consensus carriers"** for the field described by the survey title.
-
----
-
-### Inclusion Criteria (strong signals)
-
-A paper SHOULD be selected if one or more of the following is true:
-
-1. The paper studies the **primary research object** implied by the survey title as its central focus (not as a secondary application or example).
-2. The paper is **methodological, theoretical, or conceptual**, contributing models, frameworks, principles, or systematic analyses relevant to the field.
-3. The paper is likely to be **commonly recognized or discussed** by researchers working in this area (e.g., foundational work, influential model, or representative approach).
-4. The paper represents a **major sub-direction or paradigm** within the field.
-
----
-
-### Exclusion Criteria (strong signals)
-
-A paper SHOULD NOT be selected if:
-
-1. The primary focus is an **application domain** where the survey topic is only a tool or one component among many.
-2. The paper applies the survey topic to a **specific task, dataset, or niche setting** without contributing to the general understanding of the field.
-3. The paper belongs to a **neighboring or overlapping field**, but the survey topic is not its main research subject.
-4. The paper is a **broad overview of an unrelated area**, even if it briefly mentions concepts related to the survey topic.
-
----
-
-### Important Clarifications
-
-- Do NOT filter based on whether a paper is a survey or not.
-- Do NOT filter based solely on citation count.
-- Do NOT aim for diversity for its own sake.
-- Focus on whether a paper helps define "what this field is about".
-
-It is acceptable if:
-- Some selected papers are surveys, and others are not.
-- Some selected papers are older or newer.
-- Some selected papers are very influential, and others are representative but less cited.
-
----
-
-### Output Format
-
-Return a JSON object with the following structure:
-
-```json
-{{
-  "selected_papers": [
-    {{
-      "title": "...",
-      "reason": "Brief explanation of why this paper helps define the core literature of the field."
-    }}
-  ]
-}}
-```
-
-### Sanity Check (must satisfy internally)
-
-- The selected papers, taken together, should give a reviewer enough context to judge whether the survey is missing important work.
-- Removing several selected papers would noticeably reduce understanding of the field.
-- The set should not be dominated by application-specific or peripheral works.
-
-"""
-
-ANCHOR_SURVEY_SELECT = """You are a professional academic researcher. You are selecting anchor surveys for evaluating a target survey titled "{query}".
+# get_reference_surveys.py
+REFERENCE_SURVEY_SELECT = """You are a professional academic researcher. You are selecting reference surveys for evaluating a target survey titled "{query}".
 
 ### Candidate Surveys
 You are given a list of candidate papers that are likely to be surveys or survey-like works.
 
-Your task is to select 1–5 surveys that can serve as STRUCTURAL and CONCEPTUAL ANCHORS for evaluating another survey written for this query.
+Select reference surveys that can serve as structural and conceptual references for evaluating another survey written for this query.
 
-### Definition: Anchor Survey
-An anchor survey is a paper that:
-- Treats the query topic as its PRIMARY organizing focus (not as a side example).
-- Organizes the literature into coherent conceptual or methodological dimensions.
-- Provides a structural view of the field (e.g., taxonomies, categorizations, evolution, or design space).
-- Would reasonably be consulted by an expert before writing or reviewing a survey on this topic.
+### Inclusion Criteria
+A selected survey should:
+- Treat the query topic as its primary organizing focus.
+- Organize the literature into coherent conceptual or methodological dimensions.
+- Discuss multiple sub-dimensions, variants, or perspectives of the topic.
+- Be useful for judging whether another survey misses important topics or references.
 
-### Strict Inclusion Criteria
-A selected survey MUST:
-1. Take the query topic as the main research object.
-2. Use the query topic as the organizing principle of the survey.
-3. Discuss multiple sub-dimensions, variants, or perspectives of the topic.
-
-### Strict Exclusion Criteria
+### Exclusion Criteria
 Exclude papers that:
 - Are not surveys or survey-like syntheses.
 - Focus primarily on downstream applications or domains unless the domain itself is the query.
 - Mention the query topic only as one method among many.
 - Are narrow task-specific summaries rather than field-level overviews.
 
-My survey list are:
-
+Candidate survey list:
 {titles}
 
-Your output format should be a JSON object containing anchor surveys you selected, as follows:
-
+Return JSON only:
 ```json
 {{
   "surveys": [
     {{
-      "title": "Survey 1",
-      "reason": "Reason",
-    }},
-    ...
+      "title": "Survey title copied exactly from the candidate list",
+      "reason": "Brief reason"
+    }}
   ]
 }}
 ```
 
-or an empty list with reasons if no anchor surveys are found:
-
-```json
-{{
-  "surveys": [],
-  "reason": "Reason"
-}}
-```
-
-### Important Note
-
-Be conservative. It is acceptable to select fewer surveys or none if the candidates do not clearly qualify.
+Return an empty list if no candidate clearly qualifies.
 """
 
 # websearch.py
@@ -304,7 +257,6 @@ Your output should be a single JSON object only:
 ### Evidence
 {text}
 '''
-
 
 # structure_eval.py
 EXTRACT_METHODS = """Identify methods that are **substantively introduced** in this section.
@@ -617,333 +569,4 @@ FINAL_AGGREGATION_SCHEMA = {
     },
     "required": ["summary", "strengths", "weaknesses", "comments", "evidence", "overall_score"],
     "additionalProperties": False
-}
-
-# deprecated
-SURVEY_SPECIFIED_QUERY_EXPANSION = """You are constructing a HIGH-PRECISION academic search query.
-
-### Context
-You are about to evaluate a survey titled:
-"{query}"
-
-To do so, you want to retrieve only the most canonical, field-defining papers or surveys that a knowledgeable researcher would EXPECT to see referenced.
-
-### Your Goal
-Generate EXACTLY ONE search query that prioritizes PRECISION over RECALL.
-
-### Design Rules (VERY IMPORTANT)
-1. The query must reflect the STANDARD name of the core method or concept.
-2. Use AND to constrain the scope if necessary.
-3. Avoid OR unless the terms are near-identical synonyms used interchangeably by experts.
-4. Do NOT include:
-   - Specific tasks
-   - Benchmarks or datasets
-   - Applications or domains
-   - Model variants or product names
-5. The query should be understandable and reasonable if read by a domain expert.
-6. Survey-specific keywords (e.g., "survey", "review", "overview") will be ADDED MANUALLY later — DO NOT include them.
-
-### Failure Is Acceptable
-- It is acceptable if this query retrieves very few or zero results.
-- Do NOT broaden the query to guarantee results.
-
-### Output Format
-Return a JSON object:
-
-```json
-{{
-  "query": "..."
-}}
-```
-"""
-
-QUERY_SCHEMA = {
-    "type": "object", 
-    "required": ["strategy", "core_anchor", "theoretical_bridge", "methodological_bridge"],
-    "properties": {
-        "strategy": {"type": "string"},
-        "core_anchor": {"type": "array", "items": {"type": "string"}},
-        "theoretical_bridge": {"type": "string"},
-        "methodological_bridge": {"type": "string"}
-    }
-}
-
-INTERGRATION_INTENT = """You are a strict survey reviewer. You are assessing whether a given text segment explicitly shows an **intent to integrate, synthesize, or organize prior literature**, as expected in a survey paper.
-
-### Definition
-
-"Integration intent" means the text **explicitly states** one or more of the following:
-
-* organizing prior work into categories, themes, or dimensions
-* summarizing trends, comparisons, or common findings across multiple works
-* positioning multiple studies relative to each other
-
-It does **NOT** include:
-
-* merely describing one paper or one method
-* background definitions
-* narrative mentions without synthesis language
-
-### Instructions
-
-1. Read the text carefully.
-2. Decide whether **explicit integration intent** is present.
-3. If yes, copy **the exact sentence(s)** that express this intent.
-4. If no, return `false` and leave evidence empty.
-
-### Constraints
-
-* Do **not** infer intent if it is not explicitly stated.
-* If you are unsure, choose `false`.
-
-### Output Format
-
-```json
-{
-  "integration_intent": true | false,
-  "evidence": "verbatim sentence(s) from the text, or empty string if false"
-}
-```"""
-
-TOPIC_AGGREGATION_PROMPT = """You are an expert researcher tasked with synthesizing a survey-level topic structure from a collection of academic papers. Your goal is to identify high-level research topics that would reasonably appear as major sections in a well-written survey on the given query.
-
-### Target query: {query}
-
-The query defines the conceptual scope of the survey. Topics must fall within this scope, not merely mention it.
-
-### Paper Collection
-
-You are given:
-* High-priority evidences: a list of section and subsection names extracted from anchor surveys for this query.
-* Low-priority evidences: a list of other relevant paper titles retrieved for this query.
-Note that not all sources are equally reliable.
-
-[High-priority evidence]
-Survey section names extracted from anchor surveys:
-{anchors}
-
-[Low-priority evidence]
-Titles and abstracts of other relevant papers:
-{surveys}
-
-### Your Task
-
-From the paper title collection, induce 5–12 high-level survey topics. Each topic should:
-
-1. Represent a recurring research direction or theme, not a single paper.
-2. Be appropriate as a top-level section in a survey.
-3. Be clearly within the semantic scope of the query.
-4. Be methodological or conceptual, not a downstream application domain unless the application itself is central to the query.
-
-### Important Constraints
-
-A topic must be:
-* short (≤ 8 words)
-* noun-phrase like
-* suitable as a section header
-* checkable by surface semantic similarity
-
-Do NOT create topics that are purely:
-- Irrelevant to the query.
-- Application domains (e.g., radiology, neurosurgery, clinical decision making)
-- Neighboring fields outside the query scope (e.g., speech recognition if the query is about NLP)
-- If a paper applies the queried method to another field, treat it as evidence, not a standalone topic.
-- If multiple papers treat a specific model family (e.g., ChatGPT as a representative LLM) as a recurring focus within the query scope, it may form a topic.
-
-### Output Format
-
-Return a JSON object:
-```json
-{{
-  "topics": [
-    {{
-      "topic_name": "...",
-      "representative_papers": ["title1", "title2", "..."]
-    }}
-  ]
-}}
-```
-
-### Sanity Checks (must satisfy internally)
-
-- Every topic should be supported by multiple papers.
-- The union of topics should cover most papers, but not necessarily all.
-- Topics should be distinct and non-overlapping at a high level.
-"""
-
-IS_LANDMARK = """Given a reference and the paragraph where it appears, determine the **role** this reference plays in the narrative.
-
-### Role Definitions
-
-* **foundational**：introduced as a landmark, origin, or basis of the field
-* **representative**：used as a typical or canonical example of a category
-* **incremental**：presented as a minor improvement or extension over prior work
-* **background**：mentioned for context, definition, or historical background only
-
-### Instructions
-
-1. Focus on how the cited work is **positioned**, not its actual importance.
-2. Choose exactly one role from the defined categories.
-3. Base your decision only on the provided paragraph.
-
-### Constraints
-
-* Do not assume importance beyond what is stated.
-* If multiple roles appear, choose the **dominant** one.
-
-### Output Format
-
-```json
-{
-  "role": "foundational" | "representative" | "incremental" | "background"
-  "explanation": "brief justification of the chosen role"
-}
-```"""
-
-CLAIM_SEGMENTATION_PROMPT = '''You are a precise scientific text classifier. Your task is to determine whether a given sentence describes a concrete experimental result or performance claim that can be verified against its cited reference(s).
-
-========================
-INPUT
-========================
-
-Context Window (up to 3 consecutive sentences):
-\"\"\"{context}\"\"\"
-
-Target Sentence (contains exactly one citation marker):
-\"\"\"{sentence}\"\"\"
-
-Citation marker:
-{citation_key}
-
-========================
-DEFINITION
-========================
-
-A *verifiable performance claim* is a sentence that:
-- Asserts a specific, measurable result, capability, or limitation of a method, model, or system, AND
-- The assertion can in principle be confirmed or refuted by reading the cited reference.
-
-Typical verifiable performance claims include:
-- Quantitative results: accuracy, scores, rankings, comparisons with numbers
-- Qualitative capability assertions: "Model X outperforms Y on task Z"
-- Explicitly stated limitations: "Model X fails to generalize to domain Y"
-- Direct benchmark results: "This model achieves state-of-the-art on dataset X"
-
-========================
-EXCLUSION CRITERIA
-========================
-
-Answer NO if the sentence is any of the following:
-
-1. Background definition: defines a concept, task, or field
-   Example: "Language models are computational models that understand human language [36]."
-
-2. Existence citation: cites a paper merely as an example or representative of a category
-   Example: "Tasks such as mathematical reasoning [225] and structured data inference [86]."
-
-3. Motivation or scope statement: explains why something matters or what a paper covers
-   Example: "Evaluating LLMs on complex tasks has become an active research direction [12]."
-
-4. Indirect attribution: the cited paper is not the primary source of the claimed result
-   Example: "As noted by recent surveys [5], performance has improved significantly."
-
-5. Unresolvable reference: the subject of the claim cannot be determined from the 3-sentence window
-   Example: "Its proficiency still requires improvement [6]." (when "its" cannot be resolved)
-
-========================
-OUTPUT FORMAT
-========================
-
-Return a JSON object in the following format:
-
-```json
-{{
-  "is_verifiable_performance_claim": true | false,
-  "reason": "<one sentence explaining the decision>"
-}}
-```
-
-Do NOT return anything outside the JSON object.
-
-========================
-EXAMPLES
-========================
-
-### Example 1
-
-Context Window:
-\"\"\"ChatGPT exhibits a strong capability for arithmetic reasoning by outperforming GPT-3.5 in the majority of tasks [159].
-However, its proficiency in mathematical reasoning still requires improvement [6].
-On symbolic reasoning tasks, ChatGPT is mostly worse than GPT-3.5 [6].\"\"\"
-
-Target Sentence:
-\"\"\"However, its proficiency in mathematical reasoning still requires improvement [6].\"\"\"
-
-Citation marker: 6
-
-Output:
-```json
-{{
-  "is_verifiable_performance_claim": false,
-  "reason": "The subject 'its' refers to ChatGPT based on context, but 'requires improvement' is the author's interpretive judgment rather than a specific measurable result reported in the cited paper."
-}}
-```
-
-### Example 2
-
-Context Window:
-\"\"\"We evaluate our model on the SQuAD 2.0 reading comprehension benchmark.
-Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].
-This represents a significant improvement in extractive question answering performance.\"\"\"
-
-Target Sentence:
-\"\"\"Our approach achieves an F1 score of 87.4, surpassing the previous best result of 85.1 reported by [43].\"\"\"
-
-Citation marker: 43
-
-Output:
-```json
-{{
-  "is_verifiable_performance_claim": true,
-  "reason": "The sentence makes a specific quantitative comparison against a result (85.1 F1) attributed to the cited reference, which can be verified by reading that paper."
-}}
-```
-
-### Example 3
-
-Context Window:
-\"\"\"Sentiment analysis is a task that analyzes text to determine emotional inclination.
-It is typically a binary or triple classification problem.
-Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
-
-Target Sentence:
-\"\"\"Evaluating sentiment analysis tasks is a popular direction [114].\"\"\"
-
-Citation marker: 114
-
-Output:
-```json
-{{
-  "is_verifiable_performance_claim": false,
-  "reason": "The sentence describes the general research landscape rather than asserting a specific experimental result or performance measurement attributable to the cited paper."
-}}
-```
-'''
-
-CLAIM_SCHEMA = {
-    "claims": {"type": "array", "items": {
-        "type": "object", 
-        "required": ["claim", "claim_type", "citation_markers"],
-        "properties": {
-            "claim": {"type": "string", "minLength": 1},
-            "claim_type": {"type": "string", "enum": ["background", "action", "result"]},
-            "citation_markers": {"type": "array", "items": {"type": "string"}}
-        }
-    }}
-}
-
-CLAIMS_SCHEMA = {
-    "type": "object", 
-    "required": ["claims"],
-    "properties": CLAIM_SCHEMA
 }

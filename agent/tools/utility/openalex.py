@@ -79,6 +79,7 @@ class OpenAlex:
         ]
 
     async def ensure_ready(self):
+        """初始化"""
         if self._initialized: return
         async with self._init_lock:
             if self._initialized: return
@@ -92,34 +93,117 @@ class OpenAlex:
                     state.initialized = True
             self._initialized = True
 
-    def reset_request_count(self):
-        self.request_count = 0
-
-    def get_request_count(self) -> int:
-        return self.request_count
+    async def get_balance(self, api_key: str) -> int:
+        session = SessionManager.get()
+        params = {"api_key": api_key}
+        last_exc = None
+        for attempt in range(3):
+            try:
+                await RateLimit.wait_openalex_slot()
+                self.request_count += 1
+                async with RateLimit.OPENALEX_SEMAPHORE:
+                    async with session.get(
+                        f"{OPENALEX_API_URL}/rate-limit",
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        text = await resp.text()
+                        payload = json.loads(text)
+                        if resp.status >= 400:
+                            if payload.get("error") == "Rate limit exceeded":
+                                raise OpenAlexBudgetExceeded(payload)
+                            resp.raise_for_status()
+                        return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_transient_error(exc) or attempt == 2:
+                    raise
+                await asyncio.sleep(min(10, 2 ** attempt))
+        raise last_exc
 
     def _next_utc_midnight(self) -> datetime:
+        """OpenAlex免费额度于每日UTC 0:00重置"""
         now = datetime.now(UTC)
         tomorrow = (now + timedelta(days=1)).date()
         return datetime.combine(tomorrow, datetime.min.time(), tzinfo=UTC)
 
+    async def _refresh_daily_state(self, state: CredentialState):
+        now = datetime.now(UTC)
+        if state.cooling_until is None or now < state.cooling_until:
+            return
+        if state.api_key is None:
+            state.credits_remaining = FREE_CREDITS_PER_DAY
+            state.cooling_until = None
+            return
+        try:
+            state.credits_remaining = await self.get_balance(state.api_key)
+            state.cooling_until = None if state.credits_remaining > 0 else self._next_utc_midnight()
+        except Exception:
+            state.credits_remaining = 0
+            state.cooling_until = self._next_utc_midnight()
+
+    async def _choose_credential(self, estimated_cost: int, require_api_key: bool = False) -> CredentialState:
+        await self.ensure_ready()
+        async with self._state_lock:
+            if not require_api_key:
+                await self._refresh_daily_state(self.no_key_state)
+                if self.no_key_state.is_available(estimated_cost): return self.no_key_state
+            for state in self.api_key_states:
+                await self._refresh_daily_state(state)
+                if state.is_available(estimated_cost): return state
+        raise OpenAlexBudgetExceeded({"message": "No OpenAlex credential has remaining credits"})
+    
+    def _estimate_search_cost(self, search: str, filter_value: list[tuple] | dict | None) -> int:
+        return 10 if (search or self._filter_has_search_key(filter_value)) else 1
+
+    def _mark_exhausted(self, state: CredentialState, payload: dict | None = None):
+        state.credits_remaining = 0
+        state.cooling_until = self._next_utc_midnight()
+
+    def _deduct_credits(self, state: CredentialState, credits: int):
+        if credits <= 0: return
+        state.credits_remaining = max(0, state.credits_remaining - credits)
+        if state.credits_remaining == 0: state.cooling_until = self._next_utc_midnight()
+
+    def _extract_cost_credits(self, payload: dict) -> int:
+        meta = payload.get("meta") or {}
+        cost_usd = meta.get("cost_usd")
+        if cost_usd is None: return 0
+        return max(0, int(round(float(cost_usd) * 10000)))
+
+    def _is_transient_error(self, exc: BaseException) -> bool:
+        if isinstance(exc, OpenAlexBudgetExceeded): return False
+        if isinstance(exc, aiohttp.ClientResponseError): return exc.status not in {400, 401, 403, 404}
+        return isinstance(exc, TRANSIENT_EXCEPTION_TYPES)
+
+    def _format_filter(self, filter_value: list[tuple] | dict | None) -> str | None:
+        """将dict/dict.items()形式的filter参数整理成输入格式。"""
+        if not filter_value: return
+        if isinstance(filter_value, dict): filter_value = list(filter_value.items())
+        normalized = []
+        for key, value in filter_value:
+            if isinstance(value, (list, tuple, set)):
+                value = "|".join(str(item) for item in value if item is not None)
+            normalized.append((str(key), value))
+        return ",".join(f"{key}:{value}" for key, value in normalized)
+
     def _normalize_openalex_id(self, value: str) -> str:
+        """去掉各种id前面的https//openalex.org/"""
         return (value or "").replace(URL_DOMAIN, "").strip()
 
     def _normalize_work(self, paper: dict) -> dict:
+        """将openalex返回的论文信息整理成统一格式"""
         paper = dict(paper or {})
-        if not paper.get("title"):
-            return {}
-        if paper.get("id"):
-            paper["id"] = self._normalize_openalex_id(paper["id"])
-        paper["title"] = re.sub(r"\s+", " ", paper.get("title", ""))
+        if not paper.get("title"): return {}
+        if paper.get("id"): paper["id"] = self._normalize_openalex_id(paper["id"])
+        paper["title"] = re.sub(r"\s+", " ", paper['title'].replace("\\", " "))
         if "abstract_inverted_index" in paper:
             paper["abstract"] = index_to_abstract(paper["abstract_inverted_index"])
             del paper["abstract_inverted_index"]
         if paper.get("publication_date") is None and paper.get("created_date"):
             paper["publication_date"] = paper["created_date"]
-        if "created_date" in paper:
-            paper.pop("created_date", None)
+        if "created_date" in paper: paper.pop("created_date", None)
         paper["referenced_works"] = [
             self._normalize_openalex_id(work_id)
             for work_id in paper.get("referenced_works", []) or []
@@ -130,10 +214,10 @@ class OpenAlex:
         return paper
 
     def _normalize_authorships(self, authorships: list[dict] | list[str] | None) -> list[str]:
+        """专门处理authors"""
         authors = []
         for item in authorships or []:
-            if isinstance(item, str):
-                name = item
+            if isinstance(item, str): name = item
             elif isinstance(item, dict):
                 author = item.get("author") or {}
                 name = author.get("display_name") or ""
@@ -143,6 +227,19 @@ class OpenAlex:
             if name: authors.append(name)
         return list(dict.fromkeys(authors))
 
+    def _wrap_search_results(self, entity_type: str, payload: dict) -> dict:
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        raw_result_count = len(results)
+        if entity_type == "works":
+            normalized = [paper for item in results if (paper := self._normalize_work(item))]
+        else:
+            normalized = results
+        return {
+            "count": payload.get("meta", {}).get("count", len(normalized)),
+            "results": normalized,
+            "_raw_result_count": raw_result_count,
+        }
+
     def _paper_year(self, paper: dict) -> int | None:
         publication_date = paper.get("publication_date") or ""
         if isinstance(publication_date, str) and len(publication_date) >= 4 and publication_date[:4].isdigit():
@@ -150,10 +247,10 @@ class OpenAlex:
         return None
 
     def _same_work(self, left: dict, right: dict) -> bool:
+        """去重核心：标题编辑距离<10%、作者重合度>80%、发表年份相差<=1年，可判定为同一篇工作。"""
         left_title = normalize_text(left.get("title", ""))
         right_title = normalize_text(right.get("title", ""))
-        if not left_title or not right_title:
-            return False
+        if not left_title or not right_title: return False
         max_title_len = max(len(left_title), len(right_title), 1)
         if Levenshtein.distance(left_title, right_title) > max(1, int(0.1 * max_title_len)):
             return False
@@ -189,16 +286,70 @@ class OpenAlex:
 
     def merge_duplicate_works(self, papers: list[dict], original_title: str = "") -> dict | None:
         merged = self.deduplicate_works(papers, original_title=original_title)
-        if not merged:
-            return None
-        if len(merged) == 1:
-            return merged[0]
+        if not merged: return None
+        if len(merged) == 1: return merged[0]
         return self._merge_work_cluster(merged, original_title)
+
+    def _merge_work_cluster(self, papers: list[dict], original_title: str = "") -> dict:
+        base = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
+        merged = dict(base)
+        ids = []
+        referenced_works = set()
+        authors = []
+        locations = []
+        seen_locations = set()
+        for paper in papers:
+            ids.extend(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
+            referenced_works.update(paper.get("referenced_works", []) or [])
+            authors.extend(paper.get("authorships", []) or [])
+            for location in paper.get("locations", []) or []:
+                key = json.dumps(location, sort_keys=True, ensure_ascii=False) if isinstance(location, dict) else str(location)
+                if key not in seen_locations:
+                    seen_locations.add(key)
+                    locations.append(location)
+
+        base_id = base.get("id")
+        ids = list(dict.fromkeys(([base_id] if base_id else []) + ids))
+        merged["ids"] = ids
+        if ids: merged["id"] = ids[0]
+        merged["referenced_works"] = sorted(referenced_works)
+        merged["authorships"] = list(dict.fromkeys(authors))
+        if locations:
+            merged["locations"] = locations
+
+        dates = [paper.get("publication_date") for paper in papers if paper.get("publication_date")]
+        if dates:
+            merged["publication_date"] = min(dates)
+
+        title_anchor = original_title or papers[0].get("title", "")
+        merged["title"] = min(
+            (paper.get("title", "") for paper in papers if paper.get("title")),
+            key=lambda value: Levenshtein.distance(normalize_text(title_anchor), normalize_text(value)),
+        )
+        cited_source = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
+        merged["cited_by_count"] = cited_source.get("cited_by_count", 0) or 0
+        merged["counts_by_year"] = cited_source.get("counts_by_year", []) or []
+        return merged
+
+    def _canonicalize_referenced_work_ids(self, papers: list[dict]) -> list[dict]:
+        alias_to_primary = {}
+        for paper in papers:
+            primary_id = paper.get("id")
+            if not primary_id:
+                continue
+            for alias in paper.get("ids") or [primary_id]:
+                alias_to_primary[alias] = primary_id
+
+        for paper in papers:
+            referenced_works = []
+            for work_id in paper.get("referenced_works", []) or []:
+                referenced_works.append(alias_to_primary.get(work_id, work_id))
+            paper["referenced_works"] = list(dict.fromkeys(referenced_works))
+        return papers
 
     def deduplicate_works(self, papers: list[dict], original_title: str = "") -> list[dict]:
         papers = [dict(paper) for paper in papers if paper and paper.get("title")]
-        if not papers:
-            return []
+        if not papers: return []
 
         parent = list(range(len(papers)))
 
@@ -226,161 +377,15 @@ class OpenAlex:
         clusters = {}
         for idx in range(len(papers)):
             clusters.setdefault(find(idx), []).append(papers[idx])
-        return [self._merge_work_cluster(cluster, original_title) for cluster in clusters.values()]
-
-    def _merge_work_cluster(self, papers: list[dict], original_title: str = "") -> dict:
-        base = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
-        merged = dict(base)
-        ids = []
-        referenced_works = set()
-        authors = []
-        locations = []
-        seen_locations = set()
-        for paper in papers:
-            ids.extend(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
-            referenced_works.update(paper.get("referenced_works", []) or [])
-            authors.extend(paper.get("authorships", []) or [])
-            for location in paper.get("locations", []) or []:
-                key = json.dumps(location, sort_keys=True, ensure_ascii=False) if isinstance(location, dict) else str(location)
-                if key not in seen_locations:
-                    seen_locations.add(key)
-                    locations.append(location)
-
-        ids = list(dict.fromkeys(ids))
-        merged["ids"] = ids
-        if ids:
-            merged["id"] = ids[0]
-        merged["referenced_works"] = sorted(referenced_works)
-        merged["authorships"] = list(dict.fromkeys(authors))
-        if locations:
-            merged["locations"] = locations
-
-        dates = [paper.get("publication_date") for paper in papers if paper.get("publication_date")]
-        if dates:
-            merged["publication_date"] = min(dates)
-
-        title_anchor = original_title or papers[0].get("title", "")
-        merged["title"] = min(
-            (paper.get("title", "") for paper in papers if paper.get("title")),
-            key=lambda value: Levenshtein.distance(normalize_text(title_anchor), normalize_text(value)),
-        )
-        cited_source = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
-        merged["cited_by_count"] = cited_source.get("cited_by_count", 0) or 0
-        merged["counts_by_year"] = cited_source.get("counts_by_year", []) or []
-        return merged
-
-    def _wrap_search_results(self, entity_type: str, payload: dict) -> dict:
-        results = payload.get("results", []) if isinstance(payload, dict) else []
-        if entity_type == "works":
-            normalized = [paper for item in results if (paper := self._normalize_work(item))]
-        else:
-            normalized = results
-        return {"count": payload.get("meta", {}).get("count", len(normalized)), "results": normalized}
-
-    def _format_filter(self, filter_value: list[tuple] | dict | None) -> str | None:
-        if not filter_value:
-            return None
-        if isinstance(filter_value, dict):
-            filter_value = list(filter_value.items())
-        normalized = []
-        for key, value in filter_value:
-            if isinstance(value, (list, tuple, set)):
-                value = "|".join(str(item) for item in value if item is not None)
-            normalized.append((str(key), value))
-        return ",".join(f"{key}:{value}" for key, value in normalized)
-
-    def _split_filter_kwargs(self, request_kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        filter_keys = {
-            "from_publication_date",
-            "to_publication_date",
-            "from_created_date",
-            "to_created_date",
-            "from_updated_date",
-            "to_updated_date",
-            "from_publication_year",
-            "to_publication_year",
-            "cites",
-            "cited_by",
-            "openalex",
-            "doi",
-            "pmid",
-            "pmcid",
-            "ids.openalex",
-            "title.search",
-            "default.search",
-            "cited_by_count",
-        }
-        filters = {}
-        params = {}
-        for key, value in request_kwargs.items():
-            if key in filter_keys or "." in key:
-                filters[key] = value
-            else:
-                params[key] = value
-        return params, filters
-
+        merged = [self._merge_work_cluster(cluster, original_title) for cluster in clusters.values()]
+        return self._canonicalize_referenced_work_ids(merged)
+    
     def _filter_has_search_key(self, filter_value: list[tuple] | dict | None) -> bool:
         if not filter_value: return False
         items = filter_value.items() if isinstance(filter_value, dict) else filter_value
         return any(str(key).endswith(".search") for key, _ in items)
 
-    def _estimate_search_cost(self, search: str, filter_value: list[tuple] | dict | None) -> int:
-        return 10 if (search or self._filter_has_search_key(filter_value)) else 1
-
-    async def _refresh_daily_state(self, state: CredentialState):
-        now = datetime.now(UTC)
-        if state.cooling_until is None or now < state.cooling_until:
-            return
-        if state.api_key is None:
-            state.credits_remaining = FREE_CREDITS_PER_DAY
-            state.cooling_until = None
-            return
-        try:
-            state.credits_remaining = await self.get_balance(state.api_key)
-            state.cooling_until = None if state.credits_remaining > 0 else self._next_utc_midnight()
-        except Exception:
-            state.credits_remaining = 0
-            state.cooling_until = self._next_utc_midnight()
-
-    async def _choose_credential(self, estimated_cost: int, require_api_key: bool = False) -> CredentialState:
-        await self.ensure_ready()
-        async with self._state_lock:
-            if not require_api_key:
-                await self._refresh_daily_state(self.no_key_state)
-                if self.no_key_state.is_available(estimated_cost):
-                    return self.no_key_state
-            for state in self.api_key_states:
-                await self._refresh_daily_state(state)
-                if state.is_available(estimated_cost):
-                    return state
-        raise OpenAlexBudgetExceeded({"message": "No OpenAlex credential has remaining credits"})
-
-    def _mark_exhausted(self, state: CredentialState, payload: dict | None = None):
-        state.credits_remaining = 0
-        state.cooling_until = self._next_utc_midnight()
-
-    def _deduct_credits(self, state: CredentialState, credits: int):
-        if credits <= 0:
-            return
-        state.credits_remaining = max(0, state.credits_remaining - credits)
-        if state.credits_remaining == 0:
-            state.cooling_until = self._next_utc_midnight()
-
-    def _extract_cost_credits(self, payload: dict) -> int:
-        meta = payload.get("meta") or {}
-        cost_usd = meta.get("cost_usd")
-        if cost_usd is None:
-            return 0
-        return max(0, int(round(float(cost_usd) * 10000)))
-
-    def _is_transient_error(self, exc: BaseException) -> bool:
-        if isinstance(exc, OpenAlexBudgetExceeded):
-            return False
-        if isinstance(exc, aiohttp.ClientResponseError):
-            return exc.status not in {400, 401, 403, 404}
-        return isinstance(exc, TRANSIENT_EXCEPTION_TYPES)
-
-    async def _single_json_request(self, url: str, params: dict[str, Any], credential: CredentialState) -> dict:
+    async def _single_json_request(self, url: str, params: dict[str, Any]) -> dict:
         session = SessionManager.get()
         last_exc = None
         for attempt in range(3):
@@ -408,7 +413,7 @@ class OpenAlex:
                 await asyncio.sleep(min(10, 2 ** attempt))
         raise last_exc
 
-    async def _single_bytes_request(self, url: str, params: dict[str, Any], credential: CredentialState) -> bytes:
+    async def _single_bytes_request(self, url: str, params: dict[str, Any]) -> bytes:
         session = SessionManager.get()
         last_exc = None
         for attempt in range(3):
@@ -453,7 +458,7 @@ class OpenAlex:
             if credential.api_key is not None:
                 request_params["api_key"] = credential.api_key
             try:
-                payload = await self._single_json_request(url, request_params, credential)
+                payload = await self._single_json_request(url, request_params)
             except OpenAlexBudgetExceeded as exc:
                 async with self._state_lock:
                     self._mark_exhausted(credential, exc.payload)
@@ -476,7 +481,7 @@ class OpenAlex:
             if credential.api_key is not None:
                 request_params["api_key"] = credential.api_key
             try:
-                payload = await self._single_bytes_request(url, request_params, credential)
+                payload = await self._single_bytes_request(url, request_params)
             except OpenAlexBudgetExceeded as exc:
                 async with self._state_lock:
                     self._mark_exhausted(credential, exc.payload)
@@ -484,35 +489,6 @@ class OpenAlex:
             async with self._state_lock:
                 self._deduct_credits(credential, fixed_cost)
             return payload, credential
-
-    async def get_balance(self, api_key: str) -> int:
-        session = SessionManager.get()
-        params = {"api_key": api_key}
-        last_exc = None
-        for attempt in range(3):
-            try:
-                await RateLimit.wait_openalex_slot()
-                self.request_count += 1
-                async with RateLimit.OPENALEX_SEMAPHORE:
-                    async with session.get(
-                        f"{OPENALEX_API_URL}/rate-limit",
-                        headers=HEADERS,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    ) as resp:
-                        text = await resp.text()
-                        payload = json.loads(text)
-                        if resp.status >= 400:
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
-                            resp.raise_for_status()
-                        return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
-            except Exception as exc:
-                last_exc = exc
-                if not self._is_transient_error(exc) or attempt == 2:
-                    raise
-                await asyncio.sleep(min(10, 2 ** attempt))
-        raise last_exc
 
     async def get_entity(
         self,
@@ -533,31 +509,27 @@ class OpenAlex:
         )
         return self._normalize_work(payload) if entity_type == "works" else payload
 
-    async def search_works(
+    async def _search_works_page(
         self,
         entity_type: str = "works",
         search: str = "",
         filter: list[tuple] | dict | None = None,
         do_sample: bool = False,
-        per_page: int = 1,
+        page_size: int = 1,
+        page: int = 1,
         select: str | None = OPENALEX_SELECT,
         **request_kwargs,
     ) -> dict:
-        assert per_page <= 200, "Per page is at most 200"
-        params, kw_filters = self._split_filter_kwargs(dict(request_kwargs))
-        if kw_filters:
-            if filter is None: filter = kw_filters
-            elif isinstance(filter, dict):
-                filter = {**filter, **kw_filters}
-            else:
-                filter = [*filter, *kw_filters.items()]
+        params = {**request_kwargs}
         filter_string = self._format_filter(filter)
         if filter_string: params["filter"] = filter_string
         if search: params["search"] = search
         if do_sample:
-            params["sample"] = per_page
-            params["seed"] = random.randint(0, 32767)
-        elif per_page: params["per-page"] = per_page
+            params["sample"] = page_size
+            params["seed"] = params.get('seed', random.randint(0, 32767))
+        elif page_size:
+            params["per-page"] = page_size
+            params["page"] = page
         if select: params["select"] = select
         estimated_cost = self._estimate_search_cost(search, filter)
         payload, _ = await self._request_json(
@@ -568,6 +540,67 @@ class OpenAlex:
             require_api_key=False,
         )
         return self._wrap_search_results(entity_type, payload)
+
+    async def search_works(
+        self,
+        entity_type: str = "works",
+        search: str = "",
+        filter: list[tuple] | dict | None = None,
+        do_sample: bool = False,
+        per_page: int = 9999,
+        select: str | None = OPENALEX_SELECT,
+        duplicate: bool = True,
+        **request_kwargs,
+    ) -> dict:
+        offset = int(request_kwargs.pop("offset", 0) or 0)
+        explicit_page = request_kwargs.pop("page", None)
+        start_page = int(explicit_page or (offset // 200 + 1) or 1)
+        skip_in_first_page = 0 if explicit_page is not None else offset % 200
+        if "AND" in search or "OR" in search: search = to_openalex(search)
+        if do_sample:
+            payload = await self._search_works_page(
+                entity_type=entity_type,
+                search=search,
+                filter=filter,
+                do_sample=True,
+                page_size=per_page,
+                page=start_page,
+                select=select,
+                **request_kwargs,
+            )
+            results = payload.get("results", []) or []
+            if entity_type == "works":
+                results = self.deduplicate_works(results)
+            return {
+                "count": payload.get("count", len(results)),
+                "results": results[:per_page],
+                "_raw_result_count": payload.get("_raw_result_count", len(results)),
+            }
+
+        raw_results, total, raw_seen, page = [], None, 0, start_page
+        target_raw_count = per_page + skip_in_first_page
+        while raw_seen < target_raw_count:
+            payload = await self._search_works_page(
+                entity_type=entity_type,
+                search=search,
+                filter=filter,
+                do_sample=False,
+                page_size=200,
+                page=page,
+                select=select,
+                **request_kwargs,
+            )
+            if total is None: total = int(payload.get("count", 0) or 0)
+            batch = payload.get("results", []) or []
+            raw_batch_count = int(payload.get("_raw_result_count", len(batch)) or 0)
+            raw_results.extend(batch)
+            raw_seen += raw_batch_count
+            if raw_batch_count == 0 or raw_batch_count < 200: break
+            page += 1
+
+        results = raw_results[skip_in_first_page:] if skip_in_first_page else raw_results
+        if entity_type == "works" and duplicate: results = self.deduplicate_works(results)
+        return {"count": total or len(results), "results": results[:per_page], "_raw_result_count": raw_seen}
 
     async def autocomplete(self, entity_type: str = "works", title: str = "") -> dict:
         payload, _ = await self._request_json(
@@ -609,17 +642,16 @@ class OpenAlex:
         self,
         work_id: str,
         offset: int = 0,
-        limit: int = 100,
+        limit: int = 9999,
         fields: str | None = OPENALEX_SELECT,
         **request_kwargs,
     ) -> dict:
-        page = offset // max(1, limit) + 1
         return await self.search_works(
             "works",
             filter={"cites": work_id},
             per_page=limit,
             select=fields,
-            page=page,
+            offset=offset,
             **request_kwargs,
         )
 
@@ -627,17 +659,16 @@ class OpenAlex:
         self,
         work_id: str,
         offset: int = 0,
-        limit: int = 100,
+        limit: int = 9999,
         fields: str | None = OPENALEX_SELECT,
         **request_kwargs,
     ) -> dict:
-        page = offset // max(1, limit) + 1
         return await self.search_works(
             "works",
             filter={"cited_by": work_id},
             per_page=limit,
             select=fields,
-            page=page,
+            offset=offset,
             **request_kwargs,
         )
 
@@ -705,30 +736,6 @@ def get_openalex_client(config: ToolConfig | None = None) -> OpenAlex:
         ):
             _OPENALEX_CLIENT = OpenAlex(config)
     return _OPENALEX_CLIENT
-
-
-async def openalex_search_paper(
-    endpoint: str,
-    filter: list[tuple] | dict = {},
-    do_sample: bool = False,
-    per_page: int = 1,
-    add_email: bool | str = True,
-    select: str = OPENALEX_SELECT,
-    **request_kwargs,
-) -> dict:
-    client = get_openalex_client()
-    if "/" in endpoint:
-        entity_type, entity_id = endpoint.split("/", 1)
-        payload = await client.get_entity(entity_id, entity_type=entity_type, select=select, **request_kwargs)
-        return {"results": [payload]}
-    return await client.search_works(
-        entity_type=endpoint,
-        filter=filter,
-        do_sample=do_sample,
-        per_page=per_page,
-        select=select,
-        **request_kwargs,
-    )
 
 
 def strip_outer_parentheses(s: str) -> str:

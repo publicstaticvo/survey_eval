@@ -14,7 +14,7 @@ from agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
 from agent.tools.utility.request_utils import OpenAlexBudgetExceeded, RateLimit, SessionManager
 from agent.tools.utility.tool_config import ToolConfig
 from agent.tools.utility.utils import valid_check
-from train_letor.topic_report import SurveyTopicReportBuilder
+from train_letor.topic_report import SurveyTopicReportBuilder, OVERWRITE
 
 
 DATASET_PATH = Path(__file__).resolve().parent / "surveys_with_query.jsonl"
@@ -27,7 +27,7 @@ OPENALEX_KEYS = [
     "OKsOaFG3SbaxrRoYSIUBfx",
     "YFl8EWRMHmmZvEd9cljGXt",
 ]
-ENUMERATE_START, START, LIMIT = 0, 0, 10
+ENUMERATE_START, START, LIMIT = 0, 6, 10
 
 
 def iter_dataset(dataset_path: Path, start: int = 0):
@@ -124,14 +124,11 @@ async def main():
     try:
         for index, item in iter_dataset(DATASET_PATH, ENUMERATE_START):
             original_index = int(item.get("index", index))
-            if original_index < START:
-                continue
-            if original_index >= LIMIT:
-                break
-            if output_path_for(original_index, item.get("title", "")).exists():
-                continue
+            if original_index < START: continue
+            if original_index >= LIMIT: break
+            if not OVERWRITE and output_path_for(original_index, item.get("title", "")).exists(): continue
             try:
-                result = await collect_single_survey(base_config, index, item)
+                result = await collect_single_survey(base_config, index, item, OVERWRITE)
                 print(json.dumps(result, ensure_ascii=False))
             except OpenAlexBudgetExceeded as exc:
                 payload = exc.payload or {}

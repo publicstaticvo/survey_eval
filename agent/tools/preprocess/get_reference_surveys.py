@@ -6,14 +6,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .utils import extract_json, valid_check
-from ..prompts import ANCHOR_SURVEY_SELECT
-from ..utils import months_between, parse_date
+from ..utility.utils import valid_check
+from ..prompts import REFERENCE_SURVEY_SELECT
+from ..utils import months_between, parse_date, extract_json
 from ..utility.academic_engine import get_academic_engine
 from ..utility.llmclient import AsyncChat
 from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
 from ..utility.paper_download import PaperDownload, download_bytes_to_memory
 from ..utility.tool_config import ToolConfig
+from ..utility.latex_parser import LatexPaperParser
 
 
 ORACLE_SELECT = f"{OPENALEX_SELECT},locations,best_oa_location,relevance_score"
@@ -21,7 +22,7 @@ SURVEY_TITLE_KEYWORDS = ("survey", "summary", "review", "overview", "comprehensi
 
 
 class SurveyDownload(PaperDownload):
-    """Only extract ordered section headings from anchor surveys."""
+    """Only extract ordered section headings from reference surveys."""
 
     def _post_hook(self, xml_content: str):
         try:
@@ -34,8 +35,6 @@ class SurveyDownload(PaperDownload):
 
     def _latex_post_hook(self, paper, latex_content: str = ""):
         try:
-            from ..utility.latex_parser import LatexPaperParser
-
             titles = LatexPaperParser(latex_content).get_titles()
             print(f"This TeX survey has {len(titles)} titles")
             return titles, None
@@ -80,8 +79,8 @@ class SurveyDownload(PaperDownload):
             return {"result": None, "download_error": False, "parse_error": True}
 
 
-class AnchorSurveySelect(AsyncChat):
-    PROMPT: str = ANCHOR_SURVEY_SELECT
+class ReferenceSurveySelect(AsyncChat):
+    PROMPT: str = REFERENCE_SURVEY_SELECT
 
     def _availability(self, response: str, context: dict):
         results = extract_json(response)
@@ -97,14 +96,14 @@ class AnchorSurveySelect(AsyncChat):
         return prompt, {"surveys": inputs["surveys"]}
 
 
-class AnchorSurveySource:
+class GetReferenceSurveys:
     SELECT = f"{OPENALEX_SELECT},best_oa_location,locations"
 
     def __init__(self, config: ToolConfig):
         self.config = config
         self.eval_date = config.evaluation_date
         self.survey_download = SurveyDownload(config)
-        self.survey_select = AnchorSurveySelect(config.llm_server_info, config.sampling_params)
+        self.survey_select = ReferenceSurveySelect(config.llm_server_info, config.sampling_params)
         self.openalex = get_openalex_client(config)
         self.academic_engine = get_academic_engine(config)
         self.keep_ratio = config.citation_velocity_keep_ratio
@@ -151,7 +150,7 @@ class AnchorSurveySource:
 
     async def _filter_surveys(self, surveys: list[dict]) -> list[dict]:
         review_like = [paper for paper in surveys if self._is_review_like(paper)]
-        print(f"AnchorSurveyRuleFilter: {len(review_like)} review-like surveys")
+        print(f"referenceSurveyRuleFilter: {len(review_like)} review-like surveys")
         if not review_like:
             return []
 
@@ -166,7 +165,7 @@ class AnchorSurveySource:
             try:
                 paper = await self.openalex.find_work_by_title(survey["title"], select=self.SELECT)
             except Exception as exc:
-                print(f"AnchorSurveyOpenAlex {survey['title']} {exc}")
+                print(f"referenceSurveyOpenAlex {survey['title']} {exc}")
                 return None
             if not paper or not valid_check(survey["title"], paper.get("title", "")):
                 return None
@@ -186,7 +185,7 @@ class AnchorSurveySource:
         resolved.sort(key=lambda item: item.get("impact_score", 0.0), reverse=True)
         keep_count = max(1, math.ceil(len(resolved) * self.keep_ratio))
         selected = resolved[:keep_count]
-        print(f"AnchorSurveyRuleFilter: {len(selected)}/{len(resolved)} kept by impact top {self.keep_ratio:.0%}")
+        print(f"referenceSurveyRuleFilter: {len(selected)}/{len(resolved)} kept by impact top {self.keep_ratio:.0%}")
         return selected
 
     async def _download_surveys(self, papers: list[dict]):
@@ -217,7 +216,7 @@ class AnchorSurveySource:
                 papers[paper["id"]] = paper
         return papers
 
-    async def _collect_anchor_reference_papers(self, surveys: list[dict]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    async def _collect_reference_papers(self, surveys: list[dict]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
         paper_meta, citation_counter = {}, {}
 
         async def _single(survey: dict):
@@ -227,7 +226,7 @@ class AnchorSurveySource:
             try:
                 return survey_id, await self._fetch_cited_by_neighbors(survey_id)
             except Exception as exc:
-                print(f"AnchorSurveyRefs {survey.get('title', survey_id)} {exc}")
+                print(f"referenceSurveyRefs {survey.get('title', survey_id)} {exc}")
                 return survey_id, {}
 
         tasks = [asyncio.create_task(_single(survey)) for survey in surveys]
@@ -243,41 +242,41 @@ class AnchorSurveySource:
         try:
             surveys_raw = await self._search_surveys(query)
         except Exception as exc:
-            print(f"AnchorSurveySearch {exc}")
+            print(f"referenceSurveySearch {exc}")
             surveys_raw = []
-        print(f"AnchorSurveySource: {len(surveys_raw)} candidate surveys")
+        print(f"referenceSurveySource: {len(surveys_raw)} candidate surveys")
 
         surveys = await self._filter_surveys(surveys_raw)
-        print(f"AnchorSurveySource: {len(surveys)} rule-filtered surveys")
+        print(f"referenceSurveySource: {len(surveys)} rule-filtered surveys")
 
         try:
             selected = await self.survey_select.call(inputs={"query": query, "surveys": surveys})
         except Exception as exc:
-            print(f"AnchorSurveySelect {exc}")
+            print(f"referenceSurveySelect {exc}")
             selected = []
-        print(f"AnchorSurveySource: {len(selected)} selected surveys")
+        print(f"referenceSurveySource: {len(selected)} selected surveys")
 
         openalex_selected = [item["openalex_paper"] for item in selected if item.get("openalex_paper")]
-        print(f"AnchorSurveySource: {len(openalex_selected)} real surveys")
+        print(f"referenceSurveySource: {len(openalex_selected)} real surveys")
         if not openalex_selected:
-            return {"anchor_papers": {}, "anchor_surveys": {}}
+            return {"reference_papers": {}, "reference_surveys": {}}
 
-        golden_references_meta, citation_counter = await self._collect_anchor_reference_papers(openalex_selected)
-        print(f"AnchorSurveySource: {len(citation_counter)} cited ids")
+        golden_references_meta, citation_counter = await self._collect_reference_papers(openalex_selected)
+        print(f"referenceSurveySource: {len(citation_counter)} cited ids")
         for paper_id, metadata in golden_references_meta.items():
             metadata["survey_cited_by_count"] = citation_counter[paper_id]
-            metadata["candidate_source"] = "high_consensus" if citation_counter[paper_id] >= 2 else "single_anchor"
+            metadata["candidate_source"] = "high_consensus" if citation_counter[paper_id] >= 2 else "single_reference"
 
         for paper in openalex_selected:
             survey_paper = dict(paper)
-            survey_paper["candidate_source"] = "anchor_survey"
+            survey_paper["candidate_source"] = "reference_survey"
             golden_references_meta[survey_paper["id"]] = survey_paper
-        print(f"AnchorSurveySource: {len(golden_references_meta)} anchor metas")
+        print(f"referenceSurveySource: {len(golden_references_meta)} reference metas")
 
         downloaded = await self._download_surveys(openalex_selected[:5])
         print(f"source 1 done with {len(downloaded)} downloaded surveys and {len(golden_references_meta)}")
 
         return {
-            "anchor_papers": golden_references_meta,
-            "anchor_surveys": downloaded,
+            "reference_papers": golden_references_meta,
+            "reference_surveys": downloaded,
         }

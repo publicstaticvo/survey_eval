@@ -90,6 +90,12 @@ def process_input_commands(latex_content, base_path):
 
 class LatexPaperParser:
     """Parser to convert Latex documents into Paper objects"""
+
+    TEX_SECTION_RE = re.compile(
+        r"\\(?P<level>section|subsection|subsubsection)\s*\{(?P<name>(?:[^{}]|\\[{}])*)\}",
+        re.DOTALL,
+    )
+    TEX_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\s*\{\s*appendices\s*\}", re.IGNORECASE)
     
     def __init__(self, latex_content: str, base_path='.'):
         self.base_path = base_path
@@ -1034,6 +1040,46 @@ class LatexPaperParser:
         
         find_citations(nodelist)
         return sorted(list(citations))
+    
+    def _clean_title(self, value: str) -> str:
+        return re.sub(r"\s+", " ", value or "").strip()
+
+    def _head_record(self, section_index: str, section_name: str) -> dict[str, str] | None:
+        section_index = self._clean_title(section_index)
+        section_name = self._clean_title(section_name)
+        if not section_name: return None
+        return {"section_index": section_index, "section_name": section_name}
+    
+    def get_titles(self):
+        content = self.latex_content
+        appendix = self.TEX_APPENDIX_RE.search(content)
+        if appendix: content = content[:appendix.start()]
+
+        counters = {"section": 0, "subsection": 0, "subsubsection": 0}
+        records = []
+        for match in self.TEX_SECTION_RE.finditer(content):
+            level = match.group("level")
+            if level == "section":
+                counters["section"] += 1
+                counters["subsection"] = 0
+                counters["subsubsection"] = 0
+                section_index = str(counters["section"])
+            elif level == "subsection":
+                if counters["section"] == 0:
+                    continue
+                counters["subsection"] += 1
+                counters["subsubsection"] = 0
+                section_index = f"{counters['section']}.{counters['subsection']}"
+            else:
+                if counters["section"] == 0 or counters["subsection"] == 0:
+                    continue
+                counters["subsubsection"] += 1
+                section_index = f"{counters['section']}.{counters['subsection']}.{counters['subsubsection']}"
+
+            name = self._clean_title(match.group("name").replace(r"\{", "{").replace(r"\}", "}"))
+            record = self._head_record(section_index, name)
+            if record: records.append(record)
+        return records
 
 
 def construct_citation_info(paper: LatexPaper, parser: LatexPaperParser) -> List[Dict[str, Any]]:

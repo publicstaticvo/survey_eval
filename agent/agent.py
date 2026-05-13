@@ -7,26 +7,26 @@ if __package__:
     from .tools.eval.argument_eval import ArgumentStructureEvaluator
     from .tools.eval.fact_check import FactualCorrectnessCritic
     from .tools.eval.minimum_completion import minimum_completion
-    from .tools.eval.missing_papers import MissingPaperCheck
     from .tools.eval.programmatic_quality import QualityCritic
     from .tools.eval.structure_eval import StructureCheck
-    from .tools.eval.topic_coverage import TopicCoverageCritic
+    from .tools.eval.missing_papers import MissingPaperCheck
+    from .tools.topic_coverage import TopicCoverageCritic
     from .tools.preprocess.citation_parser import CitationParser
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
-    from .tools.golden_topics import GoldenTopicGenerator
+    from .tools.preprocess.golden_topics import GoldenTopicGenerator
     from .tools.utility.request_utils import SessionManager
     from .tools.utility.tool_config import ToolConfig
 else:
     from tools.eval.argument_eval import ArgumentStructureEvaluator
     from tools.eval.fact_check import FactualCorrectnessCritic
     from tools.eval.minimum_completion import minimum_completion
-    from tools.eval.missing_papers import MissingPaperCheck
     from tools.eval.programmatic_quality import QualityCritic
     from tools.eval.structure_eval import StructureCheck
-    from tools.eval.topic_coverage import TopicCoverageCritic
+    from survey_eval.agent.tools.eval.missing_papers import MissingPaperCheck
+    from tools.topic_coverage import TopicCoverageCritic
     from tools.preprocess.citation_parser import CitationParser
     from tools.preprocess.claim_segmentation import ClaimSegmentation
-    from tools.golden_topics import GoldenTopicGenerator
+    from survey_eval.agent.tools.preprocess.golden_topics import GoldenTopicGenerator
     from tools.utility.request_utils import SessionManager
     from tools.utility.tool_config import ToolConfig
 
@@ -122,10 +122,6 @@ class SurveyEvaluationAgent:
         )
 
         result["preprocessing"] = {
-            "anchor_surveys": {
-                "anchor_papers": golden_topic_data.get("anchor_papers", {}),
-                "anchor_surveys": golden_topic_data.get("anchor_surveys", {}),
-            },
             "golden_topics": golden_topic_data,
             "paper_content_map": paper_content_map,
             "claims": claims,

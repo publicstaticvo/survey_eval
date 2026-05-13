@@ -7,11 +7,15 @@ import tarfile
 import tempfile
 from typing import Optional
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 import sys
 
 import aiohttp
 from tenacity import retry, retry_if_exception, retry_if_result, stop_after_attempt, wait_exponential
+try:
+    from bs4 import BeautifulSoup
+except Exception:
+    BeautifulSoup = None
 
 if __package__:
     from .grobidpdf import PaperParser
@@ -135,6 +139,12 @@ def extract_arxiv_id_from_url(url: str) -> str:
     return arxiv_id.strip()
 
 
+def is_direct_pdf_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    path = parsed.path.lower()
+    return path.endswith(".pdf") or "/pdf/" in path
+
+
 def extract_arxiv_ids(paper_meta: dict) -> list[str]:
     ids = []
     for url in yield_location(paper_meta):
@@ -175,7 +185,7 @@ class PaperDownload:
         abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
         return {"full_content": paper.get_skeleton(), "abstract": abstract}
 
-    def _latex_post_hook(self, paper) -> dict:
+    def _latex_post_hook(self, paper, latex_content: str = "") -> dict:
         if not paper:
             return {}
         abstract = None
@@ -266,7 +276,7 @@ class PaperDownload:
                 latex_content = self._read_text_file(main_tex)
                 parser = LatexPaperParser(latex_content, base_path=str(main_tex.parent))
                 paper = parser.parse()
-                result = self._latex_post_hook(paper)
+                result = self._latex_post_hook(paper, latex_content)
                 if result:
                     return {"result": result, "download_error": False, "parse_error": False}
                 return {"result": None, "download_error": False, "parse_error": True}
@@ -362,6 +372,166 @@ class PaperDownload:
             except Exception as e:
                 print(f"OpenAlex content fallback failed for {work_id}: {e}")
 
+        return None
+
+
+class SemanticScholarPaperDownload(PaperDownload):
+    """Download papers from Semantic Scholar style metadata."""
+
+    def _semantic_scholar_urls(self, paper_meta: dict) -> list[str]:
+        urls = []
+        open_access_pdf = paper_meta.get("openAccessPdf") or paper_meta.get("open_access_pdf") or {}
+        if isinstance(open_access_pdf, dict) and open_access_pdf.get("url"):
+            urls.append(open_access_pdf["url"])
+        for key in ("url", "pdf_url", "pdfUrl"):
+            if paper_meta.get(key):
+                urls.append(paper_meta[key])
+        external_ids = paper_meta.get("external_ids") or paper_meta.get("externalIds") or {}
+        for key, value in external_ids.items():
+            if not value:
+                continue
+            key_lower = str(key).lower()
+            if key_lower == "arxiv":
+                urls.append(f"https://arxiv.org/abs/{value}")
+            elif key_lower == "doi":
+                doi = str(value)
+                urls.append(doi if doi.startswith("http") else f"https://doi.org/{doi}")
+        return list(dict.fromkeys(str(url).strip() for url in urls if str(url).strip()))
+
+    async def _find_pdf_urls_from_page(self, url: str) -> list[str]:
+        try:
+            async with RateLimit.DOWNLOAD_SEMAPHORE:
+                async with SessionManager.get().get(
+                    url,
+                    allow_redirects=True,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    resp.raise_for_status()
+                    final_url = str(resp.url)
+                    content_type = resp.headers.get("content-type", "").lower()
+                    if "application/pdf" in content_type:
+                        return [final_url]
+                    text = await resp.text(errors="ignore")
+        except Exception as exc:
+            print(f"{url} page pdf discovery failed: {exc}")
+            return []
+
+        if BeautifulSoup is None:
+            return []
+        soup = BeautifulSoup(text, "html.parser")
+        pdf_urls = []
+        patterns = [
+            {"class": "obj_galley_link pdf"},
+            {"class": "document-access-icon-pdf"},
+        ]
+        for attrs in patterns:
+            for element in soup.find_all("a", attrs=attrs):
+                href = element.get("href")
+                if href:
+                    pdf_urls.append(urljoin(final_url, href))
+        for element in soup.find_all("a", string=re.compile(r"PDF", re.I)):
+            href = element.get("href")
+            if href:
+                pdf_urls.append(urljoin(final_url, href))
+        for element in soup.find_all("a", href=re.compile(r"\.pdf(?:$|[?#])", re.I)):
+            href = element.get("href")
+            if href:
+                pdf_urls.append(urljoin(final_url, href))
+        return list(dict.fromkeys(pdf_urls))
+
+    def _find_pdf_urls_with_selenium_sync(self, url: str) -> list[str]:
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.common.by import By
+        except Exception:
+            return []
+
+        options = Options()
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        driver = None
+        try:
+            driver = webdriver.Chrome(options=options)
+            driver.get(url)
+            anchors = driver.find_elements(By.TAG_NAME, "a")
+            urls = []
+            for anchor in anchors:
+                href = anchor.get_attribute("href") or ""
+                text = anchor.text or ""
+                if re.search(r"\.pdf(?:$|[?#])", href, re.I) or re.search(r"\bPDF\b", text, re.I):
+                    urls.append(urljoin(driver.current_url, href))
+            return list(dict.fromkeys(urls))
+        except Exception as exc:
+            print(f"{url} selenium pdf discovery failed: {exc}")
+            return []
+        finally:
+            if driver is not None:
+                driver.quit()
+
+    async def _find_pdf_urls_with_selenium(self, url: str) -> list[str]:
+        return await asyncio.to_thread(self._find_pdf_urls_with_selenium_sync, url)
+
+    async def _try_semantic_url(self, url: str) -> dict:
+        arxiv_id = extract_arxiv_id_from_url(url)
+        if arxiv_id:
+            source_result = await self._try_arxiv_source(arxiv_id)
+            if source_result.get("result"):
+                return source_result
+            return await self._try_one_url(f"https://arxiv.org/pdf/{arxiv_id}.pdf")
+
+        if is_direct_pdf_url(url):
+            return await self._try_one_url(url)
+
+        pdf_urls = await self._find_pdf_urls_from_page(url)
+        if not pdf_urls:
+            pdf_urls = await self._find_pdf_urls_with_selenium(url)
+        tasks = [asyncio.create_task(self._try_one_url(pdf_url)) for pdf_url in pdf_urls]
+        try:
+            for task in asyncio.as_completed(tasks):
+                result = await task
+                if result.get("result"):
+                    for other_task in tasks:
+                        if not other_task.done():
+                            other_task.cancel()
+                    return result
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return {"result": None, "download_error": True, "parse_error": False}
+
+    async def download_single_paper(
+        self,
+        paper_meta: dict | None = None,
+        openalex_id: str = "",
+        title: str = "",
+    ) -> Optional[dict]:
+        """Try Semantic Scholar links and return the first successfully parsed paper."""
+        paper_meta = dict(paper_meta or {})
+        urls = self._semantic_scholar_urls(paper_meta)
+        if not urls:
+            return None
+        if len(urls) == 1:
+            result = await self._try_semantic_url(urls[0])
+            return result.get("result")
+
+        tasks = [asyncio.create_task(self._try_semantic_url(url)) for url in urls]
+        try:
+            for task in asyncio.as_completed(tasks):
+                result = await task
+                if result.get("result"):
+                    for other_task in tasks:
+                        if not other_task.done():
+                            other_task.cancel()
+                    return result["result"]
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         return None
 
 
