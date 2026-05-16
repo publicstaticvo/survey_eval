@@ -115,11 +115,6 @@ async def collect_single_survey(config: ToolConfig, index: int, item: dict, over
 
 async def main():
     base_config = ToolConfig(openalex_api_keys=OPENALEX_KEYS)
-    RateLimit.configure_openalex(
-        requests_per_second=base_config.openalex_requests_per_second,
-        enabled=base_config.openalex_rate_limit_enabled,
-        max_concurrency=base_config.openalex_max_concurrency,
-    )
     await SessionManager.init()
     try:
         for index, item in iter_dataset(DATASET_PATH, ENUMERATE_START):

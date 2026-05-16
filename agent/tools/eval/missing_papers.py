@@ -119,7 +119,6 @@ class MissingPaperCheck:
         else:
             filters = {"to_publication_date": self.eval_date.strftime("%Y-%m-%d")}
         results = await self.engine.search_works(
-            "works",
             search=search_query,
             filter=filters,
             per_page=50,

@@ -1,3 +1,86 @@
+# get_reference_surveys.py
+REFERENCE_SURVEY_SELECT = """You are a professional academic researcher selecting reference surveys to evaluate a target survey titled "{query}".
+
+### Goal
+Select surveys that serve as FIELD-LEVEL structural references — surveys that cover the same broad scope as the query, organized around the same primary subject.
+
+### Input Format
+Each candidate is provided with a pre-extracted scope declaration containing four fields:
+- title: the title of the candidate
+- section_map: maps section numbers to their topics
+- aspect_list: dimensions or aspects the survey explicitly covers
+- evidence_records: verbatim sentences from the paper describing its scope
+
+### Candidate Scope Declarations
+{candidates}
+
+Use these fields as the sole basis for judging topic coverage. Do not infer topics beyond what is stated in these fields.
+
+### Inclusion Criteria
+A selected survey must satisfy ALL of the following:
+- Its PRIMARY SUBJECT matches the query topic directly, not as a subordinate method or tool applied within a different domain.
+- At least 3 items from its aspect_list or section_map values fall within the query field.
+- It synthesizes and organizes the literature rather than reporting original experimental results, as indicated by its evidence.
+
+### Exclusion Criteria
+Exclude a paper if ANY of the following apply:
+- Its primary subject is a specific downstream domain, and the query topic appears only as the method used within that domain.
+- Fewer than three items in its aspect_list or section_map values belong to the query field, regardless of total item count.
+- The query topic is mentioned as background or one method among many, but is not the organizing principle of the survey.
+- It is not a survey: excludes tutorials, position papers, benchmarks, or original research papers.
+
+### Required Self-Check (apply to each candidate before deciding)
+Q1. What is the primary subject of this survey, based on its evidence    sentences? State it in one sentence.
+Q2. Does that primary subject directly match the query topic? Or is the query topic a tool or method applied within a different primary subject?
+Q3. From the provided aspect_list and section_map, list only the items that belong to the query field. Count them.
+
+If Q2 = "tool within different subject" → EXCLUDE.
+If Q3 count < 3 → EXCLUDE.
+
+### Output Format
+Return JSON only, no extra text:
+```json
+{{
+  "surveys": [
+    {{
+      "title": "Exact title from candidate list",
+      "primary_subject": "One phrase: what this survey is fundamentally about",
+      "subtopics_covered": [
+        "all items from aspect_list or section_map that belong to the query field"
+      ]
+    }}
+  ]
+}}
+```
+
+Return `{{"surveys": []}}` if no candidate clearly qualifies.
+"""
+
+REFERENCE_SURVEY_SCHEMA = {
+    "type": "object",
+    "required": ["surveys"],
+    "properties": {
+        "surveys": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["title", "primary_subject", "subtopics_covered"],
+                "properties": {
+                    "title": {"type": "string", "minLength": 1},
+                    "primary_subject": {"type": "string", "minLength": 1},
+                    "subtopics_covered": {
+                        "type": "array",
+                        "minItems": 3,
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
+                "additionalProperties": False,
+            },
+        }
+    },
+    "additionalProperties": False,
+}
+
 # golden_topics.py
 TOPIC_CLUSTER_PROMPT = """You are a Senior Research Librarian specializing in Systematic Literature Reviews. You are given a set of reference surveys, each with an ID, title, and a filtered list of section headings. Your task is to identify the core research topics covered across these surveys by clustering semantically related headings.
 
@@ -163,46 +246,6 @@ Mark `true` only if all of the following hold:
 - the sentence states a factual claim that could be checked from the cited paper.
 
 Mark `false` for background definitions, loose motivation, author opinions, or cases where the citation is just an example.
-"""
-
-# get_reference_surveys.py
-REFERENCE_SURVEY_SELECT = """You are a professional academic researcher. You are selecting reference surveys for evaluating a target survey titled "{query}".
-
-### Candidate Surveys
-You are given a list of candidate papers that are likely to be surveys or survey-like works.
-
-Select reference surveys that can serve as structural and conceptual references for evaluating another survey written for this query.
-
-### Inclusion Criteria
-A selected survey should:
-- Treat the query topic as its primary organizing focus.
-- Organize the literature into coherent conceptual or methodological dimensions.
-- Discuss multiple sub-dimensions, variants, or perspectives of the topic.
-- Be useful for judging whether another survey misses important topics or references.
-
-### Exclusion Criteria
-Exclude papers that:
-- Are not surveys or survey-like syntheses.
-- Focus primarily on downstream applications or domains unless the domain itself is the query.
-- Mention the query topic only as one method among many.
-- Are narrow task-specific summaries rather than field-level overviews.
-
-Candidate survey list:
-{titles}
-
-Return JSON only:
-```json
-{{
-  "surveys": [
-    {{
-      "title": "Survey title copied exactly from the candidate list",
-      "reason": "Brief reason"
-    }}
-  ]
-}}
-```
-
-Return an empty list if no candidate clearly qualifies.
 """
 
 # websearch.py

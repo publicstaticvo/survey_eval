@@ -3,32 +3,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
-if __package__:
-    from .tools.eval.argument_eval import ArgumentStructureEvaluator
-    from .tools.eval.fact_check import FactualCorrectnessCritic
-    from .tools.eval.minimum_completion import minimum_completion
-    from .tools.eval.programmatic_quality import QualityCritic
-    from .tools.eval.structure_eval import StructureCheck
-    from .tools.eval.missing_papers import MissingPaperCheck
-    from .tools.topic_coverage import TopicCoverageCritic
-    from .tools.preprocess.citation_parser import CitationParser
-    from .tools.preprocess.claim_segmentation import ClaimSegmentation
-    from .tools.preprocess.golden_topics import GoldenTopicGenerator
-    from .tools.utility.request_utils import SessionManager
-    from .tools.utility.tool_config import ToolConfig
-else:
-    from tools.eval.argument_eval import ArgumentStructureEvaluator
-    from tools.eval.fact_check import FactualCorrectnessCritic
-    from tools.eval.minimum_completion import minimum_completion
-    from tools.eval.programmatic_quality import QualityCritic
-    from tools.eval.structure_eval import StructureCheck
-    from survey_eval.agent.tools.eval.missing_papers import MissingPaperCheck
-    from tools.topic_coverage import TopicCoverageCritic
-    from tools.preprocess.citation_parser import CitationParser
-    from tools.preprocess.claim_segmentation import ClaimSegmentation
-    from survey_eval.agent.tools.preprocess.golden_topics import GoldenTopicGenerator
-    from tools.utility.request_utils import SessionManager
-    from tools.utility.tool_config import ToolConfig
+from tools import (
+    ArgumentStructureEvaluator,
+    CitationParser,
+    ClaimSegmentation,
+    GoldenTopicGenerator,
+    FactualCorrectnessCritic,
+    minimum_completion,
+    QualityCritic,
+    StructureCheck,
+    MissingPaperCheck,
+    SessionManager,
+    ToolConfig,
+    TopicCoverageCritic
+)
 
 
 @dataclass

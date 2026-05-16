@@ -7,7 +7,7 @@ from typing import Any
 
 import jsonschema
 
-from ..utils import paragraphs_to_text, section_text, is_generic_heading
+from ..utils import paragraphs_to_text, section_text, is_generic_heading, extract_json
 from ..utility.evidence_check import EvidenceCheck
 from ..utility.llmclient import AsyncChat
 from ..utility.tool_config import ToolConfig
@@ -22,21 +22,23 @@ class ScopeClaimExtractClient(AsyncChat):
         self.check = EvidenceCheck(config)
 
     def _availability(self, response, context):
-        data = json.loads(response)
+        data = extract_json(response)
         jsonschema.validate(data, SCOPE_CLAIM_SCHEMA)
+        print(data)
         verified, _ = self.check.verify(data["evidence"], context["text"])
-        if data["section_map"] or data["aspect_list"]: assert verified
+        if data["section_map"] or data["aspect_list"]: assert verified, "Not verified"
         evidence_text = "\n".join(data["evidence"])
         for key, value in data["section_map"].items():
-            assert not is_generic_heading(value)
-            assert self._claim_grounded_in_evidence(key, value, evidence_text)
+            assert not is_generic_heading(value), f"is generic heading in section_map: {value}"
+            assert self._claim_grounded_in_evidence(key, value, evidence_text), f"grounded in section_map: {key} {value} vs. {evidence_text}"
         for aspect in data["aspect_list"]:
-            assert not is_generic_heading(aspect)
-            assert self._claim_grounded_in_evidence("", aspect, evidence_text)
+            assert not is_generic_heading(aspect), f"is generic heading in aspect_list: {aspect}"
+            assert self._claim_grounded_in_evidence("", aspect, evidence_text), f"grounded in aspect_list: {aspect} vs. {evidence_text}"
         return {
             "source_name": context["source_name"],
             "section_map": data["section_map"],
-            "aspect_list": data["aspect_list"]
+            "aspect_list": data["aspect_list"],
+            "evidence": evidence_text
         }
 
     def _claim_grounded_in_evidence(self, key: str, value: str, evidence_text: str) -> bool:
@@ -58,37 +60,44 @@ class ScopeClaimExtract:
     def __init__(self, config: ToolConfig):
         self.llm = ScopeClaimExtractClient(config)
 
-    def _candidate_blocks(self, paper: dict[str, Any]) -> list[dict[str, str]]:
-        """从abstract+introduction，以及每个section和第一个子section之间抽取scope声明。"""
-        abstract = paragraphs_to_text(paper['abstract'])
-        introduction = section_text(paper['sections'][0])
-        blocks = [{"source_name": 1, "text": f"Abstract: {abstract}\n\n1 Introduction\n\n{introduction}"}]
-        for i, s in enumerate(paper['sections'][1:], 2):
-            if not s['sections']: continue
-            text = paragraphs_to_text(s['paragraphs'])
-            if text: blocks.append({"source_name": i, "text": text})
+    def _candidate_blocks(self, paper: dict[str, Any], candidate_types: list[str]) -> list[dict[str, str]]:
+        """从abstract+introduction、每个section和第一个子section之间、结论抽取scope声明。"""
+        blocks = []
+        if 'introduction' in candidate_types:
+            abstract = paragraphs_to_text(paper['abstract'])
+            introduction = section_text(paper['sections'][0])
+            blocks.append({"source_name": 1, "text": f"Abstract: {abstract}\n\n1 Introduction\n\n{introduction}"})
+        if 'first_sentences' in candidate_types:
+            for i, s in enumerate(paper['sections'][1:-1], 2):
+                if not s['sections'] or is_generic_heading(s['title']): continue
+                text = paragraphs_to_text(s['paragraphs'])
+                if text: blocks.append({"source_name": i, "text": text})
+        if 'conclusion' in candidate_types:
+            blocks.append({"source_name": len(paper['sections']) + 1, "text": section_text(paper['sections'][-1])})
         return blocks
 
-    async def __call__(self, paper: dict[str, Any]) -> dict[str, Any]:
-        section_map, aspect_list, evidence_records, errors = {}, [], [], 0
-        blocks = self._candidate_blocks(paper)
+    async def __call__(
+            self, 
+            paper: dict[str, Any], 
+            candidate_types: list[str] = ['introduction', 'first_sentences']
+        ) -> dict[str, Any]:
+        section_map, aspect_list, evidence_records, errors = {}, set(), [], 0
+        blocks = self._candidate_blocks(paper, candidate_types)
         tasks = [asyncio.create_task(self.llm.call(inputs=block)) for block in blocks]
-        for task in asyncio.as_completed(tasks):
-            try:
-                validated = await task
-            except Exception as e:
-                print(f"ScopeClaimExtract {e}")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for x in results:
+            if not isinstance(x, dict): 
+                print(f"ScopeClaimExtract {x}")
                 errors += 1
-                continue
-            evidence_records.append(validated)
-            section_map.update(validated.get("section_map") or {})
-            for aspect in validated.get("aspect_list") or []:
-                if aspect not in aspect_list:
-                    aspect_list.append(aspect)
+            else:
+                evidence_records.append(x)
+                for k, v in x['section_map'].items():
+                    if k not in section_map: section_map[k] = v
+                aspect_list.update(x['aspect_list'])
         print(f"{len(evidence_records)} scope claims {errors} errors")
         return {
             "section_map": section_map,
-            "aspect_list": aspect_list,
+            "aspect_list": list(aspect_list),
             "evidence_records": evidence_records,
             "errors": errors
         }

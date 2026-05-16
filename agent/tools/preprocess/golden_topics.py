@@ -29,8 +29,9 @@ class TopicClusterClient(AsyncChat):
             title = title.strip()
             if title and not is_generic_heading(title):
                 headings.append(title)
-        if not headings and survey.get("skeleton"):
-            for item in flatten_section_titles(survey.get("skeleton") or {}):
+        skeleton = survey.get("skeleton") or survey.get("paper") or {}
+        if not headings and skeleton:
+            for item in flatten_section_titles(skeleton):
                 title = (item.get("section_title") or item.get("title") or "").strip()
                 if title and not is_generic_heading(title):
                     headings.append(title)

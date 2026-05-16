@@ -3,12 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .utils import paragraph_to_text, paragraphs_to_text, section_text, extract_json, is_generic_heading, normalize_heading
-from .utility.evidence_check import EvidenceCheck
-from .utility.llmclient import AsyncChat
-from .utility.sbert_client import SentenceTransformerClient
-from .utility.tool_config import ToolConfig
-from .prompts import MISSING_TOPIC_CLAIM
+from ..utils import paragraph_to_text, paragraphs_to_text, section_text, extract_json, is_generic_heading, normalize_heading
+from ..utility.evidence_check import EvidenceCheck
+from ..utility.llmclient import AsyncChat
+from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.tool_config import ToolConfig
+from ..prompts import MISSING_TOPIC_CLAIM
 
 
 def cosine_similarity_matrix(left, right):

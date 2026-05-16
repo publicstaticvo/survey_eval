@@ -45,35 +45,13 @@ class OpenAlexBudgetExceeded(RuntimeError):
 
 # =============== Global Semaphore ===============
 class RateLimit:
-    OPENALEX_REQUEST_COUNT = 0
-    OPENALEX_THROTTLER = AsyncRequestRateLimiter(5.0, enabled=True)
-    OPENALEX_SEMAPHORE = asyncio.Semaphore(3)              # 搜索 API
     AGENT_SEMAPHORE = asyncio.Semaphore(100)                # LLM
     DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
+    LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(20)
+    CITATION_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker镜像本地解析
     WEBSEARCH_SEMAPHORE = asyncio.Semaphore(50)
-
-    @classmethod
-    def configure_openalex(cls, requests_per_second: float = 5.0, enabled: bool = True, max_concurrency: int = 3):
-        cls.OPENALEX_SEMAPHORE = asyncio.Semaphore(max(1, int(max_concurrency)))
-        cls.OPENALEX_THROTTLER.configure(requests_per_second=requests_per_second, enabled=enabled)
-
-    @classmethod
-    async def wait_openalex_slot(cls):
-        await cls.OPENALEX_THROTTLER.acquire()
-
-    @classmethod
-    def increment_openalex_count(cls):
-        cls.OPENALEX_REQUEST_COUNT += 1
-
-    @classmethod
-    def reset_openalex_count(cls):
-        cls.OPENALEX_REQUEST_COUNT = 0
-
-    @classmethod
-    def get_openalex_count(cls) -> int:
-        return cls.OPENALEX_REQUEST_COUNT
 
 
 class SessionManager:

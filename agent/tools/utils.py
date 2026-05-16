@@ -50,15 +50,34 @@ def normalize_heading(title: str) -> str:
 
 def is_generic_heading(title: str) -> bool:
     normalized = normalize_heading(title)
-    if not normalized: return True
-    return any(keyword in normalized for keyword in GENERIC_SECTION_KEYWORDS)
+    return not normalized or normalized in GENERIC_SECTION_KEYWORDS
 
 
-def paragraph_to_text(paragraph: list[dict[str, Any]]) -> str:
-    return " ".join(sentence.get("text", "") for sentence in paragraph if sentence.get("text")).strip()
+def paragraph_to_text(paragraph: Any) -> str:
+    if isinstance(paragraph, str):
+        return paragraph.strip()
+    if isinstance(paragraph, dict):
+        if "text" in paragraph:
+            return str(paragraph.get("text") or "").strip()
+        if "sentences" in paragraph:
+            return paragraph_to_text(paragraph.get("sentences") or [])
+    return " ".join(
+        str(sentence.get("text", ""))
+        for sentence in paragraph
+        if isinstance(sentence, dict) and sentence.get("text")
+    ).strip()
 
 
-def paragraphs_to_text(paragraphs: Iterable[list[dict[str, Any]]]) -> str:
+def paragraphs_to_text(paragraphs: Any) -> str:
+    if isinstance(paragraphs, str):
+        return paragraphs.strip()
+    if isinstance(paragraphs, dict):
+        if "paragraphs" in paragraphs:
+            paragraphs = paragraphs.get("paragraphs") or []
+        elif "text" in paragraphs:
+            return str(paragraphs.get("text") or "").strip()
+        else:
+            paragraphs = []
     return "\n\n".join(text for paragraph in paragraphs if (text := paragraph_to_text(paragraph)))
 
 

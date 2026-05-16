@@ -23,6 +23,7 @@ class SemanticScholar:
     def __init__(self, config: ToolConfig):
         self.config = config
         self.api_key = (config.semantic_scholar_api_key or "").strip()
+        self.request_semaphore = asyncio.Semaphore(8 if self.api_key else 2)
 
     def _headers(self) -> dict[str, str]:
         headers = dict(HEADERS)
@@ -41,20 +42,24 @@ class SemanticScholar:
         url = f"{SEMANTIC_SCHOLAR_GRAPH_API}{endpoint}"
         params = {key: value for key, value in (params or {}).items() if value not in (None, "", [], {})}
 
+        retry_count = 0
         while True:
-            async with session.request(
-                method.upper(),
-                url,
-                headers=self._headers(),
-                params=params,
-                json=json_body,
-                timeout=aiohttp.ClientTimeout(total=600),
-            ) as resp:
-                if resp.status == 429 and not self.api_key:
-                    await asyncio.sleep(random.uniform(1.0, 2.0))
-                    continue
-                resp.raise_for_status()
-                return await resp.json()
+            async with self.request_semaphore:
+                async with session.request(
+                    method.upper(),
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                    json=json_body,
+                ) as resp:
+                    if resp.status == 429:
+                        retry_count += 1
+                        if retry_count == 1 or retry_count % 5 == 0:
+                            print(f"SemanticScholar 429 retrying {endpoint}, attempts={retry_count}")
+                        await asyncio.sleep(random.uniform(1.0, 2.0))
+                        continue
+                    resp.raise_for_status()
+                    return await resp.json()
 
     def _normalize_paper(self, paper: dict | None) -> dict:
         paper = dict(paper or {})
@@ -239,10 +244,9 @@ class SemanticScholar:
             merged["referenced_works"] = list(dict.fromkeys(referenced_works))
         return merged
 
-    def _wrap_results(self, payload: dict, paper_key: str | None = None) -> dict:
+    def _wrap_results(self, payload: dict, paper_key: str | None = None, limit: int | None = None) -> dict:
         data = payload.get("data")
-        if data is None:
-            data = payload.get("results") or []
+        if data is None: data = payload.get("results") or []
         raw_result_count = len(data or [])
 
         results = []
@@ -259,6 +263,7 @@ class SemanticScholar:
         if total is None:
             total = len(results)
         results = self.deduplicate_papers(results)
+        if limit is not None: results = results[:limit]
         return {
             "count": total,
             "results": results,
@@ -361,7 +366,7 @@ class SemanticScholar:
         if fields:
             params["fields"] = fields
         payload = await self._request_json("GET", "/paper/search", params)
-        return self._wrap_results(payload)
+        return self._wrap_results(payload, limit=limit)
 
     async def filter(
         self,
@@ -376,14 +381,13 @@ class SemanticScholar:
         params.update(request_kwargs)
         params.update({"query": query, "offset": offset, "limit": limit})
         fields = self._normalize_fields(fields)
-        if fields:
-            params["fields"] = fields
+        if fields: params["fields"] = fields
         payload = await self._request_json("GET", "/paper/search/bulk", params)
-        return self._wrap_results(payload)
+        wrapped = self._wrap_results(payload, limit=limit)
+        return wrapped
 
     async def search_works(
         self,
-        entity_type: str = "paper",
         search: str = "",
         filter: list[tuple] | dict | None = None,
         per_page: int = 100,
@@ -424,18 +428,16 @@ class SemanticScholar:
         paper_id: str,
         offset: int = 0,
         limit: int = 9999,
-        fields: str | None = S2_DEFAULT_FIELDS,
-        **request_kwargs,
-    ) -> dict:
+        select: str | None = S2_DEFAULT_FIELDS,
+        **filter_kwargs,
+    ) -> dict:        
         per_page = min(max(1, limit), 1000)
         current_offset = offset
         results, total, next_token = [], None, None
         while len(results) < limit:
-            params = dict(request_kwargs)
-            params.update({"offset": current_offset, "limit": per_page})
-            fields = self._normalize_fields(fields)
-            if fields:
-                params["fields"] = fields
+            params = {"offset": current_offset, "limit": per_page}
+            fields = self._normalize_fields(select)
+            if fields: params["fields"] = fields
             payload = await self._request_json("GET", f"/paper/{paper_id}/citations", params)
             wrapped = self._wrap_results(payload, paper_key="citingPaper")
             if total is None:
@@ -448,6 +450,7 @@ class SemanticScholar:
             if raw_batch_count == 0 or raw_batch_count < per_page or current_offset >= total:
                 break
         results = self.deduplicate_papers(results)
+        # TODO: Apply filter
         return {"count": total or len(results), "results": results[:limit], "next": next_token}
 
     async def get_references(
@@ -455,18 +458,16 @@ class SemanticScholar:
         paper_id: str,
         offset: int = 0,
         limit: int = 9999,
-        fields: str | None = S2_DEFAULT_FIELDS,
-        **request_kwargs,
+        select: str | None = S2_DEFAULT_FIELDS,
+        **filter_kwargs,
     ) -> dict:
         per_page = min(max(1, limit), 1000)
         current_offset = offset
         results, total, next_token = [], None, None
         while len(results) < limit:
-            params = dict(request_kwargs)
-            params.update({"offset": current_offset, "limit": per_page})
-            fields = self._normalize_fields(fields)
-            if fields:
-                params["fields"] = fields
+            params = {"offset": current_offset, "limit": per_page}
+            fields = self._normalize_fields(select)
+            if fields: params["fields"] = fields
             payload = await self._request_json("GET", f"/paper/{paper_id}/references", params)
             wrapped = self._wrap_results(payload, paper_key="citedPaper")
             if total is None:
@@ -479,6 +480,7 @@ class SemanticScholar:
             if raw_batch_count == 0 or raw_batch_count < per_page or current_offset >= total:
                 break
         results = self.deduplicate_papers(results)
+        # TODO: Apply filter
         return {"count": total or len(results), "results": results[:limit], "next": next_token}
 
     async def get_works_batch(

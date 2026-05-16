@@ -99,22 +99,20 @@ class OpenAlex:
         last_exc = None
         for attempt in range(3):
             try:
-                await RateLimit.wait_openalex_slot()
                 self.request_count += 1
-                async with RateLimit.OPENALEX_SEMAPHORE:
-                    async with session.get(
-                        f"{OPENALEX_API_URL}/rate-limit",
-                        headers=HEADERS,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    ) as resp:
-                        text = await resp.text()
-                        payload = json.loads(text)
-                        if resp.status >= 400:
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
-                            resp.raise_for_status()
-                        return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
+                async with session.get(
+                    f"{OPENALEX_API_URL}/rate-limit",
+                    headers=HEADERS,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    text = await resp.text()
+                    payload = json.loads(text)
+                    if resp.status >= 400:
+                        if payload.get("error") == "Rate limit exceeded":
+                            raise OpenAlexBudgetExceeded(payload)
+                        resp.raise_for_status()
+                    return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
             except Exception as exc:
                 last_exc = exc
                 if not self._is_transient_error(exc) or attempt == 2:
@@ -227,13 +225,10 @@ class OpenAlex:
             if name: authors.append(name)
         return list(dict.fromkeys(authors))
 
-    def _wrap_search_results(self, entity_type: str, payload: dict) -> dict:
+    def _wrap_search_results(self, payload: dict) -> dict:
         results = payload.get("results", []) if isinstance(payload, dict) else []
         raw_result_count = len(results)
-        if entity_type == "works":
-            normalized = [paper for item in results if (paper := self._normalize_work(item))]
-        else:
-            normalized = results
+        normalized = [paper for item in results if (paper := self._normalize_work(item))]
         return {
             "count": payload.get("meta", {}).get("count", len(normalized)),
             "results": normalized,
@@ -390,22 +385,20 @@ class OpenAlex:
         last_exc = None
         for attempt in range(3):
             try:
-                await RateLimit.wait_openalex_slot()
                 self.request_count += 1
-                async with RateLimit.OPENALEX_SEMAPHORE:
-                    async with session.get(
-                        url,
-                        headers=HEADERS,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    ) as resp:
-                        text = await resp.text()
-                        payload = json.loads(text)
-                        if resp.status >= 400:
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
-                            resp.raise_for_status()
-                        return payload
+                async with session.get(
+                    url,
+                    headers=HEADERS,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    text = await resp.text()
+                    payload = json.loads(text)
+                    if resp.status >= 400:
+                        if payload.get("error") == "Rate limit exceeded":
+                            raise OpenAlexBudgetExceeded(payload)
+                        resp.raise_for_status()
+                    return payload
             except Exception as exc:
                 last_exc = exc
                 if not self._is_transient_error(exc) or attempt == 2:
@@ -418,25 +411,23 @@ class OpenAlex:
         last_exc = None
         for attempt in range(3):
             try:
-                await RateLimit.wait_openalex_slot()
                 self.request_count += 1
-                async with RateLimit.OPENALEX_SEMAPHORE:
-                    async with session.get(
-                        url,
-                        headers=HEADERS,
-                        params=params,
-                        timeout=aiohttp.ClientTimeout(total=120),
-                    ) as resp:
-                        content = await resp.read()
-                        if resp.status >= 400:
-                            try:
-                                payload = json.loads(content.decode("utf-8"))
-                            except Exception:
-                                payload = {"raw_text": content.decode("utf-8", errors="ignore")}
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
-                            resp.raise_for_status()
-                        return content
+                async with session.get(
+                    url,
+                    headers=HEADERS,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    content = await resp.read()
+                    if resp.status >= 400:
+                        try:
+                            payload = json.loads(content.decode("utf-8"))
+                        except Exception:
+                            payload = {"raw_text": content.decode("utf-8", errors="ignore")}
+                        if payload.get("error") == "Rate limit exceeded":
+                            raise OpenAlexBudgetExceeded(payload)
+                        resp.raise_for_status()
+                    return content
             except Exception as exc:
                 last_exc = exc
                 if not self._is_transient_error(exc) or attempt == 2:
@@ -511,7 +502,6 @@ class OpenAlex:
 
     async def _search_works_page(
         self,
-        entity_type: str = "works",
         search: str = "",
         filter: list[tuple] | dict | None = None,
         do_sample: bool = False,
@@ -533,23 +523,22 @@ class OpenAlex:
         if select: params["select"] = select
         estimated_cost = self._estimate_search_cost(search, filter)
         payload, _ = await self._request_json(
-            f"{OPENALEX_API_URL}/{entity_type}",
+            f"{OPENALEX_API_URL}/works",
             params,
             estimated_cost=estimated_cost,
             fixed_cost=None,
             require_api_key=False,
         )
-        return self._wrap_search_results(entity_type, payload)
+        return self._wrap_search_results(payload)
 
     async def search_works(
         self,
-        entity_type: str = "works",
         search: str = "",
         filter: list[tuple] | dict | None = None,
         do_sample: bool = False,
         per_page: int = 9999,
         select: str | None = OPENALEX_SELECT,
-        duplicate: bool = True,
+        deduplicate: bool = True,
         **request_kwargs,
     ) -> dict:
         offset = int(request_kwargs.pop("offset", 0) or 0)
@@ -559,7 +548,6 @@ class OpenAlex:
         if "AND" in search or "OR" in search: search = to_openalex(search)
         if do_sample:
             payload = await self._search_works_page(
-                entity_type=entity_type,
                 search=search,
                 filter=filter,
                 do_sample=True,
@@ -569,8 +557,7 @@ class OpenAlex:
                 **request_kwargs,
             )
             results = payload.get("results", []) or []
-            if entity_type == "works":
-                results = self.deduplicate_works(results)
+            results = self.deduplicate_works(results)
             return {
                 "count": payload.get("count", len(results)),
                 "results": results[:per_page],
@@ -581,7 +568,6 @@ class OpenAlex:
         target_raw_count = per_page + skip_in_first_page
         while raw_seen < target_raw_count:
             payload = await self._search_works_page(
-                entity_type=entity_type,
                 search=search,
                 filter=filter,
                 do_sample=False,
@@ -599,7 +585,7 @@ class OpenAlex:
             page += 1
 
         results = raw_results[skip_in_first_page:] if skip_in_first_page else raw_results
-        if entity_type == "works" and duplicate: results = self.deduplicate_works(results)
+        if deduplicate: results = self.deduplicate_works(results)
         return {"count": total or len(results), "results": results[:per_page], "_raw_result_count": raw_seen}
 
     async def autocomplete(self, entity_type: str = "works", title: str = "") -> dict:
@@ -647,7 +633,6 @@ class OpenAlex:
         **request_kwargs,
     ) -> dict:
         return await self.search_works(
-            "works",
             filter={"cites": work_id},
             per_page=limit,
             select=fields,
@@ -664,7 +649,6 @@ class OpenAlex:
         **request_kwargs,
     ) -> dict:
         return await self.search_works(
-            "works",
             filter={"cited_by": work_id},
             per_page=limit,
             select=fields,

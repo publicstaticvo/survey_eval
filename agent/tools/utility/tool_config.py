@@ -15,18 +15,18 @@ GREEDY_PARAMS = {
 }
 
 
-# @dataclass(frozen=True)
-# class LLMServerInfo:
-#     base_url: str = "https://uni-api.cstcloud.cn"
-#     api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
-#     model: str = "gpt-oss-120b"
-
-
 @dataclass(frozen=True)
 class LLMServerInfo:
-    base_url: str = "https://api.deepseek.com"
-    api_key: str = "sk-391fb819fefe42d9906d8d69595917ed"
-    model: str = "deepseek-chat"
+    base_url: str = "https://uni-api.cstcloud.cn"
+    api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
+    model: str = "deepseek-v4-flash"
+
+
+# @dataclass(frozen=True)
+# class LLMServerInfo:
+#     base_url: str = "https://api.deepseek.com"
+#     api_key: str = "sk-391fb819fefe42d9906d8d69595917ed"
+#     model: str = "deepseek-chat"
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class ToolConfig:
     # citation parser
     grobid_url: str = "http://172.18.36.90:8070"
     grobid_num_workers: int = 10
+    arxiv_proxy_url: str = "http://localhost:7890"
     # factual correctness - reranking
     rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     rerank_n_documents: int = 5
@@ -58,6 +59,7 @@ class ToolConfig:
     new_paper_topic_similarity_threshold: float = 0.55
     new_paper_reference_overlap_threshold: float = 0.6
     citation_velocity_keep_ratio: float = 0.4
+    minimum_reference_survey_citations: int = 10
     use_openalex_count_by_year: bool = True
     # fact check
     mean_cov_weight: float = 0.7
@@ -103,6 +105,7 @@ class ToolConfig:
             ),
             sbert_server_url=config['sbert']['base_url'],
             grobid_url=config['citation_parser']['grobid_url'],
+            arxiv_proxy_url=config.get('citation_parser', {}).get('arxiv_proxy_url', 'http://localhost:7890'),
             rerank_server_info=LLMServerInfo(
                 base_url=config['rerank']['base_url'],
                 api_key=config['rerank']['api_key'],
@@ -115,6 +118,7 @@ class ToolConfig:
             new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
             new_paper_reference_overlap_threshold=config.get('source_selection', {}).get('new_paper_reference_overlap_threshold', 0.6),
             citation_velocity_keep_ratio=config.get('source_selection', {}).get('citation_velocity_keep_ratio', 0.4),
+            minimum_reference_survey_citations=config.get('source_selection', {}).get('minimum_reference_survey_citations', 10),
             use_openalex_count_by_year=config.get('source_selection', {}).get('use_openalex_count_by_year', True),
             sentence_similarity_threshold=config['quality']['sentence_similarity_threshold'],
             paragraph_similarity_threshold=config['quality']['paragraph_similarity_threshold'],

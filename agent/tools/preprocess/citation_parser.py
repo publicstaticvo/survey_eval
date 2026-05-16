@@ -5,7 +5,8 @@ from typing import Dict, Any
 
 from .websearch import WebSearchFallback
 from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
-from ..utility.paper_download import PaperDownload, SemanticScholarPaperDownload
+from ..utility.paper_download import PaperDownload, SemanticScholarPaperDownload, yield_location
+from ..utility.request_utils import RateLimit
 from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
 from .utils import valid_check
@@ -52,10 +53,17 @@ class CitationParser:
 
     async def _download_openalex_paper(self, info: Dict[str, Any], metadata: dict) -> Dict[str, Any]:
         matched_metadata = dict(metadata or {})
-        downloaded = await self.paper_downloader.download_single_paper(
-            matched_metadata,
-            openalex_id=matched_metadata.get("id", ""),
-        )
+        downloaded = None
+        attempted_urls = set(yield_location(matched_metadata))
+        try:
+            async with RateLimit.CITATION_DOWNLOAD_SEMAPHORE:
+                downloaded = await self.paper_downloader.download_single_paper(
+                    matched_metadata,
+                    openalex_id=matched_metadata.get("id", ""),
+                )
+        except Exception as exc:
+            print(f"CitationParser openalex download failed: {matched_metadata.get('title', '')} {exc}")
+        info["_attempted_openalex_urls"] = list(attempted_urls)
         if downloaded:
             info["full_content"] = downloaded.get("full_content", {})
             info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
@@ -65,7 +73,16 @@ class CitationParser:
 
     async def _download_semantic_scholar_paper(self, info: Dict[str, Any], metadata: dict) -> Dict[str, Any]:
         matched_metadata = dict(metadata or {})
-        downloaded = await self.semantic_scholar_downloader.download_single_paper(matched_metadata)
+        downloaded = None
+        excluded_urls = set(info.get("_attempted_openalex_urls", []) or [])
+        try:
+            async with RateLimit.CITATION_DOWNLOAD_SEMAPHORE:
+                downloaded = await self.semantic_scholar_downloader.download_single_paper(
+                    matched_metadata,
+                    excluded_urls=excluded_urls,
+                )
+        except Exception as exc:
+            print(f"CitationParser semantic scholar download failed: {matched_metadata.get('title', '')} {exc}")
         if downloaded:
             info["full_content"] = downloaded.get("full_content", {})
             info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
@@ -108,6 +125,7 @@ class CitationParser:
             info = await self._download_openalex_paper(info, openalex_meta)
         if info["status"] > 0 and semantic_meta:
             info = await self._download_semantic_scholar_paper(info, semantic_meta)
+        info.pop("_attempted_openalex_urls", None)
         info["source"] = "+".join(info["metadata"].keys()) if info["metadata"] else "unresolved"
         return self._finalize_info(info)
 
@@ -133,6 +151,17 @@ class CitationParser:
             title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
             info = await self._fallback_websearch(title, info)
         return citation_key, info
+
+    # async def _parse_single_with_timeout(self, citation_key: str, citation_info: Any):
+    #     try:
+    #         return await asyncio.wait_for(
+    #             self._parse_single(citation_key, citation_info),
+    #             timeout=self.CITATION_TIMEOUT_SECONDS,
+    #         )
+    #     except asyncio.TimeoutError:
+    #         title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
+    #         print(f"CitationParser citation timeout: {citation_key} {title}")
+    #         return citation_key, self._empty_info(title)
 
     async def __call__(self, citations: Dict[str, Any]) -> Dict[str, Any]:
         tasks = [
