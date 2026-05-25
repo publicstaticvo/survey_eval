@@ -29,7 +29,7 @@ class AsyncLLMClient(ABC):
         raise NotImplementedError
     
     @retry(
-        stop=stop_after_attempt(1),
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
         retry=retry_if_exception(llm_should_retry)
     )
@@ -41,6 +41,7 @@ class AsyncLLMClient(ABC):
                 data = await async_request_template("post", url, headers, payload, timeout=self.timeout)            
             if endpoint == "chat/completions":
                 data = data["choices"][0]["message"]["content"]
+                if "</think>" in data: data = data.split("</think>")[-1]
             return self._availability(data, context)
         except Exception as e:
             print(f"LLM call error: {type(e)} {e}")
@@ -59,7 +60,7 @@ class AsyncChat(AsyncLLMClient):
         assert inputs or messages, "Must have messages or inputs for chat/completions"
         if messages is None:
             messages, new_context = self._organize_inputs(inputs)
-        context = {**context, **new_context}
+            context = {**context, **new_context}
         if isinstance(messages, str):
             messages = [{'role': 'user', "content": messages}]
         payload = {"model": self.llm.model, "messages": messages, **self.sampling_params, **kwargs}

@@ -80,8 +80,7 @@ class ClaimSegmentation:
                 citation_keys = self._normalize_citations(sentence.get("citations", []))
                 if len(citation_keys) != 1: continue
                 try:
-                    if not await self._is_verifiable(sentence, paragraph, sentence_id):
-                        continue
+                    if not await self._is_verifiable(sentence, paragraph, sentence_id): continue
                     claims.append(
                         {
                             "claim_text": sentence.get("text", ""),

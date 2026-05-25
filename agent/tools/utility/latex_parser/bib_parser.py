@@ -11,6 +11,8 @@ Dependencies:
 import os
 import re
 import chardet
+import io
+import contextlib
 from typing import Dict, Any
 import bibtexparser
 from pylatexenc.latex2text import LatexNodes2Text
@@ -51,13 +53,18 @@ def parse_bib_file(filepath: str) -> Dict[str, Any]:
     Returns:
         List of dictionaries containing citation information
     """
+    def _safe_load(handle):
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            return bibtexparser.load(handle)
+
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            bib_database = bibtexparser.load(f)
+            bib_database = _safe_load(f)
     except:
         _, encoding = detect_encoding(filepath)
         with open(filepath, 'r', encoding=encoding) as f:
-            bib_database = bibtexparser.load(f)
+            bib_database = _safe_load(f)
     
     citations = {}
     for entry in bib_database.entries:
@@ -74,11 +81,13 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
     content = re.sub(r"\\href\s*\{[^\}]*\}\s*\{([^\}]*)\}", r"\1", content)
     content = re.sub(r"\\href\s*\{([^\}]*)\}", "", content)
     
-    nodes, _, _ = LatexWalker(content).get_latex_nodes()
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        nodes, _, _ = LatexWalker(content).get_latex_nodes()
     converter = LatexNodes2Text(math_mode="verbatim")
 
     def get_bib_node(nodes):
-        for node in nodes:
+        for node in nodes or []:
             if isinstance(node, LatexEnvironmentNode):
                 if node.environmentname == 'thebibliography': 
                     return node
@@ -87,6 +96,7 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
                     return target_node
                 
     def get_ref_content(nodes):
+        nodes = nodes or []
         content = converter.nodelist_to_text(nodes).strip()
         if any(isinstance(node, LatexMacroNode) and node.macroname == "newblock" for node in nodes):
             content_split = content.split("\n")
@@ -100,10 +110,31 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
         else:
             content = " ".join([x.strip() for x in content.split("\n")])
             return {"info": content}
+
+    def parse_bibitem_regex(raw_content: str) -> Dict[str, Any]:
+        raw_content = re.sub(r"\\begin\s*\{thebibliography\}\s*\{[^}]*\}", "", raw_content)
+        raw_content = re.sub(r"\\end\s*\{thebibliography\}", "", raw_content)
+        pattern = re.compile(
+            r"\\bibitem(?:\[[^\]]*\])?\{(?P<key>[^}]+)\}(?P<body>.*?)(?=\\bibitem(?:\[[^\]]*\])?\{|$)",
+            flags=re.DOTALL,
+        )
+        parsed = {}
+        for match in pattern.finditer(raw_content):
+            key = match.group("key").strip()
+            body = match.group("body").strip()
+            if not key:
+                continue
+            body = re.sub(r"\\newblock\b", "\n", body)
+            body = re.sub(r"\\emph\s*\{([^}]*)\}", r"\1", body)
+            text = converter.latex_to_text(body)
+            text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+            if text:
+                parsed[key] = {"info": text}
+        return parsed
             
     bib_node = get_bib_node(nodes)
     all_bib = {}
-    if bib_node is not None:
+    if bib_node is not None and bib_node.nodelist is not None:
         current_key, current_value, bibitem_flag = None, [], False
         for node in bib_node.nodelist:
             if isinstance(node, LatexMacroNode) and node.macroname == "bibitem":
@@ -127,6 +158,9 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
         if current_key:
             cite_content = get_ref_content(current_value)
             all_bib[current_key] = cite_content
+
+    if not all_bib:
+        all_bib = parse_bibitem_regex(content)
 
     return all_bib
 

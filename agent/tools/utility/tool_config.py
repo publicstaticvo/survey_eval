@@ -6,7 +6,7 @@ import yaml
 
 
 GREEDY_PARAMS = {
-    'temperature': 0.0, "max_tokens": 8192, "seed": 42,
+    'temperature': 0.0, "max_tokens": 16384, "seed": 42,
     "top_p": 1.0,      # 设置为1，不进行核采样
     "top_k": 1,        # 或设置为1，确保总是选择最可能的token
     "repetition_penalty": 1.0,  # 设置为1，禁用重复惩罚
@@ -15,18 +15,18 @@ GREEDY_PARAMS = {
 }
 
 
-# @dataclass(frozen=True)
-# class LLMServerInfo:
-#     base_url: str = "https://uni-api.cstcloud.cn"
-#     api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
-#     model: str = "gpt-oss-120b"
-
-
 @dataclass(frozen=True)
 class LLMServerInfo:
-    base_url: str = "https://api.deepseek.com"
-    api_key: str = "sk-391fb819fefe42d9906d8d69595917ed"
-    model: str = "deepseek-chat"
+    base_url: str = "https://uni-api.cstcloud.cn"
+    api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
+    model: str = "deepseek-v4-flash"
+
+
+# @dataclass(frozen=True)
+# class LLMServerInfo:
+#     base_url: str = "https://api.deepseek.com"
+#     api_key: str = "sk-16fff7131b344eea9882c922c9318d4f"
+#     model: str = "deepseek-v4-flash"
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ class ToolConfig:
     agent_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     agent_max_tokens: int = 16384
     # General
-    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2024-12-31", "%Y-%m-%d"))
+    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2026-06-30", "%Y-%m-%d"))
     # Sentence Transformer
     sbert_server_url: str = "http://172.18.36.90:8030"
     # external LLM
@@ -47,6 +47,7 @@ class ToolConfig:
     # citation parser
     grobid_url: str = "http://172.18.36.90:8070"
     grobid_num_workers: int = 10
+    arxiv_proxy_url: str = "http://localhost:7890"
     # factual correctness - reranking
     rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     rerank_n_documents: int = 5
@@ -55,6 +56,11 @@ class ToolConfig:
     # topic coverage
     topic_weak_sim_threshold: float = 0.45
     topic_sim_threshold: float = 0.55
+    new_paper_topic_similarity_threshold: float = 0.55
+    new_paper_reference_overlap_threshold: float = 0.6
+    citation_velocity_keep_ratio: float = 0.4
+    minimum_reference_survey_citations: int = 10
+    use_openalex_count_by_year: bool = True
     # fact check
     mean_cov_weight: float = 0.7
     non_compat_punishment: float = 0.6
@@ -71,6 +77,8 @@ class ToolConfig:
     openalex_requests_per_second: float = 4.0
     openalex_max_concurrency: int = 3
     openalex_api_keys: list[str] = field(default_factory=list)
+    default_academic_search_engine: str = "semantic scholar"
+    semantic_scholar_api_key: str = ""
 
     @classmethod
     def from_yaml(cls, config_path):
@@ -97,6 +105,7 @@ class ToolConfig:
             ),
             sbert_server_url=config['sbert']['base_url'],
             grobid_url=config['citation_parser']['grobid_url'],
+            arxiv_proxy_url=config.get('citation_parser', {}).get('arxiv_proxy_url', 'http://localhost:7890'),
             rerank_server_info=LLMServerInfo(
                 base_url=config['rerank']['base_url'],
                 api_key=config['rerank']['api_key'],
@@ -106,6 +115,11 @@ class ToolConfig:
             topn=config['source_selection']['topn'],
             topic_weak_sim_threshold=config['topic_coverage']['topic_weak_sim_threshold'],
             topic_sim_threshold=config['topic_coverage']['topic_sim_threshold'],
+            new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
+            new_paper_reference_overlap_threshold=config.get('source_selection', {}).get('new_paper_reference_overlap_threshold', 0.6),
+            citation_velocity_keep_ratio=config.get('source_selection', {}).get('citation_velocity_keep_ratio', 0.4),
+            minimum_reference_survey_citations=config.get('source_selection', {}).get('minimum_reference_survey_citations', 10),
+            use_openalex_count_by_year=config.get('source_selection', {}).get('use_openalex_count_by_year', True),
             sentence_similarity_threshold=config['quality']['sentence_similarity_threshold'],
             paragraph_similarity_threshold=config['quality']['paragraph_similarity_threshold'],
             redundancy_ngram=config['quality']['redundancy_ngram'],
@@ -115,4 +129,9 @@ class ToolConfig:
             openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 4.0),
             openalex_max_concurrency=config.get('openalex', {}).get('max_concurrency', 3),
             openalex_api_keys=config.get('openalex', {}).get('api_keys', []),
+            default_academic_search_engine=config.get('academic_search', {}).get(
+                'default_engine',
+                config.get('default_academic_search_engine', 'openalex'),
+            ),
+            semantic_scholar_api_key=config.get('semantic_scholar', {}).get('api_key', ''),
         )
