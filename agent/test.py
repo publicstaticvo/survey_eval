@@ -64,10 +64,6 @@ def _reference_file_name(citation_key: str) -> str:
     return f"{safe_key}_{digest}.json"
 
 
-def _clear_reference_outputs():
-    for path in _references_dir().glob("*.json"): path.unlink()
-
-
 def _write_reference(citation_key: str, info: dict[str, Any]):
     payload = {"citation_key": citation_key, "info": info}
     with (_references_dir() / _reference_file_name(citation_key)).open("w", encoding="utf-8") as f:
@@ -112,7 +108,6 @@ if __package__:
     from .tools.eval.missing_papers import MissingPaperCheck
     from .tools.preprocess.citation_parser import CitationParser
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
-    from .tools.preprocess.extract_scope import ScopeClaimExtract
     from .tools.eval.topic_coverage import TopicCoverageCritic
     from .tools.utility.request_utils import SessionManager
     from .tools.utility.tool_config import ToolConfig
@@ -126,7 +121,6 @@ else:
     from tools.eval.missing_papers import MissingPaperCheck
     from tools.preprocess.citation_parser import CitationParser
     from tools.preprocess.claim_segmentation import ClaimSegmentation
-    from tools.preprocess.extract_scope import ScopeClaimExtract
     from tools.eval.topic_coverage import TopicCoverageCritic
     from tools.utility.request_utils import SessionManager
     from tools.utility.tool_config import ToolConfig
@@ -134,31 +128,39 @@ else:
 
 async def testGoldenTopicGenerator(config, query, paper):
     generator = GoldenTopicGenerator(config)
-    generator.source.debug_dir = DEBUG_DIR
-    anchor_data_path = _debug_path("anchor_data.json")
-    anchor_survey_path = _debug_path("anchor_survey.json")
-    if anchor_data_path.exists() and anchor_survey_path.exists():
-        reference_data = {
-            "reference_papers": _load_json("anchor_data.json"),
-            "reference_surveys": _load_json("anchor_survey.json"),
-        }
-    else:
-        reference_data = await generator.source(query)
-        _write_json("anchor_data.json", reference_data.get("reference_papers", {}))
-        _write_json("anchor_survey.json", reference_data.get("reference_surveys", {}))
+    # anchor_data_path = _debug_path("anchor_data.json")
+    # anchor_survey_path = _debug_path("anchor_survey.json")
+    # if anchor_data_path.exists() and anchor_survey_path.exists():
+    #     reference_data = {
+    #         "reference_papers": _load_json("anchor_data.json"),
+    #         "reference_surveys": _load_json("anchor_survey.json"),
+    #     }
+    # else:
+    reference_data = await generator.source(DEFAULT_SURVEY_TITLE)
+    _write_json("anchor_data.json", reference_data.get("reference_papers", {}))
+    _write_json("anchor_survey.json", reference_data.get("reference_surveys", {}))
 
     reference_surveys = reference_data.get("reference_surveys", {}) or {}
     reference_topics = []
     if len(reference_surveys) >= 2:
-        raw_topics = await generator.llm.call(inputs={"query": query, "anchor_surveys": reference_surveys})
+        raw_topics = await generator.llm.call(inputs={"query": DEFAULT_SURVEY_TITLE, "anchor_surveys": reference_surveys})
         reference_topics = raw_topics["topics"]
 
     result = {
         "reference_data": reference_data,
         "reference_topics": reference_topics,
-        "self_topics": await generator._self_scope(paper),
+        "paper_topics": generator._paper_topics_from_headings(paper),
+        "self_topics": await generator._self_scope(paper, ['introduction', 'first_sentences']),
     }
-    _write_json("topics.json", {"reference": result['reference_topics'], "self": result['self_topics']})
+    _write_json(
+        "topics.json",
+        {
+            "reference_topics": result["reference_topics"],
+            "paper_topics": result["paper_topics"],
+            "self_topics": result["self_topics"],
+            "reference_data": result["reference_data"],
+        },
+    )
     print(
         "GoldenTopicGenerator: "
         f"{len(result.get('reference_topics', []))} reference topics, "
@@ -167,25 +169,12 @@ async def testGoldenTopicGenerator(config, query, paper):
     return result
 
 
-async def testScopeClaimExtract(config):
-    extractor = ScopeClaimExtract(config)
-    survey_dir = _debug_path("surveys")
-    results = {}
-    for path in sorted(survey_dir.glob("*.json")):
-        with path.open(encoding="utf-8") as f:
-            payload = json.load(f)
-        print(f"Load {path}")
-        paper = (payload.get("paper") or {}).get("full_content") or payload.get("paper") or {}
-        title = payload.get("title") or path.stem
-        try:
-            result = await extractor(paper, candidate_types=["introduction", "conclusion"])
-        except Exception as exc:
-            print(f"testScopeClaimExtract {title} {exc}")
-            result = {"section_map": {}, "aspect_list": [], "evidence_records": [], "errors": 1}
-        results[title] = result
-    _write_json("scope_claims.json", results)
-    print(f"ScopeClaimExtract: {len(results)} surveys")
-    return results
+async def testScopeClaimExtract(config, paper):
+    extractor = GoldenTopicGenerator(config)
+    result = await extractor._self_scope(paper, ["introduction", "first_sentences", "conclusion"])
+    _write_json("scope_claims.json", result)
+    for k, v in result.items(): print(f"{k}: {v}")
+    return result
 
 
 async def testMinimumCompletion(paper):
@@ -296,14 +285,14 @@ async def testMissingPaperCheck(config, query):
 
 
 async def testStructureCheck(config, paper):
-    result = await StructureCheck(config)(paper)['structure_evals']
-    print(f"StructureCheck: {result}")
+    result = await StructureCheck(config)(paper)
+    print(f"StructureCheck: {result['structure_evals']}")
 
 
 async def testArgumentStructureEvaluator(config, paper):
     minimum_result = _load_json("minimum_check.json")
-    result = await ArgumentStructureEvaluator(config)(paper, _minimum_details(minimum_result))["argument_evals"]
-    _write_json("argument_eval.json", result)
+    result = await ArgumentStructureEvaluator(config)(paper, _minimum_details(minimum_result))
+    _write_json("argument_eval.json", result["argument_evals"])
 
 
 async def testSurveyEvaluationAgent(config, query, paper):
@@ -322,13 +311,13 @@ async def main():
 
         # await testMinimumCompletion(paper)
         # await testGoldenTopicGenerator(config, query, paper)
-        await testScopeClaimExtract(config)
+        # await testScopeClaimExtract(config, paper)
         # await testCitationParser(config, paper)
         # await testClaimSegmentation(config, paper)
         # await testFactualCorrectnessCritic(config)
         # await testTopicCoverageCritic(config, paper)
         # await testMissingPaperCheck(config, query)
-        # await testStructureCheck(config, paper)
+        await testStructureCheck(config, paper)
         # await testArgumentStructureEvaluator(config, paper)
         # await testSurveyEvaluationAgent(config, query, paper)
     finally:

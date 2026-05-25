@@ -175,27 +175,83 @@ def unique_by_id(papers: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def robust_backslash(text: str) -> str:
+    result = []
+    i = 0
+    in_latex = False
+    
+    while i < len(text):
+        char = text[i]
+        
+        # 处理 $ 符号
+        if char == '$':
+            if i == 0 or text[i - 1] != '$': in_latex = not in_latex
+            result.append(char)
+            i += 1
+        # 处理反斜杠
+        elif char == '\\' and i + 1 < len(text):
+            next_char = text[i + 1]            
+            if in_latex:
+                # 在 LaTeX 块内
+                # 判断是否是真正的转义序列：n, t, r, \\ 
+                # 但需要检查后续：如果 \n 后面跟着字母，则它是 \nabla 等命令的一部分
+                if next_char in ('n', 't', 'r'):
+                    # 检查再后面的字符
+                    if i + 2 < len(text) and text[i + 2].isalpha():
+                        # 如 \nabla, \tilde, \rho - 是 LaTeX 命令，需要双倍
+                        result.append('\\\\')
+                        result.append(next_char)
+                        i += 2
+                    else:
+                        # 真正的转义序列（\n 后面是非字母），保留
+                        result.append('\\')
+                        result.append(next_char)
+                        i += 2
+                elif next_char == '\\':
+                    # \\，保留
+                    result.append('\\')
+                    result.append(next_char)
+                    i += 2
+                else:
+                    # 其他字符后的反斜杠（如 \alpha, \beta, \frac），双倍处理
+                    result.append('\\\\')
+                    result.append(next_char)
+                    i += 2
+            else:
+                # 在 LaTeX 块外，保持原样
+                result.append('\\')
+                i += 1
+        else:
+            result.append(char)
+            i += 1
+    
+    return ''.join(result)
+
+
 def extract_json(text: str) -> dict:
     """从文本中提取 JSON 对象"""
-    if not text:
-        return {}
+    if not text: return {}
+    text = robust_backslash(text)
+    text = re.sub(r"\s+", " ", text)
+
+    try:
+        pattern = re.findall(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL)[-1]
+        return json.loads(pattern)
+    except Exception:
+        pass
     
     try:
         return json.loads(text)
     except Exception:
         pass
-
-    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fenced:
-        try:
-            return json.loads(fenced[-1])
-        except Exception:
-            pass
     
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return {}
     
-    candidate = text[start : end + 1].replace("'", '"')
-    candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
-    return json.loads(candidate)
+    try:
+        candidate = text[start:end+1]  # .replace("'", '"')
+        candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+        return json.loads(candidate)
+    except Exception:
+        return {}

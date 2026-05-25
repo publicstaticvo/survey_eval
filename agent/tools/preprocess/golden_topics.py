@@ -52,10 +52,10 @@ class TopicClusterClient(AsyncChat):
                     "section_headings": headings,
                 }
             )
-        prompt = self.PROMPT.format(
-            query=inputs["query"],
-            headings=json.dumps(surveys, ensure_ascii=False, indent=2),
-        )
+        prompt = [
+            {"role": "system", "content": self.PROMPT.format(query=inputs["query"])}, 
+            {"role": "user", "content": json.dumps(surveys, ensure_ascii=False, indent=2)}
+        ]
         return prompt, {"title_lookup": title_lookup}
 
     def _availability(self, response, context):
@@ -90,17 +90,15 @@ class ScopeClaimExtractClient(AsyncChat):
         self.check = EvidenceCheck(config)
 
     def _availability(self, response, context):
-        data = json.loads(response)
+        data = extract_json(response)
         jsonschema.validate(data, SCOPE_CLAIM_SCHEMA)
-        verified, _ = self.check.verify(data["evidence"], context["text"])
-        if data["section_map"] or data["aspect_list"]: assert verified
-        evidence_text = "\n".join(data["evidence"])
+        print(data)
         for key, value in data["section_map"].items():
-            assert not is_generic_heading(value)
-            assert self._claim_grounded_in_evidence(key, value, evidence_text)
+            assert not is_generic_heading(value), f"is generic heading in section_map: {value}"
+            assert self._claim_grounded_in_evidence(key, value, context["text"]), f"grounded in section_map: {key} {value}"
         for aspect in data["aspect_list"]:
-            assert not is_generic_heading(aspect)
-            assert self._claim_grounded_in_evidence("", aspect, evidence_text)
+            assert not is_generic_heading(aspect), f"is generic heading in aspect_list: {aspect}"
+            assert self._claim_grounded_in_evidence("", aspect, context["text"]), f"grounded in aspect_list: {aspect}"
         return {
             "source_name": context["source_name"],
             "section_map": data["section_map"],
@@ -128,20 +126,38 @@ class GoldenTopicGenerator:
         self.llm = TopicClusterClient(config.llm_server_info, config.sampling_params)
         self.self_scope_llm = ScopeClaimExtractClient(config)
 
-    def _candidate_blocks(self, paper: dict[str, Any]) -> list[dict[str, str]]:
-        """从abstract+introduction，以及每个section和第一个子section之间抽取scope声明。"""
-        abstract = paragraphs_to_text(paper['abstract'])
-        introduction = section_text(paper['sections'][0])
-        blocks = [{"source_name": 1, "text": f"Abstract: {abstract}\n\n1 Introduction\n\n{introduction}"}]
-        for i, s in enumerate(paper['sections'][1:], 2):
-            if not s['sections']: continue
-            text = paragraphs_to_text(s['paragraphs'])
-            if text: blocks.append({"source_name": i, "text": text})
+    def _paper_topics_from_headings(self, paper: dict[str, Any]) -> list[dict[str, str]]:
+        topics = []
+        for item in flatten_section_titles(paper):
+            title = (item.get("section_title") or item.get("title") or "").strip()
+            if title and not is_generic_heading(title):
+                topics.append(
+                    {
+                        "section_index": item.get("section_id", ""),
+                        "section_name": title,
+                    }
+                )
+        return topics
+    
+    def _candidate_blocks(self, paper: dict[str, Any], candidate_types: list[str]) -> list[dict[str, str]]:
+        """从abstract+introduction、每个section和第一个子section之间、结论抽取scope声明。"""
+        blocks = []
+        if 'introduction' in candidate_types:
+            abstract = paragraphs_to_text(paper['abstract'])
+            introduction = section_text(paper['sections'][0])
+            blocks.append({"source_name": 1, "text": f"Abstract: {abstract}\n\n1 Introduction\n\n{introduction}"})
+        if 'first_sentences' in candidate_types:
+            for i, s in enumerate(paper['sections'][1:-1], 2):
+                if not s['sections'] or is_generic_heading(s['title']): continue
+                text = paragraphs_to_text(s['paragraphs'])
+                if text: blocks.append({"source_name": i, "text": text})
+        if 'conclusion' in candidate_types:
+            blocks.append({"source_name": len(paper['sections']) + 1, "text": section_text(paper['sections'][-1])})
         return blocks
     
-    async def _self_scope(self, paper: dict[str, Any]) -> dict[str, Any]:
+    async def _self_scope(self, paper: dict[str, Any], candidate_types: str) -> dict[str, Any]:
         section_map, aspect_list, evidences, errors = {}, set(), [], 0
-        blocks = self._candidate_blocks(paper)
+        blocks = self._candidate_blocks(paper, candidate_types)
         tasks = [asyncio.create_task(self.self_scope_llm.call(inputs=block)) for block in blocks]
         for task in asyncio.as_completed(tasks):
             try:
@@ -173,5 +189,6 @@ class GoldenTopicGenerator:
         return {
             "reference_data": reference_data,
             "reference_topics": reference_topics,
-            "self_topics": await self._self_scope(review_paper),
+            "paper_topics": self._paper_topics_from_headings(review_paper),
+            "self_topics": await self._self_scope(review_paper, ['introduction', 'first_sentences']),
         }

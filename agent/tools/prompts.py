@@ -1,96 +1,62 @@
 # get_reference_surveys.py
-REFERENCE_SURVEY_SELECT = """You are a professional academic researcher selecting reference surveys to evaluate a target survey titled "{query}".
+REFERENCE_SURVEY_SELECT = """You are a professional academic researcher selecting anchor surveys to evaluate a target survey titled "{query}".
 
-### Goal
-Select surveys that serve as FIELD-LEVEL structural references — surveys that cover the same broad scope as the query, organized around the same primary subject.
+### Input
+You are given a list of candidate papers with their titles and abstracts.
 
-### Input Format
-Each candidate is provided with a pre-extracted scope declaration containing four fields:
-- title: the title of the candidate
-- section_map: maps section numbers to their topics
-- aspect_list: dimensions or aspects the survey explicitly covers
-- evidence_records: verbatim sentences from the paper describing its scope
+### Definition: Anchor Survey
+An anchor survey is a field-level survey that:
+- Treats the query topic as its PRIMARY organizing focus, not as a tool or method applied within a different domain.
+- Organizes the literature into coherent conceptual or methodological dimensions (e.g., taxonomies, categorizations, design spaces).
+- Covers multiple distinct sub-topics within the query field.
+- Would be consulted by an expert to judge whether another survey on this topic has missed important topics or references.
 
-### Candidate Scope Declarations
+### Inclusion Criteria (ALL must be satisfied)
+1. The query topic is the main research object and organizing principle.
+2. At least THREE distinct sub-topics within the query field are covered.
+3. The paper synthesizes existing literature rather than reporting original experimental results.
+
+### Exclusion Criteria (ANY triggers exclusion)
+- Not a survey: excludes benchmarks, position papers, tutorials, or original research papers.
+- Primary subject is a downstream domain, with the query topic appearing only as the method used.
+- Covers only ONE task or sub-area within the query field.
+- Mentions the query topic only as background or one method among many.
+
+### Candidate Surveys
 {candidates}
 
-Use these fields as the sole basis for judging topic coverage. Do not infer topics beyond what is stated in these fields.
-
-### Inclusion Criteria
-A selected survey must satisfy ALL of the following:
-- Its PRIMARY SUBJECT matches the query topic directly, not as a subordinate method or tool applied within a different domain.
-- At least 3 items from its aspect_list or section_map values fall within the query field.
-- It synthesizes and organizes the literature rather than reporting original experimental results, as indicated by its evidence.
-
-### Exclusion Criteria
-Exclude a paper if ANY of the following apply:
-- Its primary subject is a specific downstream domain, and the query topic appears only as the method used within that domain.
-- Fewer than three items in its aspect_list or section_map values belong to the query field, regardless of total item count.
-- The query topic is mentioned as background or one method among many, but is not the organizing principle of the survey.
-- It is not a survey: excludes tutorials, position papers, benchmarks, or original research papers.
-
-### Required Self-Check (apply to each candidate before deciding)
-Q1. What is the primary subject of this survey, based on its evidence    sentences? State it in one sentence.
-Q2. Does that primary subject directly match the query topic? Or is the query topic a tool or method applied within a different primary subject?
-Q3. From the provided aspect_list and section_map, list only the items that belong to the query field. Count them.
-
-If Q2 = "tool within different subject" → EXCLUDE.
-If Q3 count < 3 → EXCLUDE.
-
 ### Output Format
-Return JSON only, no extra text:
+Select at most 3 surveys. Be conservative: fewer is better than including a marginal candidate. Return JSON only, no extra text:
 ```json
 {{
   "surveys": [
     {{
-      "title": "Exact title from candidate list",
-      "primary_subject": "One phrase: what this survey is fundamentally about",
-      "subtopics_covered": [
-        "all items from aspect_list or section_map that belong to the query field"
-      ]
+      "title": "Exact title copied from the candidate list",
+      "reason": "Which self-check questions this survey passed and why"
     }}
   ]
 }}
 ```
 
-Return `{{"surveys": []}}` if no candidate clearly qualifies.
+Return an empty list if no candidate clearly qualifies:
+```json
+{{
+  "surveys": [],
+  "reason": "Brief explanation of why no candidate qualifies"
+}}
+```
 """
 
-REFERENCE_SURVEY_SCHEMA = {
-    "type": "object",
-    "required": ["surveys"],
-    "properties": {
-        "surveys": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["title", "primary_subject", "subtopics_covered"],
-                "properties": {
-                    "title": {"type": "string", "minLength": 1},
-                    "primary_subject": {"type": "string", "minLength": 1},
-                    "subtopics_covered": {
-                        "type": "array",
-                        "minItems": 3,
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                },
-                "additionalProperties": False,
-            },
-        }
-    },
-    "additionalProperties": False,
-}
-
 # golden_topics.py
-TOPIC_CLUSTER_PROMPT = """You are a Senior Research Librarian specializing in Systematic Literature Reviews. You are given a set of reference surveys, each with an ID, title, and a filtered list of section headings. Your task is to identify the core research topics covered across these surveys by clustering semantically related headings.
+TOPIC_CLUSTER_PROMPT = """You are a professional academic researcher selecting anchor surveys to evaluate a target survey titled "{query}". You are given a set of reference surveys, each with an ID, title, and a filtered list of section headings. Your task is to identify the core research topics covered across these surveys by clustering semantically related headings.
 
 ### Input format
 [
-  {
+  {{
     "survey_id": "<id>",
     "survey_title": "<title>",
     "section_headings": ["<heading1>", "<heading2>", ...]
-  },
+  }},
   ...
 ]
 
@@ -176,9 +142,7 @@ Extract sentences that explicitly describe the paper's section-by-section organi
 
 3. Do NOT extract generic paper-organization sections as topics. Exclude items whose value is only or mainly: introduction, background, preliminary/preliminaries, related work, methods/methodology, experiments/evaluation/results, discussion, conclusion, future work/future directions, limitations, open problems/open questions, appendix, references, acknowledgments.
 
-4. evidence: Copy the source sentences that support the above extractions. Use the exact original wording; escape any internal quotation marks with a backslash.
-
-5. If the text contains no organizational or scope statements, return empty objects.
+4. If the text contains no organizational or scope statements, return empty objects.
 
 ### Positive examples
 - "Section 3 reviews parameter-efficient fine-tuning methods." -> {{"3": "parameter-efficient fine-tuning methods"}}
@@ -194,15 +158,14 @@ Return valid JSON only, no other text:
 ```json
 {{
   "section_map": {{"2": "topic", "3.1": "topic"}},
-  "aspect_list": ["aspect"],
-  "evidence": ["verbatim sentence"]
+  "aspect_list": ["aspect"]
 }}
 ```
 """
 
 SCOPE_CLAIM_SCHEMA = {
     "type": "object",
-    "required": ["section_map", "aspect_list", "evidence"],
+    "required": ["section_map", "aspect_list"],
     "properties": {
         "section_map": {
             "type": "object",
@@ -211,11 +174,7 @@ SCOPE_CLAIM_SCHEMA = {
         "aspect_list": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
-        },
-        "evidence": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-        },
+        }
     },
     "additionalProperties": False,
 }
@@ -302,38 +261,49 @@ Your output should be a single JSON object only:
 '''
 
 # structure_eval.py
-EXTRACT_METHODS = """Identify methods that are **substantively introduced** in this section.
+EXTRACT_METHODS = """Identify methods that are **introduced** in this section.
 
 ### Task Definition
 
-A method is considered “introduced” **only if**:
+A method is considered "introduced" if:
+* It is referred to by a specific name (a model, system, algorithm, or technique)
+* The sentence contains a citation for it
 
-* It is discussed across **at least two consecutive sentences**
-* The sentences **describe, explain, or elaborate** the method
-* Mere mentions, examples, or name drops do NOT count
+One sentence is sufficient. You are NOT required to find multi-sentence discussions.
 
 ### Instructions
 
-1. Examine sentence order carefully.
-2. For each citation key, check whether it appears in **two or more consecutive sentences** that discuss the same method.
-3. Record the sentence index range as `[start, end]`.
-4. Skip any method discussed in only one sentence.
+For each qualifying sentence:
+1. Extract the method name as it appears in the text.
+2. Record the citation key.
+3. Record the sentence index.
 
-### Constraints
+### Input Format
 
-* Only output spans that truly correspond to method discussion.
-* If no such methods exist, return an empty list.
+You receive a list of sentences, each with an index, text, and citation keys:
+[
+  {"idx": 0, "text": "...", "citations": ["key1"]},
+  {"idx": 1, "text": "...", "citations": []},
+  ...
+]
 
 ### Output Format
 
 ```json
 {
   "introduce_spans": [
-    { "ref_key": "key1", "span": [3, 4] },
-    { "ref_key": "key2", "span": [7, 9] }
+    { "ref_key": "key1", "span": [0, 2], "method_name": "ControlNet" },
+    { "ref_key": "key2", "span": [5, 6], "method_name": "Self-Attention" }
   ]
 }
-```"""
+```
+
+`ref_key`: citation key from the introducing sentence.
+`span`: [start_idx, end_idx] inclusive, minimum length 2.
+`method_name`: the method name as it appears in the text.
+
+Return `"introduce_spans": []` if no such spans exist.
+"""
 
 SECTION_ORGANIZE = """Determine how the methods in this section are organized.
 

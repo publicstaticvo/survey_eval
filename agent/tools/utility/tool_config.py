@@ -6,7 +6,7 @@ import yaml
 
 
 GREEDY_PARAMS = {
-    'temperature': 0.0, "max_tokens": 8192, "seed": 42,
+    'temperature': 0.0, "max_tokens": 16384, "seed": 42,
     "top_p": 1.0,      # 设置为1，不进行核采样
     "top_k": 1,        # 或设置为1，确保总是选择最可能的token
     "repetition_penalty": 1.0,  # 设置为1，禁用重复惩罚
@@ -25,8 +25,8 @@ class LLMServerInfo:
 # @dataclass(frozen=True)
 # class LLMServerInfo:
 #     base_url: str = "https://api.deepseek.com"
-#     api_key: str = "sk-391fb819fefe42d9906d8d69595917ed"
-#     model: str = "deepseek-chat"
+#     api_key: str = "sk-16fff7131b344eea9882c922c9318d4f"
+#     model: str = "deepseek-v4-flash"
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ class ToolConfig:
     agent_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     agent_max_tokens: int = 16384
     # General
-    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2024-12-31", "%Y-%m-%d"))
+    evaluation_date: datetime = field(default_factory=lambda: datetime.strptime("2026-06-30", "%Y-%m-%d"))
     # Sentence Transformer
     sbert_server_url: str = "http://172.18.36.90:8030"
     # external LLM

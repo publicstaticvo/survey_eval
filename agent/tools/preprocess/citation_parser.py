@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 from .websearch import WebSearchFallback
 from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
-from ..utility.paper_download import PaperDownload, SemanticScholarPaperDownload, yield_location
+from ..utility.paper_download import PaperDownload, S2PaperDownload, yield_location
 from ..utility.request_utils import RateLimit
 from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
@@ -17,7 +17,7 @@ class CitationParser:
 
     def __init__(self, config: ToolConfig):
         self.paper_downloader = PaperDownload(config)
-        self.semantic_scholar_downloader = SemanticScholarPaperDownload(config)
+        self.semantic_scholar_downloader = S2PaperDownload(config)
         self.websearch = WebSearchFallback(config)
         self.openalex = get_openalex_client(config)
         self.semantic_scholar = get_semantic_scholar_client(config)

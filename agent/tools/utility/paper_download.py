@@ -302,7 +302,7 @@ class PaperDownload:
                 latex_content = self._read_text_file(main_tex)
                 parser = LatexPaperParser(latex_content, base_path=str(main_tex.parent))
                 paper = parser.parse()
-                result = self._latex_post_hook(paper, latex_content)
+                result = self._latex_post_hook(paper, parser.latex_content)
                 if result:
                     return {"result": result, "download_error": False, "parse_error": False}
                 return {"result": None, "download_error": False, "parse_error": True}
@@ -412,7 +412,7 @@ class PaperDownload:
                 print(f"OpenAlex content fallback failed for {work_id}: {e}")
 
 
-class SemanticScholarPaperDownload(PaperDownload):
+class S2PaperDownload(PaperDownload):
     """Download papers from Semantic Scholar style metadata."""
 
     def _semantic_scholar_urls(self, paper_meta: dict, excluded_urls: set[str] | None = None) -> list[str]:
@@ -719,7 +719,7 @@ async def test_pdf_url_download(
     """Test downloading a PDF from a specific URL and parsing it into a paper skeleton."""
     await SessionManager.init()
     try:
-        downloader = SemanticScholarPaperDownload(config or ToolConfig())
+        downloader = S2PaperDownload(config or ToolConfig())
         result = await downloader._try_semantic_url(url)
         parsed = bool(result.get("result"))
         print(f"url={url} parsed={parsed}")

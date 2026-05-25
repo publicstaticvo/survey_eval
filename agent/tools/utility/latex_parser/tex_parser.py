@@ -95,11 +95,18 @@ class LatexPaperParser:
         r"\\(?P<level>section|subsection|subsubsection)\s*\{(?P<name>(?:[^{}]|\\[{}])*)\}",
         re.DOTALL,
     )
+    TEX_SECTION_COMMAND_RE = re.compile(
+        r"\\(?P<level>section|subsection|subsubsection)\s*(?P<star>\*)?\s*(?:\[[^\]]*\])?\s*\{",
+        re.DOTALL,
+    )
     TEX_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\s*\{\s*appendices\s*\}", re.IGNORECASE)
     
     def __init__(self, latex_content: str, base_path='.'):
         self.base_path = base_path
-        self.latex_content = process_input_commands(latex_content, base_path)
+        self.section_label_map = {}
+        processed_content = process_input_commands(latex_content, base_path)
+        self.section_label_map = self._build_section_label_map(processed_content)
+        self.latex_content = self._replace_section_refs(processed_content, self.section_label_map)
         self.walker = LatexWalker(self.latex_content)
         self.converter = LatexNodes2Text(math_mode="verbatim")
         self.section_levels = {
@@ -115,6 +122,66 @@ class LatexPaperParser:
 
     def _safe_nodes(self, nodes):
         return nodes or []
+
+    def _build_section_label_map(self, content: str) -> dict[str, str]:
+        content = self._strip_latex_comments(content)
+        appendix = self.TEX_APPENDIX_RE.search(content)
+        if appendix:
+            content = content[:appendix.start()]
+
+        headings = []
+        counters = {"section": 0, "subsection": 0, "subsubsection": 0}
+        for match in self.TEX_SECTION_COMMAND_RE.finditer(content):
+            if match.group("star"):
+                continue
+            _, title_end = self._read_balanced_brace_content(content, match.end() - 1)
+            if title_end == match.end() - 1:
+                continue
+            level = match.group("level")
+            if level == "section":
+                counters["section"] += 1
+                counters["subsection"] = 0
+                counters["subsubsection"] = 0
+                section_index = str(counters["section"])
+            elif level == "subsection":
+                if counters["section"] == 0:
+                    continue
+                counters["subsection"] += 1
+                counters["subsubsection"] = 0
+                section_index = f"{counters['section']}.{counters['subsection']}"
+            else:
+                if counters["section"] == 0 or counters["subsection"] == 0:
+                    continue
+                counters["subsubsection"] += 1
+                section_index = f"{counters['section']}.{counters['subsection']}.{counters['subsubsection']}"
+            headings.append({"index": section_index, "start": match.start(), "content_start": title_end})
+
+        label_map = {}
+        for idx, heading in enumerate(headings):
+            end = headings[idx + 1]["start"] if idx + 1 < len(headings) else len(content)
+            chunk = content[heading["start"]:end]
+            for label in re.findall(r"\\label\s*\{([^{}]+)\}", chunk):
+                label_map[label.strip()] = heading["index"]
+        return label_map
+
+    def _replace_section_refs(self, content: str, label_map: dict[str, str]) -> str:
+        if not label_map:
+            return content
+
+        def replace(match):
+            macro = match.group("macro")
+            labels = [label.strip() for label in match.group("labels").split(",") if label.strip()]
+            values = [label_map[label] for label in labels if label in label_map]
+            if not values:
+                return match.group(0)
+            text = ", ".join(values)
+            return f"Section {text}" if macro.lower() in {"autoref", "cref"} else text
+
+        return re.sub(
+            r"\\(?P<macro>ref|autoref|cref|Cref)\s*\{(?P<labels>[^{}]+)\}",
+            replace,
+            content,
+        )
 
     def _macro_name(self, node) -> str:
         return getattr(node, "macroname", "") or ""
@@ -1057,7 +1124,12 @@ class LatexPaperParser:
 
         counters = {"section": 0, "subsection": 0, "subsubsection": 0}
         records = []
-        for match in self.TEX_SECTION_RE.finditer(content):
+        for match in self.TEX_SECTION_COMMAND_RE.finditer(content):
+            if match.group("star"):
+                continue
+            name, title_end = self._read_balanced_brace_content(content, match.end() - 1)
+            if name is None or title_end == match.end() - 1:
+                continue
             level = match.group("level")
             if level == "section":
                 counters["section"] += 1
@@ -1076,7 +1148,7 @@ class LatexPaperParser:
                 counters["subsubsection"] += 1
                 section_index = f"{counters['section']}.{counters['subsection']}.{counters['subsubsection']}"
 
-            name = self._clean_title(match.group("name").replace(r"\{", "{").replace(r"\}", "}"))
+            name = self._clean_title(name.replace(r"\{", "{").replace(r"\}", "}"))
             record = self._head_record(section_index, name)
             if record: records.append(record)
         return records

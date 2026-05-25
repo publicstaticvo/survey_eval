@@ -15,7 +15,7 @@ from .utils import normalize_text, valid_check
 SEMANTIC_SCHOLAR_GRAPH_API = "https://api.semanticscholar.org/graph/v1"
 S2_DEFAULT_FIELDS = (
     "paperId,title,abstract,year,publicationDate,citationCount,referenceCount,"
-    "authors,externalIds,openAccessPdf,url,venue,fieldsOfStudy,publicationTypes"
+    "authors,externalIds,openAccessPdf,url,venue,fieldsOfStudy,s2FieldsOfStudy,publicationTypes"
 )
 
 

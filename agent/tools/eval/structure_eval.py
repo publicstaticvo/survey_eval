@@ -1,4 +1,5 @@
 import asyncio
+import json
 import jsonschema
 from typing import List, Dict, Any
 
@@ -18,26 +19,41 @@ class MethodClient(AsyncChat):
         for item in data.get("introduce_spans", []):
             span = item.get("span") or item.get("introduce_span")
             ref_key = item.get("ref_key")
-            if not span or not ref_key or len(span) != 2:
-                continue
+            if not span or not ref_key or len(span) != 2: continue
             start, end = span
-            if not (1 <= start < end <= len(section_sentences)):
-                continue
+            if not (1 <= start <= end <= len(section_sentences)): continue
             text = " ".join(section_sentences[idx - 1]["text"] for idx in range(start, end + 1))
             methods.append({"key": ref_key, "sentences": text})
         return {"section_name": context["name"], "methods": methods}
 
     def _organize_inputs(self, inputs):
-        sentences = "\n".join(f"Sentence {idx}: {sentence['text']}" for idx, sentence in enumerate(inputs["section"], 1))
-        citation_keys = []
-        seen = set()
-        for sentence in inputs["section"]:
+        sentence_items = []
+        for idx, sentence in enumerate(inputs["section"], 1):
+            citation_keys = []
+            seen = set()
             for citation in sentence.get("citations", []):
-                if citation not in seen:
-                    seen.add(citation)
-                    citation_keys.append(f"- {citation}")
-        prompt = self.PROMPT.format(text=sentences, keys="\n".join(citation_keys))
-        return prompt, {"section": inputs["section"], "name": inputs["name"]}
+                ref_text = citation.get("ref_text")
+                if ref_text and ref_text not in seen:
+                    seen.add(ref_text)
+                    citation_keys.append(ref_text)
+            sentence_items.append({
+                "index": idx,
+                "text": sentence["text"],
+                "citation_keys": citation_keys,
+            })
+        user_prompt = json.dumps(sentence_items, ensure_ascii=False, indent=2)
+        # user_prompt = (
+        #     f"## Section\n"
+        #     f"Name: {inputs['name']}\n\n"
+        #     f"## Citations Appearing In This Section\n"
+        #     f"{chr(10).join(citation_keys) if citation_keys else '(none)'}\n\n"
+        #     f"## Sentences\n"
+        #     f"{sentences}"
+        # )
+        return [
+            {"role": "system", "content": self.PROMPT},
+            {"role": "user", "content": user_prompt},
+        ], {"section": inputs["section"], "name": inputs["name"]}
 
 
 class SectionOrganizeLLMClient(AsyncChat):
@@ -61,10 +77,17 @@ class SectionOrganizeLLMClient(AsyncChat):
             f"- id: M{idx}\n  reference_key: {method['key']}\n  related_text: {method['sentences']}"
             for idx, method in enumerate(inputs["methods"], 1)
         )
-        prompt = self.PROMPT.format(
-            text=f"Section name: {inputs['section_name']}\nMethods discussed in this section:\n{methods_text}"
+        user_prompt = (
+            f"## Section\n"
+            f"Name: {inputs['section_name']}\n\n"
+            f"## Methods Introduced In Original Order\n"
+            f"Total methods: {len(inputs['methods'])}\n"
+            f"{methods_text}"
         )
-        return prompt, {"num_works": len(inputs["methods"])}
+        return [
+            {"role": "system", "content": self.PROMPT},
+            {"role": "user", "content": user_prompt},
+        ], {"num_works": len(inputs["methods"])}
 
 
 class PaperOrganizeLLMClient(AsyncChat):
@@ -87,7 +110,15 @@ class PaperOrganizeLLMClient(AsyncChat):
             f"- Section S{idx}:\n  - title: {section['name']}\n  - methods_count: {section['num_works']}\n  - organization_type: {section['organization_type']}"
             for idx, section in enumerate(inputs, 1)
         )
-        return self.PROMPT.format(text=sections_text), {"num_sections": len(inputs)}
+        user_prompt = (
+            f"## Sections With Method-Organization Evidence\n"
+            f"Total sections: {len(inputs)}\n"
+            f"{sections_text}"
+        )
+        return [
+            {"role": "system", "content": self.PROMPT},
+            {"role": "user", "content": user_prompt},
+        ], {"num_sections": len(inputs)}
 
 
 class StructureCheck:
@@ -107,10 +138,11 @@ class StructureCheck:
 
     async def _single_section(self, name: str, section: List[Dict[str, Any]]):
         methods = await self.method_llm.call(inputs={"name": name, "section": section})
-        if not methods["methods"]:
-            return None
+        print(f"{len(methods['methods'])} methods in section {methods['section_name']}: {methods['methods']}")
+        if not methods["methods"]: return
         organize = await self.section_organize_llm.call(inputs=methods)
         organize["name"] = name
+        print(f"{methods['section_name']} organize: {organize}")
         return organize
 
     async def _structural_check(self, paper: Dict[str, List]):
@@ -119,7 +151,9 @@ class StructureCheck:
         for task in asyncio.as_completed(tasks):
             try:
                 result = await task
-            except Exception:
+            except Exception as e:
+                raise
+                print(f"MethodClient {e}")
                 result = None
             if result:
                 method_organize.append(result)
@@ -136,6 +170,7 @@ class StructureCheck:
         try:
             paper_organize = await self.paper_organize_llm.call(inputs=method_organize)
         except Exception as exc:
+            print(f"PaperOrganize {exc}")
             return {"status": False, "reason": "paper_organization_error", "details": str(exc)}
         if paper_organize["organization_type"] == "no_clear_structure":
             return {"status": False, "reason": "paper_no_clear_structure", "details": paper_organize.get("justification", "")}

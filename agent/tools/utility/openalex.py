@@ -19,7 +19,7 @@ from .tool_config import ToolConfig
 from .utils import normalize_text, valid_check
 
 
-OPENALEX_SELECT = "id,cited_by_count,counts_by_year,referenced_works,publication_date,created_date,abstract_inverted_index,title,authorships"
+OPENALEX_SELECT = "id,title,cited_by_count,counts_by_year,publication_date,created_date,abstract_inverted_index,authorships"
 URL_DOMAIN = "https://openalex.org/"
 OPENALEX_API_URL = "https://api.openalex.org"
 OPENALEX_CONTENT_URL = "https://content.openalex.org"
@@ -202,10 +202,10 @@ class OpenAlex:
         if paper.get("publication_date") is None and paper.get("created_date"):
             paper["publication_date"] = paper["created_date"]
         if "created_date" in paper: paper.pop("created_date", None)
-        paper["referenced_works"] = [
-            self._normalize_openalex_id(work_id)
-            for work_id in paper.get("referenced_works", []) or []
-        ]
+        # paper["referenced_works"] = [
+        #     self._normalize_openalex_id(work_id)
+        #     for work_id in paper.get("referenced_works", []) or []
+        # ]
         paper["authorships"] = self._normalize_authorships(paper.get("authorships", []))
         if paper.get("id") and not paper.get("ids"):
             paper["ids"] = [paper["id"]]
@@ -288,14 +288,9 @@ class OpenAlex:
     def _merge_work_cluster(self, papers: list[dict], original_title: str = "") -> dict:
         base = max(papers, key=lambda paper: paper.get("cited_by_count", 0) or 0)
         merged = dict(base)
-        ids = []
-        referenced_works = set()
-        authors = []
-        locations = []
-        seen_locations = set()
+        ids, authors, locations, seen_locations = [], [], [], set()
         for paper in papers:
             ids.extend(paper.get("ids") or ([paper["id"]] if paper.get("id") else []))
-            referenced_works.update(paper.get("referenced_works", []) or [])
             authors.extend(paper.get("authorships", []) or [])
             for location in paper.get("locations", []) or []:
                 key = json.dumps(location, sort_keys=True, ensure_ascii=False) if isinstance(location, dict) else str(location)
@@ -307,7 +302,6 @@ class OpenAlex:
         ids = list(dict.fromkeys(([base_id] if base_id else []) + ids))
         merged["ids"] = ids
         if ids: merged["id"] = ids[0]
-        merged["referenced_works"] = sorted(referenced_works)
         merged["authorships"] = list(dict.fromkeys(authors))
         if locations:
             merged["locations"] = locations
@@ -325,22 +319,6 @@ class OpenAlex:
         merged["cited_by_count"] = cited_source.get("cited_by_count", 0) or 0
         merged["counts_by_year"] = cited_source.get("counts_by_year", []) or []
         return merged
-
-    def _canonicalize_referenced_work_ids(self, papers: list[dict]) -> list[dict]:
-        alias_to_primary = {}
-        for paper in papers:
-            primary_id = paper.get("id")
-            if not primary_id:
-                continue
-            for alias in paper.get("ids") or [primary_id]:
-                alias_to_primary[alias] = primary_id
-
-        for paper in papers:
-            referenced_works = []
-            for work_id in paper.get("referenced_works", []) or []:
-                referenced_works.append(alias_to_primary.get(work_id, work_id))
-            paper["referenced_works"] = list(dict.fromkeys(referenced_works))
-        return papers
 
     def deduplicate_works(self, papers: list[dict], original_title: str = "") -> list[dict]:
         papers = [dict(paper) for paper in papers if paper and paper.get("title")]
@@ -373,7 +351,7 @@ class OpenAlex:
         for idx in range(len(papers)):
             clusters.setdefault(find(idx), []).append(papers[idx])
         merged = [self._merge_work_cluster(cluster, original_title) for cluster in clusters.values()]
-        return self._canonicalize_referenced_work_ids(merged)
+        return merged
     
     def _filter_has_search_key(self, filter_value: list[tuple] | dict | None) -> bool:
         if not filter_value: return False

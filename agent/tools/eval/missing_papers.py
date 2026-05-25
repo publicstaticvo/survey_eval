@@ -347,13 +347,15 @@ class MissingPaperCheck:
         return str(topic or "").strip().lower()
 
     def _self_topic_names(self, topics: dict[str, Any]) -> list[str]:
-        """Extract only target-survey self-declared topics from GoldenTopicGenerator output."""
-        self_topics = topics.get("self_topics", {}) or {}
+        """Extract target-survey topic headings from GoldenTopicGenerator output."""
         names = []
-        for value in (self_topics.get("section_map") or {}).values():
-            if value: names.append(str(value).strip())
-        for value in self_topics.get("aspect_list") or []:
-            if value: names.append(str(value).strip())
+        for item in topics.get("paper_topics", []) or []:
+            if isinstance(item, dict):
+                value = item.get("section_name") or item.get("section_title") or item.get("title")
+            else:
+                value = item
+            if value:
+                names.append(str(value).strip())
         return list(dict.fromkeys(name for name in names if name))
 
     def _topic_coverage_missing_topics(self, topic_eval: dict[str, Any]) -> set[str]:
@@ -380,10 +382,7 @@ class MissingPaperCheck:
                     "reference_surveys": reference_surveys list
                 },
                 "reference_topics": 从reference_surveys中总结出来的topics，格式为[{"topic": "topic名称", "sources": [来源]}],
-                "self_topics": {
-                    "section_map": 指定了具体章节的scope声明 <dict>, 
-                    "aspect_list": 未指定具体章节的scope声明<list>
-                },
+                "paper_topics": 被评测综述自身标题结构中过滤掉generic heading后的标题列表,
             }
             topic_eval = TopicCoverage的输出
             若topic没有被covered，则不报告该topic下的引用文献。也就是说只检查文章内部声明/实际覆盖的topic下有哪些文献。
