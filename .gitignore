@@ -12,6 +12,7 @@ pdf
 *.zip
 *.tar.gz
 *.json
+*.yaml
 *.jsonl
 .idea
 .ipynb_checkpoints

@@ -3,6 +3,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -336,12 +337,21 @@ def build_record(candidate):
     if len(reviews) < 2 or total_chars < 2500 or long_reviews < 2:
         return None
     forum = sub.get("forum") or candidate["forum"]
+    submission_invitation = " ".join(sub.get("invitations") or [])
+    submission_cdate = sub.get("cdate")
+    submission_mdate = sub.get("mdate")
     return {
         "source": "OpenReview",
         "review_page_url": f"https://openreview.net/forum?id={forum}",
         "paper_title": title,
         "paper_url": pdf_url(value(content, "pdf")),
         "openreview_forum_id": forum,
+        "submission_note_id": sub.get("id", ""),
+        "submission_invitation": submission_invitation,
+        "submission_cdate": submission_cdate,
+        "submission_mdate": submission_mdate,
+        "submission_date": datetime.fromtimestamp(submission_cdate / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        if submission_cdate else "",
         "venue": value(content, "venue"),
         "venue_id": value(content, "venueid"),
         "domain": sub.get("domain") or candidate.get("domain", ""),

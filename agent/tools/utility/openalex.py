@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 import Levenshtein
 
-from .request_utils import HEADERS, OpenAlexBudgetExceeded, RateLimit, SessionManager
+from .request_utils import AsyncRequestRateLimiter, HEADERS, OpenAlexBudgetExceeded, SessionManager
 from .tool_config import ToolConfig
 from .utils import normalize_text, valid_check
 
@@ -24,7 +24,8 @@ URL_DOMAIN = "https://openalex.org/"
 OPENALEX_API_URL = "https://api.openalex.org"
 OPENALEX_CONTENT_URL = "https://content.openalex.org"
 FREE_CREDITS_PER_DAY = 10000
-
+OPENALEX_MAX_REQUESTS_PER_SECOND = 100.0
+DEFAULT_SEARCH_KEY = "default.search"
 TRANSIENT_EXCEPTION_TYPES = (
     aiohttp.ClientError,
     asyncio.TimeoutError,
@@ -70,6 +71,7 @@ class OpenAlex:
         self._init_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._initialized = False
+        configured_rps = float(config.openalex_requests_per_second or OPENALEX_MAX_REQUESTS_PER_SECOND)
         self.request_count = 0
         self.no_key_state = CredentialState("anonymous", None, FREE_CREDITS_PER_DAY, initialized=True)
         self.api_key_states = [
@@ -143,12 +145,28 @@ class OpenAlex:
 
     async def _choose_credential(self, estimated_cost: int, require_api_key: bool = False) -> CredentialState:
         await self.ensure_ready()
+        states = ([self.no_key_state] if not require_api_key else []) + self.api_key_states
+        refresh_states = []
         async with self._state_lock:
-            if not require_api_key:
-                await self._refresh_daily_state(self.no_key_state)
-                if self.no_key_state.is_available(estimated_cost): return self.no_key_state
-            for state in self.api_key_states:
-                await self._refresh_daily_state(state)
+            for state in states:
+                if state.cooling_until is not None and datetime.now(UTC) >= state.cooling_until:
+                    if state.api_key is None:
+                        state.credits_remaining = FREE_CREDITS_PER_DAY
+                        state.cooling_until = None
+                    else:
+                        refresh_states.append(state)
+                if state.is_available(estimated_cost): return state
+
+        for state in refresh_states:
+            try:
+                credits_remaining = await self.get_balance(state.api_key)
+                cooling_until = None if credits_remaining > 0 else self._next_utc_midnight()
+            except Exception:
+                credits_remaining = 0
+                cooling_until = self._next_utc_midnight()
+            async with self._state_lock:
+                state.credits_remaining = credits_remaining
+                state.cooling_until = cooling_until
                 if state.is_available(estimated_cost): return state
         raise OpenAlexBudgetExceeded({"message": "No OpenAlex credential has remaining credits"})
     
@@ -360,15 +378,14 @@ class OpenAlex:
 
     async def _single_json_request(self, url: str, params: dict[str, Any]) -> dict:
         session = SessionManager.get()
-        last_exc = None
-        for attempt in range(3):
+        while True:
             try:
                 self.request_count += 1
                 async with session.get(
                     url,
                     headers=HEADERS,
                     params=params,
-                    timeout=aiohttp.ClientTimeout(total=60),
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     text = await resp.text()
                     payload = json.loads(text)
@@ -378,11 +395,9 @@ class OpenAlex:
                         resp.raise_for_status()
                     return payload
             except Exception as exc:
-                last_exc = exc
-                if not self._is_transient_error(exc) or attempt == 2:
-                    raise
-                await asyncio.sleep(min(10, 2 ** attempt))
-        raise last_exc
+                print(f"Endpoint {url} Error {type(exc)} {exc}")
+                if not self._is_transient_error(exc): raise
+                await asyncio.sleep(random.random() + 1)
 
     async def _single_bytes_request(self, url: str, params: dict[str, Any]) -> bytes:
         session = SessionManager.get()
@@ -523,7 +538,12 @@ class OpenAlex:
         explicit_page = request_kwargs.pop("page", None)
         start_page = int(explicit_page or (offset // 200 + 1) or 1)
         skip_in_first_page = 0 if explicit_page is not None else offset % 200
-        if "AND" in search or "OR" in search: search = to_openalex(search)
+        if "AND" in search or "OR" in search:
+            new_filter = [(DEFAULT_SEARCH_KEY, x) for x in to_openalex(search)]
+            filter = filter or []
+            if isinstance(filter, dict): filter = [*filter.items(), *new_filter]
+            else: filter = [*filter, *new_filter]
+            search = ""
         if do_sample:
             payload = await self._search_works_page(
                 search=search,
@@ -559,7 +579,7 @@ class OpenAlex:
             raw_batch_count = int(payload.get("_raw_result_count", len(batch)) or 0)
             raw_results.extend(batch)
             raw_seen += raw_batch_count
-            if raw_batch_count == 0 or raw_batch_count < 200: break
+            if raw_batch_count < 200: break
             page += 1
 
         results = raw_results[skip_in_first_page:] if skip_in_first_page else raw_results
@@ -608,10 +628,11 @@ class OpenAlex:
         offset: int = 0,
         limit: int = 9999,
         fields: str | None = OPENALEX_SELECT,
+        filter: dict = {},
         **request_kwargs,
     ) -> dict:
         return await self.search_works(
-            filter={"cites": work_id},
+            filter={"cites": work_id, **filter},
             per_page=limit,
             select=fields,
             offset=offset,
@@ -624,10 +645,11 @@ class OpenAlex:
         offset: int = 0,
         limit: int = 9999,
         fields: str | None = OPENALEX_SELECT,
+        filter: dict = {},
         **request_kwargs,
     ) -> dict:
         return await self.search_works(
-            filter={"cited_by": work_id},
+            filter={"cited_by": work_id, **filter},
             per_page=limit,
             select=fields,
             offset=offset,
@@ -692,6 +714,7 @@ def get_openalex_client(config: ToolConfig | None = None) -> OpenAlex:
         next_keys = tuple(config.openalex_api_keys or [])
         if (
             current_keys != next_keys
+            or _OPENALEX_CLIENT.config.openalex_rate_limit_enabled != config.openalex_rate_limit_enabled
             or _OPENALEX_CLIENT.config.openalex_requests_per_second != config.openalex_requests_per_second
             or _OPENALEX_CLIENT.config.openalex_max_concurrency != config.openalex_max_concurrency
             or _OPENALEX_CLIENT.config.grobid_url != config.grobid_url

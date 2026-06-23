@@ -7,7 +7,27 @@ from collections import Counter
 
 from ..utility.sbert_client import SentenceTransformerClient
 from ..utility.tool_config import ToolConfig
-from .utils import split_content_to_paragraph, cosine_similarity_matrix
+
+
+def split_content_to_paragraph(content: dict | list):
+    if isinstance(content, list):
+        return list(content)
+    paragraphs = list(content.get("paragraphs", []))
+    for section in content.get("sections", []):
+        paragraphs.extend(split_content_to_paragraph(section))
+    return paragraphs
+
+
+def cosine_similarity_matrix(left, right):
+    left = np.asarray(left, dtype=float)
+    right = np.asarray(right, dtype=float)
+    left_norm = np.linalg.norm(left, axis=1, keepdims=True)
+    right_norm = np.linalg.norm(right, axis=1, keepdims=True)
+    left_norm[left_norm == 0] = 1.0
+    right_norm[right_norm == 0] = 1.0
+    left = left / left_norm
+    right = right / right_norm
+    return left @ right.T
 
 
 class ProgrammaticReadabilityCritic:

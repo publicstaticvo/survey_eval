@@ -40,7 +40,19 @@ def split_content_to_paragraph(content: dict | list):
 
 
 def paragraph_to_text(content: list[dict]):
-    return " ".join(s.get("text", "") for s in content if s.get("text")).strip()
+    parts = []
+    for sentence in content:
+        if not isinstance(sentence, dict) or not sentence.get("text"):
+            continue
+        text = str(sentence.get("text") or "").strip()
+        environment_type = sentence.get("environment_type", "text")
+        if environment_type == "paragraph_name":
+            parts.append(r"\paragraph{" + text + "}")
+        elif environment_type == "text":
+            parts.append(text)
+        else:
+            parts.append(f"\\begin{{{environment_type}}} {text} \\end{{{environment_type}}}")
+    return " ".join(parts).strip()
 
 
 def safe_text(value: Any) -> str:
@@ -57,6 +69,16 @@ def safe_text(value: Any) -> str:
 
 def paragraphs_to_text(paragraphs: Iterable[list[dict]]) -> str:
     return "\n\n".join(filter(None, (paragraph_to_text(p) for p in paragraphs)))
+
+
+def section_text(section: dict[str, Any], include_children: bool = True) -> str:
+    blocks = [paragraphs_to_text(section.get("paragraphs", []))]
+    if include_children:
+        for child in section.get("sections", []) or []:
+            child_text = section_text(child, include_children=True)
+            if child_text:
+                blocks.append(child_text)
+    return "\n\n".join(block for block in blocks if block)
 
 
 def section_to_text(section: dict) -> str:
@@ -78,10 +100,6 @@ def get_section_titles(content: dict) -> List[str]:
     return [section.get("title", "") for section in iter_sections(content) if section.get("title")]
 
 
-def get_top_level_section_titles(content: dict) -> List[str]:
-    return [section.get("title", "") for section in content.get("sections", []) if section.get("title")]
-
-
 def get_first_section(content: dict) -> Dict[str, Any] | None:
     sections = content.get("sections", []) if isinstance(content, dict) else []
     return sections[0] if sections else None
@@ -94,6 +112,12 @@ def cosine_similarity_matrix(left, right):
     right_norm = np.linalg.norm(right, axis=1, keepdims=True)
     left_norm[left_norm == 0] = 1.0
     right_norm[right_norm == 0] = 1.0
-    left = left / left_norm
-    right = right / right_norm
-    return left @ right.T
+    return (left / left_norm) @ (right / right_norm).T
+
+
+def normalize_heading(title: str) -> str:
+    value = (title or "").strip()
+    value = re.sub(r"^\d+(?:\.\d+)*[.)-]?\s+", "", value)
+    value = re.sub(r"^(?:[ivxlcdm]+)[.)-]\s+", "", value, flags=re.IGNORECASE)
+    value = value.replace("&", " and ").replace("/", " ").replace("-", " ")
+    return re.sub(r"\s+", " ", value).strip().lower()

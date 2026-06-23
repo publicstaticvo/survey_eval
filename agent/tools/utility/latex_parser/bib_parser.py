@@ -71,8 +71,79 @@ def parse_bib_file(filepath: str) -> Dict[str, Any]:
         citation_key = entry.get('ID', '')
         if citation_key and citation_key not in citations:
             citations[citation_key] = entry
-    
+
+    add_ref_strings(citations)
     return citations
+
+
+def add_ref_strings(citations: Dict[str, Any]) -> Dict[str, Any]:
+    for entry in citations.values():
+        if isinstance(entry, dict):
+            entry["ref_string"] = format_ref_string(entry)
+    return citations
+
+
+def format_ref_string(entry: Dict[str, Any]) -> str:
+    authors = extract_entry_authors(entry)
+    if not authors:
+        return "?"
+    if len(authors) == 1:
+        return authors[0]
+    if len(authors) == 2:
+        return f"{authors[0]} and {authors[1]}"
+    return f"{authors[0]} et al."
+
+
+def extract_entry_authors(entry: Dict[str, Any]) -> list[str]:
+    raw_authors = entry.get("author") or entry.get("authors")
+    split_as_bibtex = bool(raw_authors)
+    if not raw_authors:
+        raw_authors = extract_info_author_prefix(entry.get("info", ""))
+        split_as_bibtex = False
+
+    if isinstance(raw_authors, list):
+        return [last_name(author) for author in raw_authors if last_name(author)]
+    if isinstance(raw_authors, str):
+        authors = split_author_names(raw_authors, split_as_bibtex=split_as_bibtex)
+        return [last_name(author) for author in authors if last_name(author)]
+    return []
+
+
+def extract_info_author_prefix(info: str) -> str:
+    if not info:
+        return ""
+    match = re.search(r"\b(?:19|20)\d{2}\b", info)
+    if match:
+        return info[:match.start()].strip(" .")
+    return info.split(".", 1)[0].strip()
+
+
+def split_author_names(raw_authors: str, split_as_bibtex: bool = False) -> list[str]:
+    raw_authors = raw_authors.replace("\xa0", " ")
+    raw_authors = re.sub(r"\s+", " ", raw_authors).strip()
+    if not raw_authors:
+        return []
+    if split_as_bibtex and " and " in raw_authors:
+        return [author.strip(" ,") for author in re.split(r"\s+and\s+", raw_authors) if author.strip(" ,")]
+    if "," in raw_authors:
+        return [author.strip(" ,") for author in re.split(r",\s*(?:and\s+)?", raw_authors) if author.strip(" ,")]
+    if " and " in raw_authors:
+        return [author.strip(" ,") for author in re.split(r"\s+and\s+", raw_authors) if author.strip(" ,")]
+    return [raw_authors]
+
+
+def last_name(author: str) -> str:
+    author = LatexNodes2Text(math_mode="verbatim").latex_to_text(str(author))
+    author = re.sub(r"\{|\}", "", author)
+    author = re.sub(r"\s+", " ", author).strip()
+    if not author or author.lower() == "others":
+        return ""
+    if "," in author:
+        name = author.split(",", 1)[0].strip()
+    else:
+        parts = author.split()
+        name = parts[-1] if parts else ""
+    return re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ'\\-]", "", name)
 
 
 def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
@@ -162,6 +233,7 @@ def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
     if not all_bib:
         all_bib = parse_bibitem_regex(content)
 
+    add_ref_strings(all_bib)
     return all_bib
 
 
@@ -206,6 +278,7 @@ def _parse_compiled_entry(content: str) -> Dict[str, Any]:
                     i += 3
         i += 1
         
+    add_ref_strings(citations)
     return citations
 
 

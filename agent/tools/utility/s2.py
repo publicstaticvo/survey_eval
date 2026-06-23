@@ -2,17 +2,19 @@ import asyncio
 import hashlib
 import random
 import re
+from datetime import datetime
 from typing import Any
 
 import aiohttp
 import Levenshtein
 
-from .request_utils import HEADERS, SessionManager
+from .request_utils import HEADERS, SessionManager, get_proxy_url, RateLimit
 from .tool_config import ToolConfig
 from .utils import normalize_text, valid_check
 
 
 SEMANTIC_SCHOLAR_GRAPH_API = "https://api.semanticscholar.org/graph/v1"
+S2_REQUEST_TIMEOUT_SECONDS = 5
 S2_DEFAULT_FIELDS = (
     "paperId,title,abstract,year,publicationDate,citationCount,referenceCount,"
     "authors,externalIds,openAccessPdf,url,venue,fieldsOfStudy,s2FieldsOfStudy,publicationTypes"
@@ -23,7 +25,7 @@ class SemanticScholar:
     def __init__(self, config: ToolConfig):
         self.config = config
         self.api_key = (config.semantic_scholar_api_key or "").strip()
-        self.request_semaphore = asyncio.Semaphore(8 if self.api_key else 2)
+        self.proxy_url = get_proxy_url(config)
 
     def _headers(self) -> dict[str, str]:
         headers = dict(HEADERS)
@@ -43,23 +45,32 @@ class SemanticScholar:
         params = {key: value for key, value in (params or {}).items() if value not in (None, "", [], {})}
 
         retry_count = 0
+        timeout_retry_count = 0
         while True:
-            async with self.request_semaphore:
-                async with session.request(
-                    method.upper(),
-                    url,
-                    headers=self._headers(),
-                    params=params,
-                    json=json_body,
-                ) as resp:
-                    if resp.status == 429:
-                        retry_count += 1
-                        if retry_count == 1 or retry_count % 5 == 0:
-                            print(f"SemanticScholar 429 retrying {endpoint}, attempts={retry_count}")
-                        await asyncio.sleep(random.uniform(1.0, 2.0))
-                        continue
-                    resp.raise_for_status()
-                    return await resp.json()
+            try:
+               async with RateLimit.S2_SEMAPHORE:
+                    async with session.request(
+                        method.upper(),
+                        url,
+                        headers=self._headers(),
+                        params=params,
+                        json=json_body,
+                        proxy=self.proxy_url,
+                        timeout=aiohttp.ClientTimeout(total=S2_REQUEST_TIMEOUT_SECONDS),
+                    ) as resp:
+                        if resp.status == 429:
+                            retry_count += 1
+                            if retry_count == 1 or retry_count % 5 == 0:
+                                print(f"SemanticScholar 429 retrying {endpoint}, attempts={retry_count}")
+                            await asyncio.sleep(random.uniform(1.0, 2.0))
+                            continue
+                        resp.raise_for_status()
+                        return await resp.json()
+            except asyncio.TimeoutError:
+                timeout_retry_count += 1
+                if timeout_retry_count == 1 or timeout_retry_count % 5 == 0:
+                    print(f"SemanticScholar timeout retrying {endpoint}, attempts={timeout_retry_count}")
+                await asyncio.sleep(random.uniform(1.0, 2.0))
 
     def _normalize_paper(self, paper: dict | None) -> dict:
         paper = dict(paper or {})
@@ -161,8 +172,7 @@ class SemanticScholar:
 
     def deduplicate_papers(self, papers: list[dict], original_title: str = "") -> list[dict]:
         papers = [dict(paper) for paper in papers if paper and paper.get("title")]
-        if not papers:
-            return []
+        if not papers:  return []
 
         parent = list(range(len(papers)))
 
@@ -287,6 +297,40 @@ class SemanticScholar:
         mapped.update(items)
         return mapped
 
+    def _parse_publication_date_filter(self, value: str | None):
+        if not value:
+            return None
+        return datetime.strptime(value, "%Y-%m-%d").date()
+
+    def _paper_publication_date(self, paper: dict):
+        publication_date = paper.get("publication_date") or paper.get("publicationDate") or ""
+        if isinstance(publication_date, str) and len(publication_date) >= 10:
+            try:
+                return datetime.strptime(publication_date[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
+        year = paper.get("year")
+        if isinstance(year, int):
+            return datetime.strptime(f"{year}-01-01", "%Y-%m-%d").date()
+        return None
+
+    def _apply_publication_date_filter(self, results: list[dict], filter_kwargs: dict[str, Any]) -> list[dict]:
+        from_date = self._parse_publication_date_filter(filter_kwargs.pop("from_publication_date", None))
+        to_date = self._parse_publication_date_filter(filter_kwargs.pop("to_publication_date", None))
+        if not from_date and not to_date:
+            return results
+        filtered = []
+        for paper in results:
+            publication_date = self._paper_publication_date(paper)
+            if publication_date is None:
+                continue
+            if from_date and publication_date < from_date:
+                continue
+            if to_date and publication_date > to_date:
+                continue
+            filtered.append(paper)
+        return filtered
+
     def _normalize_fields(self, fields: str | None) -> str | None:
         if fields is None:
             return None
@@ -395,6 +439,7 @@ class SemanticScholar:
         offset: int = 0,
         **request_kwargs,
     ) -> dict:
+        search = search.replace("AND", "+").replace("OR", "|")
         if filter:
             return await self.filter(search, filter, offset=offset, limit=per_page, fields=select, **request_kwargs)
         return await self.search(search, offset=offset, limit=per_page, fields=select, **request_kwargs)
@@ -434,8 +479,8 @@ class SemanticScholar:
         per_page = min(max(1, limit), 1000)
         current_offset = offset
         results, total, next_token = [], None, None
-        while len(results) < limit:
-            params = {"offset": current_offset, "limit": per_page}
+        while current_offset < limit:
+            params = {"offset": current_offset, "limit": min(per_page, limit - current_offset)}
             fields = self._normalize_fields(select)
             if fields: params["fields"] = fields
             payload = await self._request_json("GET", f"/paper/{paper_id}/citations", params)
@@ -449,9 +494,9 @@ class SemanticScholar:
             current_offset += per_page
             if raw_batch_count == 0 or raw_batch_count < per_page or current_offset >= total:
                 break
-        results = self.deduplicate_papers(results)
-        # TODO: Apply filter
-        return {"count": total or len(results), "results": results[:limit], "next": next_token}
+        # results = self.deduplicate_papers(results)
+        results = self._apply_publication_date_filter(results, filter_kwargs)
+        return {"count": len(results), "results": results[:limit], "next": next_token}
 
     async def get_references(
         self,
@@ -459,29 +504,27 @@ class SemanticScholar:
         offset: int = 0,
         limit: int = 9999,
         select: str | None = S2_DEFAULT_FIELDS,
-        **filter_kwargs,
+        filter: dict = None,
     ) -> dict:
         per_page = min(max(1, limit), 1000)
         current_offset = offset
         results, total, next_token = [], None, None
-        while len(results) < limit:
+        while current_offset < limit:
             params = {"offset": current_offset, "limit": per_page}
             fields = self._normalize_fields(select)
             if fields: params["fields"] = fields
             payload = await self._request_json("GET", f"/paper/{paper_id}/references", params)
             wrapped = self._wrap_results(payload, paper_key="citedPaper")
-            if total is None:
-                total = int(wrapped.get("count", 0) or 0)
+            if total is None: total = int(wrapped.get("count", 0) or 0)
             batch = wrapped.get("results", []) or []
             raw_batch_count = int(wrapped.get("_raw_result_count", len(batch)) or 0)
             results.extend(batch)
             next_token = wrapped.get("next")
             current_offset += per_page
-            if raw_batch_count == 0 or raw_batch_count < per_page or current_offset >= total:
-                break
+            if raw_batch_count == 0 or raw_batch_count < per_page or current_offset >= total: break
         results = self.deduplicate_papers(results)
-        # TODO: Apply filter
-        return {"count": total or len(results), "results": results[:limit], "next": next_token}
+        results = self._apply_publication_date_filter(results, filter)
+        return {"count": len(results), "results": results[:limit], "next": next_token}
 
     async def get_works_batch(
         self,
@@ -511,6 +554,9 @@ def get_semantic_scholar_client(config: ToolConfig | None = None) -> SemanticSch
     global _S2_CLIENT
     if _S2_CLIENT is None:
         _S2_CLIENT = SemanticScholar(config or ToolConfig())
-    elif config is not None and _S2_CLIENT.config.semantic_scholar_api_key != config.semantic_scholar_api_key:
+    elif config is not None and (
+        _S2_CLIENT.config.semantic_scholar_api_key != config.semantic_scholar_api_key
+        or _S2_CLIENT.proxy_url != get_proxy_url(config)
+    ):
         _S2_CLIENT = SemanticScholar(config)
     return _S2_CLIENT

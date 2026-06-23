@@ -10,4 +10,7 @@ PRESERVED_ENVIRONMENTS = {
 }      
 GRAPH_ENVIRONMENTS = {'tikzpicture', 'figure', 'table', 'tabular', 'longtable'}
 SPACING_ENVIRONMENTS = {'doublespace', 'singlespace', 'frontmatter'}  
-DELETE_MACROS = {'label', 'footnote', 'url', 'href', 'path', 'bibliography'}
+DELETE_MACROS = {
+    'label', 'footnote', 'url', 'href', 'path',
+    'bibliography', 'bibstyle', 'bibliographystyle', 'nocite',
+}

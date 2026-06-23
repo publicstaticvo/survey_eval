@@ -3,6 +3,8 @@ import re
 import Levenshtein
 import numpy as np
 import unidecode
+from typing import Dict, List, Any
+
 
 def normalize_text(text: str) -> str:
     text = unidecode.unidecode(text or "")
@@ -10,7 +12,7 @@ def normalize_text(text: str) -> str:
     return text.lower()
 
 
-def extract_json(text: str) -> dict:
+def extract_json(text: str) -> Dict:
     """从文本中提取 JSON 对象"""
     if not text:
         return {}
@@ -49,10 +51,12 @@ def valid_check(query: str, target: str, ratio: float = 0.1) -> bool:
     return distance <= max(1, int(ratio * len(query)))
 
 
-def split_content_to_paragraph(content: dict | list):
-    if isinstance(content, list):
-        return list(content)
-    paragraphs = list(content.get("paragraphs", []))
+def split_content_to_paragraph(content: Dict | List):
+    if isinstance(content, list): return list(content)
+    paragraphs = [
+        paragraph.get("sentences", []) if isinstance(paragraph, dict) else paragraph
+        for paragraph in content.get("paragraphs", [])
+    ]
     for section in content.get("sections", []):
         paragraphs.extend(split_content_to_paragraph(section))
     return paragraphs
@@ -73,3 +77,36 @@ def cosine_similarity_matrix(left, right):
 def cosine_similarity_pair(left, right) -> float:
     matrix = cosine_similarity_matrix(np.asarray([left]), np.asarray([right]))
     return float(matrix[0, 0])
+
+
+def get_top_level_section_titles(content: dict) -> List[str]:
+    return [section.get("title", "") for section in content.get("sections", []) if section.get("title")]
+
+
+def paragraph_to_text(content: list[dict], include_environments: bool):
+    parts = []
+    for sentence in content:
+        if not isinstance(sentence, dict) or not sentence.get("text"):
+            continue
+        text = str(sentence.get("text") or "").strip()
+        environment_type = sentence.get("environment_type", "text")
+        if environment_type == "paragraph_name":
+            parts.append(r"\paragraph{" + text + "}")
+        elif environment_type == "text":
+            parts.append(text)
+        elif include_environments:
+            parts.append(f"\\begin{{{environment_type}}} {text} \\end{{{environment_type}}}")
+    return " ".join(parts).strip()
+
+
+def paragraphs_to_text(paragraphs, ie = False) -> str:
+    return "\n\n".join(filter(None, (paragraph_to_text(p, ie) for p in paragraphs)))
+
+
+def section_to_text(section: dict, ie: bool = False) -> str:
+    blocks = [paragraph_to_text(paragraph, ie) for paragraph in section.get("paragraphs", [])]
+    for child in section.get("sections", []):
+        child_text = section_to_text(child)
+        if child_text:
+            blocks.append(child_text)
+    return "\n\n".join(filter(None, blocks))

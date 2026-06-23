@@ -1,12 +1,26 @@
 import json
 import time
 import asyncio, aiohttp
-from typing import Optional
+from typing import Any, Optional
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
     'Accept-Encoding': 'gzip, deflate',
 }
+
+
+def normalize_proxy_url(proxy_url: str | None) -> str | None:
+    proxy_url = (proxy_url or "").strip()
+    return proxy_url or None
+
+
+def get_proxy_url(config: Any | None) -> str | None:
+    if config is None:
+        return None
+    return normalize_proxy_url(
+        getattr(config, "proxy_url", None)
+        or getattr(config, "arxiv_proxy_url", None)
+    )
 
 
 class AsyncRequestRateLimiter:
@@ -45,13 +59,14 @@ class OpenAlexBudgetExceeded(RuntimeError):
 
 # =============== Global Semaphore ===============
 class RateLimit:
-    AGENT_SEMAPHORE = asyncio.Semaphore(100)                # LLM
+    AGENT_SEMAPHORE = asyncio.Semaphore(20)                # LLM
     DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(20)
     CITATION_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker镜像本地解析
     WEBSEARCH_SEMAPHORE = asyncio.Semaphore(50)
+    S2_SEMAPHORE = asyncio.Semaphore(2)
 
 
 class SessionManager:
@@ -64,7 +79,7 @@ class SessionManager:
             connector = aiohttp.TCPConnector(limit=200, limit_per_host=100, ttl_dns_cache=300)
             cls._global_session = aiohttp.ClientSession(
                 connector=connector,
-                timeout=aiohttp.ClientTimeout(total=600)
+                timeout=aiohttp.ClientTimeout(total=1200)
             )
     
     @classmethod

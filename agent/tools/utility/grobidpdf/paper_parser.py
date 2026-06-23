@@ -1,8 +1,13 @@
 import re
 import xml.etree.ElementTree as ET
 from typing import List, Optional
+# import sys
+# sys.path.insert(0, r"P:\AI4S\survey_eval\agent\tools\utility\grobidpdf")
 
-from .paper_elements import Paper, Section, Paragraph, Sentence
+try:
+    from .paper_elements import Paper, Section, Paragraph, Sentence
+except ImportError:
+    from paper_elements import Paper, Section, Paragraph, Sentence
 
 
 class PaperParser:
@@ -17,7 +22,13 @@ class PaperParser:
     ]
             
     def parse(self, xml_content: str, mode: str = "casual") -> Paper:
-        root = ET.fromstring(xml_content)        
+        root = ET.fromstring(xml_content)
+        paper = self._parse_root(root, mode)
+        if mode == "strict" and self._strict_parse_failed(paper):
+            raise ValueError("Strict GROBID parsing produced no usable section structure")
+        return paper
+
+    def _parse_root(self, root: ET.Element, mode: str) -> Paper:
         # Create the root Paper object
         paper = Paper(name="root", father=None)        
         # Extract metadata
@@ -29,9 +40,82 @@ class PaperParser:
         paper.abstract = self._extract_abstract(root, paper)
         # Extract body sections
         self._extract_body_sections(root, paper, mode)
-        paper.references = {x['key']: x['title'] for x in self._citation_map.values() if 'key' in x}  
+        paper.references = {x['key']: x for x in self._citation_map.values() if 'key' in x}  
         return paper
+
+    def _section_has_content(self, section: Section) -> bool:
+        return bool(section.paragraphs) or any(self._section_has_content(child) for child in section.children)
+
+    def _strict_parse_failed(self, paper: Paper) -> bool:
+        return bool(paper.paragraphs) or not any(self._section_has_content(section) for section in paper.children)
+
+    def _format_citation_key(self, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            return ""
+        return value if value.startswith("#") else f"#{value}"
     
+
+    def _extract_biblstruct_info(self, biblstruct: ET.Element) -> dict:
+        def text_of(xpath: str) -> str:
+            elem = biblstruct.find(xpath, self.NS)
+            return "".join(elem.itertext()).strip() if elem is not None else ""
+
+        authors = []
+        for author in biblstruct.findall(".//tei:author", self.NS):
+            persname = author.find(".//tei:persName", self.NS)
+            if persname is None:
+                continue
+            forenames = [
+                "".join(node.itertext()).strip()
+                for node in persname.findall(".//tei:forename", self.NS)
+                if "".join(node.itertext()).strip()
+            ]
+            surname = persname.find(".//tei:surname", self.NS)
+            surname_text = "".join(surname.itertext()).strip() if surname is not None else ""
+            full_name = " ".join(part for part in [*forenames, surname_text] if part).strip()
+            if full_name:
+                authors.append({"forenames": forenames, "surname": surname_text, "name": full_name})
+
+        ids = {}
+        for idno in biblstruct.findall(".//tei:idno", self.NS):
+            id_type = (idno.get("type") or "").strip()
+            id_value = "".join(idno.itertext()).strip()
+            if id_type and id_value:
+                ids[id_type] = id_value
+
+        date = biblstruct.find(".//tei:date", self.NS)
+        year = (date.get("when") or "".join(date.itertext()).strip()) if date is not None else ""
+        imprint = biblstruct.find(".//tei:imprint", self.NS)
+        publisher = ""
+        pub_place = ""
+        if imprint is not None:
+            publisher_elem = imprint.find(".//tei:publisher", self.NS)
+            pub_place_elem = imprint.find(".//tei:pubPlace", self.NS)
+            publisher = "".join(publisher_elem.itertext()).strip() if publisher_elem is not None else ""
+            pub_place = "".join(pub_place_elem.itertext()).strip() if pub_place_elem is not None else ""
+
+        raw_text = " ".join("".join(part.split()) for part in biblstruct.itertext() if "".join(part.split()))
+
+        return {
+            "xml_id": biblstruct.get("{http://www.w3.org/XML/1998/namespace}id", ""),
+            "title": text_of(".//tei:analytic/tei:title") or text_of(".//tei:monogr/tei:title"),
+            "authors": authors,
+            "year": year,
+            "journal": text_of(".//tei:monogr/tei:title[@level=\"j\"]") or text_of(".//tei:monogr/tei:title"),
+            "booktitle": text_of(".//tei:monogr/tei:title[@level=\"m\"]"),
+            "volume": text_of(".//tei:biblScope[@unit=\"volume\"]"),
+            "issue": text_of(".//tei:biblScope[@unit=\"issue\"]"),
+            "pages": text_of(".//tei:biblScope[@unit=\"page\"]"),
+            "publisher": publisher,
+            "pub_place": pub_place,
+            "note": text_of(".//tei:note"),
+            "doi": ids.get("doi", ""),
+            "url": ids.get("url", ""),
+            "ids": ids,
+            "raw_text": raw_text,
+        }
+
     def _extract_title(self, root: ET.Element) -> str:
         """Extract paper title."""
         title_elem = root.find('.//tei:titleStmt/tei:title', self.NS)
@@ -86,32 +170,45 @@ class PaperParser:
         body = root.find('.//tei:text/tei:body', self.NS)
         if body is None: return
         self._current_section_hierarchy = [paper]
+        self._last_section_index = None
         for div in body.findall('./tei:div', self.NS):
             self._parse_div_element(div, mode)
 
     def _parse_div_element(self, div_element: ET.Element, mode: str):
-        """
-        mode = "strict": 严格鉴别标题从属关系，用于解析待测综述和anchor survey
-        mode = "casual": 仅解析出标题，不分级，用于解析引文
-        """
+        """Parse a single TEI div."""
+        current_div_section = None
+        pending_head_texts: list[str] = []
         for child in div_element:
             if child.tag == f"{{{self.NS['tei']}}}head":
                 n_attr = child.get('n', "")
                 text = ' '.join(child.itertext()).strip()
                 if mode == "strict":
+                    if not re.fullmatch(r"\d+(?:\.\d+)*", n_attr or ""):
+                        pending_head_texts.append(text)
+                        continue
+                    section_index = tuple(int(part) for part in n_attr.split("."))
+                    if getattr(self, "_last_section_index", None) is not None and section_index <= self._last_section_index:
+                        raise ValueError(f"Section index is not strictly increasing: {n_attr}")
+                    self._last_section_index = section_index
                     while n_attr.count(".") + 1 < len(self._current_section_hierarchy):
-                        # 回退section层级以找到
                         self._current_section_hierarchy.pop()
                 section = Section(name=text, father=self._current_section_hierarchy[-1])
                 self._current_section_hierarchy[-1].add_child(section)
-                if mode == "strict": self._current_section_hierarchy.append(section)
+                if mode == "strict":
+                    self._current_section_hierarchy.append(section)
+                else:
+                    current_div_section = section
 
             elif child.tag == f"{{{self.NS['tei']}}}p":
-                paragraph = Paragraph(father=self._current_section_hierarchy[-1])
-                self._parse_paragraph_element(child, paragraph)
-                self._current_section_hierarchy[-1].add_paragraph(paragraph)
-    
-    def _parse_paragraph_element(self, p_element: ET.Element, paragraph: Paragraph):
+                paragraph_owner = current_div_section or self._current_section_hierarchy[-1]
+                paragraph = Paragraph(father=paragraph_owner)
+                prefix_text = ' '.join(pending_head_texts).strip()
+                pending_head_texts.clear()
+                self._parse_paragraph_element(child, paragraph, prefix_text=prefix_text)
+                if paragraph.sentences:
+                    paragraph_owner.add_paragraph(paragraph)
+
+    def _parse_paragraph_element(self, p_element: ET.Element, paragraph: Paragraph, prefix_text: str = ""):
         """
         Parse a paragraph element into Sentence objects.
         
@@ -123,6 +220,11 @@ class PaperParser:
         # Get all text and references in order
         text_parts = []
         current_text = []
+        if prefix_text:
+            prefix_text = prefix_text.strip()
+            if prefix_text and prefix_text[-1] not in ".!?":
+                prefix_text += "."
+            text_parts.append(('text', prefix_text + " "))
         
         def process_elem(element: ET.Element, depth=0):
             # Add text before element
@@ -131,17 +233,18 @@ class PaperParser:
             
             # Handle citation references
             if element.tag == f"{{{self.NS['tei']}}}ref" and element.get('type') == 'bibr':
-                citation_id = element.get('target', '').replace('#', '')  # b1, b2, ..., b500
-                key = re.sub(r'[^0-9]', '', ''.join(element.itertext()).strip())  # "Yu et al." or "[1]"
+                citation_id = self._format_citation_key(element.get('target', ''))
                 
                 # Add citation marker
                 if current_text:
                     text_parts.append(('text', ''.join(current_text)))
                     current_text.clear()
 
-                if citation_id in self._citation_map:
-                    self._citation_map[citation_id]['key'] = key
-                    text_parts.append(('citation', self._citation_map[citation_id]))
+                if citation_id:
+                    ref_id = citation_id.lstrip('#')
+                    if ref_id in self._citation_map:
+                        self._citation_map[ref_id]['key'] = citation_id
+                        text_parts.append(('citation', self._citation_map[ref_id]))
                 
             else:
                 # Recursively process child elements
@@ -161,7 +264,7 @@ class PaperParser:
         
         # Split into sentences and assign citations
         self._create_sentences(text_parts, paragraph)
-    
+
     def _create_sentences(self, text_parts: List[tuple[str, str]], paragraph: Paragraph):
         """
         Create Sentence objects from text parts and citations.
@@ -170,37 +273,127 @@ class PaperParser:
             text_parts: List of tuples (type, content) where type is 'text' or 'citation'
             paragraph: Paragraph object to add sentences to
         """
-        current_sentence = ""
-        current_citations = []
-        
+        full_text = ""
+        citation_markers = []
         for part_type, content in text_parts:
             if part_type == 'text':
-                # Split text into sentences (simple approach)
-                sentences = re.split(r'(?<=[.!?])\s+', content)
-                
-                for i, sentence in enumerate(sentences):                    
-                    if not (sentence := sentence.strip()): continue
-                    
-                    if i == 0:
-                        # Continuation of current sentence
-                        current_sentence += sentence
-                    else:
-                        # Create sentence for the previous one
-                        if current_sentence:
-                            sentence_obj = Sentence(current_sentence.strip(), paragraph, current_citations.copy())
-                            paragraph.add_sentence(sentence_obj)
-                        
-                        # Start new sentence
-                        current_sentence = sentence
-                        current_citations = []
-                
+                full_text += content
             elif part_type == 'citation':
-                current_citations.append(content)
-        
-        # Add the last sentence
-        if current_sentence := current_sentence.strip():
-            sentence_obj = Sentence(current_sentence, paragraph, current_citations)
-            paragraph.add_sentence(sentence_obj)
+                marker = f"CITMARK{len(citation_markers)}"
+                citation_markers.append({"marker": marker, "citation": content})
+                full_text += f" {marker} "
+
+        for sentence_text in self._split_into_sentences(full_text):
+            sentence_citations = []
+            for marker_info in citation_markers:
+                if marker_info["marker"] in sentence_text:
+                    sentence_citations.append(marker_info["citation"])
+                    sentence_text = sentence_text.replace(marker_info["marker"], " ")
+
+            unique_citations = []
+            seen_citation_keys = set()
+            for citation in sentence_citations:
+                key = citation.get("key") if isinstance(citation, dict) else str(citation)
+                if key and key not in seen_citation_keys:
+                    seen_citation_keys.add(key)
+                    unique_citations.append(citation)
+
+            sentence_text = re.sub(r"\s+", " ", sentence_text).strip()
+            sentence_text = re.sub(r"\s+([,.;:!?])", r"\1", sentence_text)
+            if sentence_text or unique_citations:
+                paragraph.add_sentence(Sentence(sentence_text, paragraph, unique_citations))
+
+    def _split_into_sentences(self, text: str) -> list[str]:
+        """Split text into sentences using the same scan strategy as the LaTeX parser."""
+        text = text.strip()
+        if not text:
+            return []
+
+        candidates = self._scan_sentence_candidates(text)
+        result = []
+        for sentence in candidates:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if result and self._starts_with_lowercase_ascii(sentence):
+                result[-1] = f"{result[-1].rstrip()} {sentence}"
+            else:
+                result.append(sentence)
+        return result
+
+    def _scan_sentence_candidates(self, text: str) -> list[str]:
+        abbreviations = {
+            "Dr", "Mr", "Mrs", "Ms", "Prof", "Sr", "Jr", "vs",
+            "Fig", "Figs", "Sec", "Secs", "Eq", "Eqs", "Ref", "Refs",
+            "Tab", "Tabs", "No", "Vol", "Inc", "Ltd", "Co",
+        }
+        open_to_close = {"(": ")", "[": "]", "{": "}"}
+        close_chars = set(open_to_close.values())
+        stack = []
+        sentences = []
+        start = 0
+        i = 0
+        while i < len(text):
+            char = text[i]
+            if char in open_to_close:
+                stack.append(open_to_close[char])
+            elif char in close_chars and stack and char == stack[-1]:
+                stack.pop()
+
+            if char in ".!?" and not stack and self._is_sentence_boundary(text, i, abbreviations):
+                end = i + 1
+                while end < len(text) and text[end] in ".!?":
+                    end += 1
+                while end < len(text) and text[end] in "\"')]}":
+                    end += 1
+                sentences.append(text[start:end])
+                start = end
+                while start < len(text) and text[start].isspace():
+                    start += 1
+                i = start
+                continue
+            i += 1
+
+        if start < len(text):
+            sentences.append(text[start:])
+        return sentences
+
+    def _is_sentence_boundary(self, text: str, idx: int, abbreviations: set[str]) -> bool:
+        char = text[idx]
+        if char in "!?":
+            return True
+        if text[idx:idx + 3] == "...":
+            return True
+        if idx > 0 and idx + 1 < len(text) and text[idx - 1].isalpha() and text[idx + 1].isalpha():
+            return False
+        number_marker = re.search(r"(\d+)\.$", text[:idx + 1])
+        if number_marker and idx + 1 < len(text) and text[idx + 1].isspace():
+            prefix = text[:number_marker.start(1)].rstrip()
+            if not prefix or prefix[-1] in ".!?:;([{":
+                return False
+
+        word_match = re.search(r"([A-Za-z]+)$", text[:idx])
+        word = word_match.group(1) if word_match else ""
+        if word in {"e", "i", "g"} and self._is_part_of_latin_abbreviation(text, idx):
+            return False
+        if word == "al" and re.search(r"\bet\s+al$", text[:idx]):
+            return False
+        if word == "etc":
+            return idx + 1 >= len(text) or text[idx + 1].isspace()
+        if word in abbreviations:
+            return False
+
+        return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}。！？"
+
+    def _is_part_of_latin_abbreviation(self, text: str, idx: int) -> bool:
+        window = text[max(0, idx - 3):idx + 3].lower()
+        return "e.g." in window or "i.e." in window
+
+    def _starts_with_lowercase_ascii(self, text: str) -> bool:
+        stripped = text.lstrip()
+        if re.match(r"(?:[ivxlcdm]+|[a-z])\)", stripped, flags=re.IGNORECASE):
+            return False
+        return bool(stripped) and "a" <= stripped[0] <= "z"
     
     def _extract_references(self, root: ET.Element) -> dict:
         """Extract bibliography/reference list as a dictionary."""        
@@ -209,13 +402,8 @@ class PaperParser:
         if back is None: return
         
         for biblstruct in back.findall('.//tei:listBibl/tei:biblStruct', self.NS):   
-            if ref_id := biblstruct.get('{http://www.w3.org/XML/1998/namespace}id', ''):
-                # Extract title
-                title_element = biblstruct.find('.//tei:analytic/tei:title', self.NS)
-                if title_element is None:
-                    title_element = biblstruct.find('.//tei:monogr/tei:title', self.NS)
-                title = ''.join(title_element.itertext()).strip() if title_element is not None else ""
-                self._citation_map[ref_id] = {"title": title}
+            if ref_id := biblstruct.get('{http://www.w3.org/XML/1998/namespace}id', ""):
+                self._citation_map[ref_id] = self._extract_biblstruct_info(biblstruct)
 
     def _clean_title(self, value: str) -> str:
         return re.sub(r"\s+", " ", value or "").strip()
@@ -285,3 +473,15 @@ class PaperParser:
             records = heads
 
         return self._unique_title_records(records)
+
+
+if __name__ == "__main__":
+    import json
+    with open("P:\\AI4S\\survey_eval\\train_letor\\paper.xml", encoding="utf-8") as f:
+        xml_content = f.read()
+    parser = PaperParser()
+    paper = parser.parse(xml_content, mode="strict").get_skeleton()
+    with open("P:\\AI4S\\survey_eval\\train_letor\\paper.json", 'w', encoding="utf-8") as f:
+        json.dump(paper, f, indent=2, ensure_ascii=False)
+    print(f"Sections {len(paper['sections'])}")
+

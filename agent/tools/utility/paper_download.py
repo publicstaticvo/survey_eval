@@ -27,17 +27,15 @@ if __package__:
     from .grobidpdf import PaperParser
     from .latex_parser import LatexPaperParser
     from .openalex import OPENALEX_SELECT, get_openalex_client
-    from .request_utils import RateLimit, SessionManager
+    from .request_utils import RateLimit, SessionManager, get_proxy_url
     from .tool_config import ToolConfig
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
     from survey_eval.agent.tools.utility.grobidpdf import PaperParser
     from survey_eval.agent.tools.utility.latex_parser import LatexPaperParser
     from survey_eval.agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
-    from survey_eval.agent.tools.utility.request_utils import RateLimit, SessionManager
+    from survey_eval.agent.tools.utility.request_utils import RateLimit, SessionManager, get_proxy_url
     from survey_eval.agent.tools.utility.tool_config import ToolConfig
-
-parser = PaperParser()
 
 
 def grobid_should_retry(exception: Exception) -> bool:
@@ -194,19 +192,23 @@ def extract_arxiv_ids(paper_meta: dict) -> list[str]:
 
 class PaperDownload:
     def __init__(self, grobid_url):
-        self.paper_parser = PaperParser()
         if hasattr(grobid_url, "grobid_url"):
             self.grobid = grobid_url.grobid_url
             self.openalex = get_openalex_client(grobid_url)
-            self.arxiv_proxy_url = grobid_url.arxiv_proxy_url
+            self.proxy_url = get_proxy_url(grobid_url)
+            self.arxiv_proxy_url = self.proxy_url
+            self.grobid_parse_mode = getattr(grobid_url, "grobid_parse_mode", "casual")
         else:
             self.grobid = grobid_url
             self.openalex = None
-            self.arxiv_proxy_url = "http://localhost:7890"
+            self.proxy_url = "http://localhost:7890"
+            self.arxiv_proxy_url = self.proxy_url
+            self.grobid_parse_mode = "casual"
 
     def _post_hook(self, xml_content: str) -> dict:
+        parser = PaperParser()
         try:
-            paper = self.paper_parser.parse(xml_content)
+            paper = parser.parse(xml_content, mode=self.grobid_parse_mode)
             if not paper:
                 print("No paper.")
                 return {}
@@ -217,9 +219,11 @@ class PaperDownload:
         abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
         return {"full_content": paper.get_skeleton(), "abstract": abstract}
 
-    def _latex_post_hook(self, paper, latex_content: str = "") -> dict:
+    def _latex_post_hook(self, paper: str = "") -> dict:
         if not paper:
             return {}
+        parser = LatexPaperParser()
+        paper = parser.parse(paper)
         abstract = None
         if paper.abstract:
             abstract = "\n\n".join(
@@ -248,29 +252,6 @@ class PaperDownload:
                 continue
         return path.read_text(errors="ignore")
 
-    def _find_main_tex(self, source_dir: Path) -> Path | None:
-        tex_files = [path for path in source_dir.rglob("*.tex") if path.is_file()]
-        if not tex_files: return          
-        scored = []
-        preferred_names = {"main.tex", "ms.tex", "paper.tex", "article.tex", "root.tex", "uq_survey.tex"}
-        for path in tex_files:
-            try:
-                content = self._read_text_file(path)
-            except Exception:
-                continue
-            has_document = "\\begin{document}" in content
-            score = 0
-            if has_document: score += 100
-            if path.name.lower() in preferred_names: score += 30
-            if "\\documentclass" in content: score += 20
-            if "\\section" in content: score += min(content.count("\\section") * 5, 40)
-            score += min(len(content) // 2000, 20)
-            scored.append((score, path))
-        if not scored:
-            return tex_files[0]
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return scored[0][1]
-
     async def _try_arxiv_source(self, arxiv_id: str) -> dict:
         src_url = f"https://arxiv.org/src/{arxiv_id}"
         try:
@@ -294,24 +275,21 @@ class PaperDownload:
                     tex_path = source_dir / "source.tex"
                     tex_path.write_bytes(buffer)
                 tex_count = len([path for path in source_dir.rglob("*.tex") if path.is_file()])
-                main_tex = self._find_main_tex(source_dir)
+                parser = LatexPaperParser()
+                main_tex = parser._find_main_tex(source_dir)
                 if not main_tex:
                     print(f"{src_url} No TeX file")
                     return {"result": None, "download_error": False, "parse_error": True}
-                print(f"Parsing TeX source main file {main_tex.name} from {tex_count} TeX files")
-                latex_content = self._read_text_file(main_tex)
-                parser = LatexPaperParser(latex_content, base_path=str(main_tex.parent))
-                paper = parser.parse()
-                result = self._latex_post_hook(paper, parser.latex_content)
-                if result:
-                    return {"result": result, "download_error": False, "parse_error": False}
+                print(f"Parsing TeX source main file {Path(main_tex).name} from {tex_count} TeX files")
+                result = self._latex_post_hook(main_tex)
+                if result: return {"result": result, "download_error": False, "parse_error": False}
                 return {"result": None, "download_error": False, "parse_error": True}
         except KeyboardInterrupt:
             raise
         except Exception as exc:
             print(f"arXiv source failed for {arxiv_id}: {exc}")
             trace_lines = traceback.format_exc().strip().splitlines()
-            print("\n".join(trace_lines[-8:]))
+            print("\n".join(trace_lines))
             return {"result": None, "download_error": False, "parse_error": True}
 
     async def _try_one_url(self, url: str) -> dict:
@@ -330,6 +308,7 @@ class PaperDownload:
                 print(f"{url} No xml content")
                 return {"result": None, "download_error": False, "parse_error": True}
             print(f"Parsed from {url}")
+            with open("paper.xml", "w+", encoding='utf-8') as f: f.write(xml_content)
             return {"result": self._post_hook(xml_content), "download_error": False, "parse_error": False}
 
         except KeyboardInterrupt:
@@ -740,5 +719,5 @@ async def test_pdf_url_download(
 
 
 if __name__ == "__main__":
-    work_ids = ["2407.01878", "2205.11916", '2306.04459']
-    asyncio.run(_debug_arxiv_source(work_ids[1]))
+    work_ids = ["1910.13011"]
+    asyncio.run(_debug_arxiv_source(work_ids[0]))

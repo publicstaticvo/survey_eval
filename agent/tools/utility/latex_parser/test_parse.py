@@ -1,9 +1,6 @@
 import os
-import glob
 import json
-import tqdm
-from tex_parser import LatexPaperParser, process_input_commands
-from utils import detect_encoding
+from tex_parser import LatexPaperParser
 
 
 def is_main_paper(paper: str) -> bool:
@@ -17,15 +14,8 @@ def test_skeleton():
         print("Sample test file not found:", main_tex)
         return
 
-    try:
-        with open(main_tex, encoding='utf-8') as f:
-            paper_text = f.read()
-    except UnicodeDecodeError:
-        paper_text, _ = detect_encoding(main_tex)
-
-    paper_text = process_input_commands(paper_text, sample_base)
-    parser = LatexPaperParser(paper_text, sample_base)
-    paper = parser.parse()
+    parser = LatexPaperParser()
+    paper = parser.parse(main_tex)
     if paper is None:
         print("Parser returned None for sample paper.")
         return

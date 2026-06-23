@@ -12,16 +12,32 @@ import contextlib
 import logging
 from typing import List, Any
 from pylatexenc.latex2text import LatexNodes2Text
-from pylatexenc.latexwalker import LatexWalker, LatexEnvironmentNode, LatexMacroNode, LatexCharsNode, LatexCommentNode
+from pylatexenc.latexwalker import (
+    LatexWalker,
+    LatexEnvironmentNode,
+    LatexMacroNode,
+    LatexCharsNode,
+    LatexCommentNode,
+    LatexSpecialsNode,
+)
 from .paper_elements import *
 from .constants import *
 from .bib_parser import parse_bbl_file, parse_bib_file, detect_encoding
 
 
 SECTION_MACROS = {'section', 'subsection', 'subsubsection'}
+CITATION_MACROS = {
+    'cite', 'citep', 'citet', 'citealt', 'citeyearpar',
+    'citealp', 'citeauthor', 'citeyear', 'citetext',
+    'parencite', 'textcite', 'autocite', 'footcite', 'citeyear*',
+}
+
+TEXTUAL_CITATION_MACROS = {
+    'citet', 'citealt', 'citeauthor', 'textcite',
+}
 
 
-def process_input_commands(latex_content, base_path):
+def process_input_commands(latex_content, base_path, current_path=None):
     r"""
     Process \input{filename} commands by replacing them with file contents
     
@@ -52,15 +68,18 @@ def process_input_commands(latex_content, base_path):
         else:
             filename = [filename]
         
-        # Construct full path
-        filepath = os.path.join(base_path, *filename)
+        current_path = getattr(replace_input, "current_path", None) or base_path
+        candidate_paths = [os.path.join(base_path, *filename)]
+        current_candidate = os.path.join(current_path, *filename)
+        if current_candidate not in candidate_paths:
+            candidate_paths.append(current_candidate)
+        filepath = next((path for path in candidate_paths if os.path.exists(path)), candidate_paths[0])
         
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 file_content = f.read()
             
-            # Recursively process \input commands in the included file
-            return process_input_commands(file_content, os.path.dirname(filepath))
+            return process_input_commands(file_content, base_path, os.path.dirname(filepath))
         
         except FileNotFoundError:
             print(f"Warning: Could not find file '{filepath}' for \\input command")
@@ -69,7 +88,7 @@ def process_input_commands(latex_content, base_path):
         except UnicodeDecodeError:
             try:
                 file_content, _ = detect_encoding(filepath)
-                return process_input_commands(file_content, os.path.dirname(filepath))
+                return process_input_commands(file_content, base_path, os.path.dirname(filepath))
             except Exception as e:
                 print(f"Warning: Error reading file '{filepath}': {e}")
                 return f"% Error reading file: {filename}"
@@ -79,6 +98,7 @@ def process_input_commands(latex_content, base_path):
             return f"% Error reading file: {filename}"
     
     # Replace all \input commands
+    replace_input.current_path = current_path or base_path
     processed_content = re.sub(pattern, replace_input, latex_content)
 
     # Remove \href commands that would cause bugs
@@ -89,7 +109,7 @@ def process_input_commands(latex_content, base_path):
 
 
 class LatexPaperParser:
-    """Parser to convert Latex documents into Paper objects"""
+    """Parser to convert Latex source directories, files, or strings into Paper objects."""
 
     TEX_SECTION_RE = re.compile(
         r"\\(?P<level>section|subsection|subsubsection)\s*\{(?P<name>(?:[^{}]|\\[{}])*)\}",
@@ -101,13 +121,7 @@ class LatexPaperParser:
     )
     TEX_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\s*\{\s*appendices\s*\}", re.IGNORECASE)
     
-    def __init__(self, latex_content: str, base_path='.'):
-        self.base_path = base_path
-        self.section_label_map = {}
-        processed_content = process_input_commands(latex_content, base_path)
-        self.section_label_map = self._build_section_label_map(processed_content)
-        self.latex_content = self._replace_section_refs(processed_content, self.section_label_map)
-        self.walker = LatexWalker(self.latex_content)
+    def __init__(self):
         self.converter = LatexNodes2Text(math_mode="verbatim")
         self.section_levels = {
             'section': 1,
@@ -116,12 +130,133 @@ class LatexPaperParser:
             'paragraph': 4,
             'subparagraph': 5
         }
-        # Store bibliography entries
+        self.base_path = "."
+        self.section_label_map = {}
+        self.figure_table_label_map = {}
+        self.latex_content = ""
+        self.walker = LatexWalker("")
         self.bib_files = []
         self.bibliography_entries = {}
+        self.unresolved_citation_keys = []
+
+    def _read_text_file(self, path: os.PathLike | str) -> str:
+        path = os.fspath(path)
+        for encoding in ("utf-8", "latin-1"):
+            try:
+                with open(path, "r", encoding=encoding) as f:
+                    return f.read()
+            except UnicodeDecodeError:
+                continue
+        content, _ = detect_encoding(path)
+        return content
+
+    def _find_main_tex(self, source_dir: os.PathLike | str) -> str | None:
+        source_dir = os.fspath(source_dir)
+        tex_files = [path for path in glob.glob(os.path.join(source_dir, "**", "*.tex"), recursive=True) if os.path.isfile(path)]
+        if not tex_files:
+            return None
+
+        scored = []
+        preferred_names = {"main.tex", "ms.tex", "paper.tex", "article.tex", "root.tex", "uq_survey.tex"}
+        for path in tex_files:
+            try:
+                content = self._read_text_file(path)
+            except Exception:
+                continue
+            score = 0
+            if "\\begin{document}" in content:
+                score += 100
+            if os.path.basename(path).lower() in preferred_names:
+                score += 30
+            if "\\documentclass" in content:
+                score += 20
+            if "\\section" in content:
+                score += min(content.count("\\section") * 5, 40)
+            score += min(len(content) // 2000, 20)
+            scored.append((score, path))
+        if not scored:
+            return tex_files[0]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return scored[0][1]
+
+    def _as_existing_path(self, source: str | os.PathLike) -> str | None:
+        if not isinstance(source, str):
+            path = os.fspath(source)
+        elif "\n" in source or "\\begin" in source:
+            return None
+        else:
+            path = source
+        try:
+            return path if os.path.exists(path) else None
+        except OSError:
+            return None
+
+    def _prepare_source(self, source: str | os.PathLike, base_path: str | os.PathLike | None = None) -> None:
+        source_path = self._as_existing_path(source)
+        if source_path and os.path.isdir(source_path):
+            main_tex = self._find_main_tex(source_path)
+            if not main_tex:
+                raise FileNotFoundError(f"No TeX file found in {source_path}")
+            latex_content = self._read_text_file(main_tex)
+            self.base_path = os.path.dirname(main_tex)
+        elif source_path and os.path.isfile(source_path):
+            latex_content = self._read_text_file(source_path)
+            self.base_path = os.path.dirname(source_path)
+        else:
+            latex_content = str(source or "")
+            self.base_path = os.fspath(base_path or ".")
+
+        processed_content = process_input_commands(latex_content, self.base_path)
+        self.section_label_map = self._build_section_label_map(processed_content)
+        self.figure_table_label_map = self._build_figure_table_label_map(processed_content)
+        self.latex_content = self._remove_reference_macros(
+            self._replace_labeled_refs(
+                processed_content,
+                {**self.section_label_map, **self.figure_table_label_map},
+            )
+        )
+        self.walker = LatexWalker(self.latex_content)
+        self.bib_files = []
+        self.bibliography_entries = {}
+        self.unresolved_citation_keys = []
+        self._collect_bibliography_files(processed_content)
 
     def _safe_nodes(self, nodes):
         return nodes or []
+
+    def _collect_bibliography_files(self, content: str) -> None:
+        for match in re.finditer(r"\\bibliography\s*\{([^{}]*)\}", content):
+            for bib_name in match.group(1).split(","):
+                bib_name = bib_name.strip()
+                if not bib_name:
+                    continue
+                if not bib_name.endswith(".bib"):
+                    bib_name = f"{bib_name}.bib"
+                bib_path = os.path.join(self.base_path, bib_name)
+                if os.path.exists(bib_path) and bib_path not in self.bib_files:
+                    self.bib_files.append(bib_path)
+
+    def _load_bibliography_entries(self) -> None:
+        try:
+            self.bibliography_entries = parse_bbl_file(self.latex_content)
+        except Exception:
+            self.bibliography_entries = {}
+        for f in glob.glob(os.path.join(self.base_path, "*.bbl")):
+            try:
+                bib = parse_bbl_file(f)
+                self.bibliography_entries.update(bib)
+            except Exception as exc:
+                print(f"Warning: Could not parse bibliography file '{f}': {exc}")
+        if not self.bib_files:
+            self.bib_files = glob.glob(os.path.join(self.base_path, "*.bib"))
+        for f in self.bib_files:
+            if "anthology" in f:
+                continue
+            try:
+                bib = parse_bib_file(f)
+                self.bibliography_entries.update(bib)
+            except Exception as exc:
+                print(f"Warning: Could not parse bibliography file '{f}': {exc}")
 
     def _build_section_label_map(self, content: str) -> dict[str, str]:
         content = self._strip_latex_comments(content)
@@ -164,7 +299,31 @@ class LatexPaperParser:
                 label_map[label.strip()] = heading["index"]
         return label_map
 
-    def _replace_section_refs(self, content: str, label_map: dict[str, str]) -> str:
+    def _build_figure_table_label_map(self, content: str) -> dict[str, str]:
+        content = self._strip_latex_comments(content)
+        label_map = {}
+        counters = {"figure": 0, "table": 0}
+        pattern = re.compile(
+            r"\\begin\s*\{\s*(?P<env>figure\*?|table\*?|longtable)\s*\}",
+            flags=re.DOTALL,
+        )
+        for match in pattern.finditer(content):
+            env = match.group("env").rstrip("*")
+            kind = "table" if env in {"table", "longtable"} else "figure"
+            counters[kind] += 1
+            end_match = re.search(
+                rf"\\end\s*\{{\s*{re.escape(match.group('env'))}\s*\}}",
+                content[match.end():],
+                flags=re.DOTALL,
+            )
+            end = match.end() + end_match.end() if end_match else len(content)
+            chunk = content[match.start():end]
+            ref_text = f"{kind.title()} {counters[kind]}"
+            for label in re.findall(r"\\label\s*\{([^{}]+)\}", chunk):
+                label_map[label.strip()] = ref_text
+        return label_map
+
+    def _replace_labeled_refs(self, content: str, label_map: dict[str, str]) -> str:
         if not label_map:
             return content
 
@@ -175,13 +334,19 @@ class LatexPaperParser:
             if not values:
                 return match.group(0)
             text = ", ".join(values)
-            return f"Section {text}" if macro.lower() in {"autoref", "cref"} else text
+            if all(re.match(r"^\d", value) for value in values):
+                return f"Section {text}"
+            return text
 
         return re.sub(
             r"\\(?P<macro>ref|autoref|cref|Cref)\s*\{(?P<labels>[^{}]+)\}",
             replace,
             content,
         )
+
+    def _replace_section_refs(self, content: str, label_map: dict[str, str]) -> str:
+        section_refs = {key: value for key, value in label_map.items()}
+        return self._replace_labeled_refs(content, section_refs)
 
     def _macro_name(self, node) -> str:
         return getattr(node, "macroname", "") or ""
@@ -210,6 +375,80 @@ class LatexPaperParser:
             return None
         return self.converter.latex_to_text(match.group("body")).strip()
 
+    def _node_latex(self, node) -> str:
+        pos = getattr(node, "pos", None)
+        length = getattr(node, "len", None)
+        if pos is None or length is None:
+            return ""
+        return self.latex_content[pos:pos + length]
+
+    def _macro_argument_latex(self, node) -> str:
+        raw = self._node_latex(node)
+        if raw:
+            match = re.search(r"\{(?P<body>[^{}]*)\}\s*$", raw, flags=re.DOTALL)
+            if match:
+                return match.group("body")
+        if node.nodeargd and node.nodeargd.argnlist:
+            for arg in reversed(node.nodeargd.argnlist):
+                if arg is not None:
+                    raw_arg = self._node_latex(arg)
+                    if raw_arg.startswith("{") and raw_arg.endswith("}"):
+                        return raw_arg[1:-1]
+                    text = self.converter.nodelist_to_text([arg]).strip()
+                    if text:
+                        return text
+        return ""
+
+    def _extract_citations_from_nodes(self, nodes) -> list[str]:
+        citations = []
+
+        def walk(items):
+            for item in self._safe_nodes(items):
+                if isinstance(item, LatexMacroNode):
+                    if item.macroname in CITATION_MACROS:
+                        citations.extend(self._extract_citation_keys(item))
+                    if item.nodeargd and item.nodeargd.argnlist:
+                        for arg in item.nodeargd.argnlist:
+                            if hasattr(arg, "nodelist"):
+                                walk(arg.nodelist)
+                elif isinstance(item, LatexEnvironmentNode):
+                    walk(item.nodelist)
+
+        walk(nodes)
+        return list(dict.fromkeys(citations))
+
+    def _paragraph_name_from_macro(self, node) -> LatexParagraphName:
+        title = self._extract_title(node)
+        citations = []
+        if node.nodeargd and node.nodeargd.argnlist:
+            for arg in node.nodeargd.argnlist:
+                if hasattr(arg, "nodelist"):
+                    citations.extend(self._extract_citations_from_nodes(arg.nodelist))
+        citations = list(dict.fromkeys(citations))
+        title = re.sub(r"<cit\.>", " ", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return LatexParagraphName(text=title, citations=citations)
+
+    def _is_limitation_title(self, title: str) -> bool:
+        normalized = re.sub(r"[^a-z]+", " ", title.lower()).strip()
+        return normalized in {"limitation", "limitations"}
+
+    def _split_special_sections(self, sections: list[LatexSection]) -> tuple[list[LatexSection], list[LatexSection], list[LatexSection]]:
+        body, limitation, appendix = [], [], []
+        in_appendix = False
+        for section in sections:
+            title = section.name or ""
+            if re.search(r"\\appendix\b|\\begin\s*\{\s*appendices\s*\}", title, flags=re.IGNORECASE):
+                in_appendix = True
+                continue
+            if in_appendix:
+                appendix.append(section)
+            elif self._is_limitation_title(title):
+                limitation.append(section)
+            else:
+                body.append(section)
+        return body, limitation, appendix
+
     def _get_latex_nodes_quiet(self, text: str | None = None):
         sink = io.StringIO()
         walker = self.walker if text is None else LatexWalker(text)
@@ -228,13 +467,15 @@ class LatexPaperParser:
             for logger, level in zip(loggers, previous_levels):
                 logger.setLevel(level)
    
-    def parse(self) -> Optional[LatexPaper]:
+    def parse(self, source: str | os.PathLike, base_path: str | os.PathLike | None = None) -> Optional[LatexPaper]:
         """
         Single pass parse Latex content into a Paper object
         
         Returns:
             Paper: Structured paper object
         """
+        self._prepare_source(source, base_path=base_path)
+        self._load_bibliography_entries()
         paper = LatexPaper()
         
         has_document = False
@@ -260,11 +501,14 @@ class LatexPaperParser:
 
                 elif node.environmentname == 'document':
                     has_document = True
-                    paper.sections, title, author, abstract = self._parse_sections(node.nodelist)
+                    paper.sections, paper.limitation, paper.appendix, title, author, abstract = self._parse_sections(node.nodelist)
                     if not paper.sections:
                         paper.sections = self._parse_sections_fallback(node.nodelist)
                     if not paper.sections:
                         paper.sections = self._parse_sections_regex_fallback()
+                    paper.sections, extra_limitation, extra_appendix = self._split_special_sections(paper.sections)
+                    paper.limitation.extend(extra_limitation)
+                    paper.appendix.extend(extra_appendix)
                     if title is not None: paper.title = title
                     if author is not None: paper.author = author
                     if abstract is not None: paper.abstract = abstract
@@ -276,21 +520,16 @@ class LatexPaperParser:
 
         if not has_document:
             paper.sections = self._parse_sections_regex_fallback()
+            paper.sections, paper.limitation, paper.appendix = self._split_special_sections(paper.sections)
             if not paper.sections:
                 return
         
-        # parse citations
-        self.bibliography_entries = parse_bbl_file(self.latex_content)
-        for f in glob.glob(os.path.join(self.base_path, "*.bbl")):
-            bib = parse_bbl_file(f)
-            self.bibliography_entries.update(bib)
-        if not self.bib_files: self.bib_files = glob.glob(os.path.join(self.base_path, "*.bib"))
-        for f in self.bib_files:
-            if "anthology" in f: continue
-            bib = parse_bib_file(f)
-            self.bibliography_entries.update(bib)
         paper.bibliography = self.bibliography_entries
         paper.all_citation_keys = self._extract_all_citation_keys()
+        self.unresolved_citation_keys = [
+            key for key in paper.all_citation_keys if key not in self.bibliography_entries
+        ]
+        paper.unresolved_citation_keys = self.unresolved_citation_keys
         return paper
     
     def get_bibliography_entry(self, citation_key: str) -> Optional[str]:
@@ -305,26 +544,35 @@ class LatexPaperParser:
         """
         return self.bibliography_entries.get(citation_key)
     
-    def _parse_sections(self, nodes) -> List[LatexSection]:
+    def _parse_sections(self, nodes) -> tuple[list[LatexSection], list[LatexSection], list[LatexSection], str | None, str | None, Any]:
         """Parse nodes into Section objects"""
-        title, author, sections = None, None, []
+        title, author, sections, limitation, appendix = None, None, [], [], []
         abstract = None
         nodes = self._safe_nodes(nodes)
         i = 0
+        in_appendix = False
         
         while i < len(nodes):
             node = nodes[i]
             if isinstance(node, LatexMacroNode):            
-                if self._is_macro(node, {'section'}):
+                if node.macroname == "appendix":
+                    in_appendix = True
+                    i += 1
+                elif self._is_macro(node, {'section'}):
                     section_name = self._extract_title(node)
                     section = LatexSection(name=section_name)
                     
                     # Collect content until next section
-                    section_content, j = self._collect_nodes_until(nodes, i + 1, {'section'})
+                    section_content, j = self._collect_nodes_until(nodes, i + 1, {'section', 'appendix'})
                     
                     # Parse section content
                     self._parse_section_content(section_content, section)
-                    sections.append(section)
+                    if in_appendix:
+                        appendix.append(section)
+                    elif self._is_limitation_title(section_name):
+                        limitation.append(section)
+                    else:
+                        sections.append(section)
                     i = j
 
                 else:
@@ -345,16 +593,26 @@ class LatexPaperParser:
                     if node.environmentname == "abstract":
                         abstract = LatexSubSubSection(name="Abstract")
                         self._create_paragraphs_from_nodes(node.nodelist, abstract)
+                    elif node.environmentname == "appendices":
+                        appendix_sections, _, nested_appendix, title_back, author_back, abstract_back = self._parse_sections(
+                            self._safe_nodes(node.nodelist)
+                        )
+                        appendix.extend([*appendix_sections, *nested_appendix])
+                        if title_back is not None: title = title_back
+                        if author_back is not None: author = author_back
+                        if abstract_back is not None: abstract = abstract_back
                     else:  # if node.environmentname in SPACING_ENVIRONMENTS
-                        sections_in_environment, title_back, author_back, abstract_back = self._parse_sections(
+                        sections_in_environment, limitation_back, appendix_back, title_back, author_back, abstract_back = self._parse_sections(
                             self._safe_nodes(node.nodelist)
                         )
                         if title_back is not None: title = title_back
                         if author_back is not None: author = author_back
                         if abstract_back is not None: abstract = abstract_back
                         sections.extend(sections_in_environment)
+                        limitation.extend(limitation_back)
+                        appendix.extend(appendix_back)
         
-        return sections, title, author, abstract
+        return sections, limitation, appendix, title, author, abstract
 
     def _parse_sections_fallback(self, nodes) -> List[LatexSection]:
         """Fallback parser for TeX sources that expose only lower-level headings."""
@@ -398,7 +656,11 @@ class LatexPaperParser:
             flags=re.DOTALL,
         )
         headings = []
+        in_appendix = False
         for match in heading_pattern.finditer(content):
+            appendix_match = self.TEX_APPENDIX_RE.search(content[:match.start()])
+            if appendix_match:
+                in_appendix = True
             title, title_end = self._read_balanced_brace_content(content, match.end() - 1)
             if title is None:
                 continue
@@ -408,6 +670,7 @@ class LatexPaperParser:
                     "title": self.converter.latex_to_text(title).strip() or "Untitled",
                     "start": match.start(),
                     "content_start": title_end,
+                    "appendix": in_appendix,
                 }
             )
         if not headings:
@@ -424,6 +687,7 @@ class LatexPaperParser:
                 "title": heading["title"],
                 "content_start": heading["content_start"],
                 "end": heading["end"],
+                "appendix": heading["appendix"],
                 "children": [],
             }
             while stack and level_rank[stack[-1]["level"]] >= level_rank[node["level"]]:
@@ -466,10 +730,13 @@ class LatexPaperParser:
 
     def _strip_latex_comments(self, content: str) -> str:
         lines = []
-        for line in content.splitlines():
+        for line in content.splitlines(keepends=True):
+            line_end_match = re.search(r"(\r?\n)$", line)
+            line_end = line_end_match.group(1) if line_end_match else ""
+            line_body = line[:-len(line_end)] if line_end else line
             escaped = False
-            cut = len(line)
-            for idx, char in enumerate(line):
+            cut = len(line_body)
+            for idx, char in enumerate(line_body):
                 if char == "\\":
                     escaped = not escaped
                     continue
@@ -477,8 +744,8 @@ class LatexPaperParser:
                     cut = idx
                     break
                 escaped = False
-            lines.append(line[:cut])
-        return "\n".join(lines)
+            lines.append(line_body[:cut] + line_end)
+        return "".join(lines)
 
     def _read_balanced_brace_content(self, content: str, open_pos: int) -> tuple[str | None, int]:
         if open_pos >= len(content) or content[open_pos] != "{":
@@ -510,14 +777,24 @@ class LatexPaperParser:
                 parent.add_child(paragraph)
 
     def _remove_heading_commands(self, content: str) -> str:
-        return re.sub(
+        content = re.sub(
             r"\\(?:section|subsection|subsubsection)\s*\*?\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}",
             "",
             content,
             flags=re.DOTALL,
         )
+        return self._remove_reference_commands(content)
+
+    def _remove_reference_commands(self, content: str) -> str:
+        content = self._remove_reference_macros(content)
+        content = re.sub(r"\\begin\s*\{\s*thebibliography\s*\}.*?\\end\s*\{\s*thebibliography\s*\}", " ", content, flags=re.DOTALL)
+        return content
+
+    def _remove_reference_macros(self, content: str) -> str:
+        return re.sub(r"\\(?:bibstyle|bibliographystyle|bibliography|nocite)\s*\{[^{}]*\}", " ", content)
 
     def _build_fallback_paragraph(self, raw_content: str) -> LatexParagraph | None:
+        raw_content = self._remove_reference_commands(raw_content)
         raw_content = re.sub(r"\\label\s*\{[^{}]*\}", "", raw_content)
         citation_markers = []
 
@@ -530,10 +807,9 @@ class LatexPaperParser:
         cite_pattern = re.compile(r"\\(?:cite\w*|cite)\s*(?:\[[^\]]*\]\s*)*\{([^{}]+)\}")
         raw_content = re.sub(cite_pattern, _replace_cite, raw_content)
         raw_content = re.sub(r"\\(?:auto)?ref\s*\{[^{}]*\}", " REFMARK ", raw_content)
+        raw_content = re.sub(r"\\paragraph\s*\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}", r" PARAGRAPHMARK{\1} ", raw_content)
         raw_content = self._clean_fallback_latex_text(raw_content)
-        text = self.converter.latex_to_text(raw_content)
-        if not text.strip() and raw_content.strip():
-            text = self._rough_latex_to_text(raw_content)
+        text = self._rough_latex_to_text(raw_content)
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             return None
@@ -544,7 +820,7 @@ class LatexPaperParser:
             for marker_info in citation_markers:
                 if marker_info["marker"] in sentence_text:
                     sentence_keys.extend(marker_info["keys"])
-                    sentence_text = sentence_text.replace(marker_info["marker"], "<cit.>")
+                    sentence_text = sentence_text.replace(marker_info["marker"], " ")
             sentence_text = sentence_text.replace("REFMARK", "<ref>")
             sentence_text = re.sub(r"\s+", " ", sentence_text).strip()
             sentence_text = re.sub(r"\s+([,.;:!?])", r"\1", sentence_text)
@@ -662,7 +938,7 @@ class LatexPaperParser:
                 parent_subsection.add_child(subsubsection)
                 i = j
             else:
-                if not (isinstance(node, LatexMacroNode) and node.macroname == 'label'):
+                if not (isinstance(node, LatexMacroNode) and node.macroname in DELETE_MACROS):
                     current_text_nodes.append(node)
                 i += 1
 
@@ -708,14 +984,22 @@ class LatexPaperParser:
                 # Add the environment as-is
                 env_content = self._extract_raw_environment(node)
                 env_citations = self._extract_citations_from_environment(node)
+                env_caption = self._extract_environment_caption(node)
                 latex_env = LatexEnvironment(
                     environment_name=node.environmentname, 
                     text=env_content,
-                    citations=env_citations
+                    citations=env_citations,
+                    caption=env_caption,
                 )
                 content_items.append(latex_env)
             else:
-                if not (isinstance(node, LatexMacroNode) and node.macroname == 'label'):
+                if isinstance(node, LatexMacroNode) and node.macroname == 'paragraph':
+                    if accumulated_nodes:
+                        sentences = self._parse_text_with_citations_and_breaks(accumulated_nodes)
+                        content_items.extend(sentences)
+                        accumulated_nodes = []
+                    content_items.append(self._paragraph_name_from_macro(node))
+                elif not (isinstance(node, LatexMacroNode) and node.macroname in DELETE_MACROS):
                     accumulated_nodes.append(node)
         
         # Process any remaining accumulated nodes
@@ -743,8 +1027,7 @@ class LatexPaperParser:
             
             for node in nodes:
                 if isinstance(node, LatexMacroNode):
-                    if node.macroname in ['cite', 'citep', 'citet', 'citealt', 'citeyearpar',
-                                          'citealp', 'citeauthor', 'citeyear', 'citetext']:
+                    if node.macroname in CITATION_MACROS:
                         citations.update(self._extract_citation_keys(node))
                     
                     # Also check in macro arguments
@@ -788,6 +1071,20 @@ class LatexPaperParser:
         
         return result
 
+    def _extract_environment_caption(self, env_node: LatexEnvironmentNode) -> str:
+        if env_node.environmentname not in GRAPH_ENVIRONMENTS:
+            return ""
+        raw = self._node_latex(env_node)
+        if not raw:
+            return ""
+        match = re.search(r"\\caption\s*(?:\[[^\]]*\])?\s*\{", raw, flags=re.DOTALL)
+        if not match:
+            return ""
+        body, _ = self._read_balanced_brace_content(raw, match.end() - 1)
+        if body is None:
+            return ""
+        return re.sub(r"\s+", " ", self.converter.latex_to_text(body)).strip()
+
     def _parse_text_with_citations_and_breaks(self, nodes) -> List[Union[LatexSentence, dict]]:
         r"""
         Parse text nodes into sentences with paragraph break detection
@@ -799,64 +1096,122 @@ class LatexPaperParser:
         Returns:
             list: Sentence objects with special 'paragraph_break' markers
         """
-        # Extract text segments with citation markers
         segments = self._extract_text_segments_with_breaks(nodes)
-        if not segments: return []
-        
-        # Combine segments into full text while tracking citation positions and breaks
-        full_text = ""
-        citation_positions = []
-        paragraph_break_positions = []
-        segments[0]['text'] = segments[0]['text'].lstrip()
-        
+        if not segments:
+            return []
+
+        chunks = []
+        current_chunk = []
         for segment in segments:
-            start_pos = len(full_text)
-            full_text += segment['text']
-            end_pos = len(full_text)
-            
-            if segment['citations']:
-                citation_positions.append((start_pos, end_pos, segment['citations']))
-            
             if segment.get('paragraph_break'):
-                paragraph_break_positions.append(end_pos)
-        
-        # Split into sentences
-        sentence_texts = self._split_into_sentences(full_text)        
-        
-        # Assign citations to sentences and detect paragraph breaks
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = []
+            else:
+                current_chunk.append(segment)
+        if current_chunk:
+            chunks.append(current_chunk)
+
         sentences = []
-        char_pos = 0
-        
+        for chunk in chunks:
+            chunk_sentences = self._parse_sentence_segments(chunk)
+            if not chunk_sentences:
+                continue
+            if sentences:
+                sentences.append({'paragraph_break': True})
+            sentences.extend(chunk_sentences)
+
+        return sentences
+
+    def _parse_sentence_segments(self, segments) -> List[LatexSentence]:
+        """Parse one LaTeX paragraph worth of text/citation segments into sentences."""
+        full_text = ""
+        citation_markers = []
+        segments[0]['text'] = segments[0]['text'].lstrip()
+
+        for segment in segments:
+            if segment['citations']:
+                marker = f"CITMARK{len(citation_markers)}"
+                citation_markers.append({
+                    "marker": marker,
+                    "keys": segment["citations"],
+                    "text": segment.get("citation_text") or self._format_citation_text(
+                        segment["citations"], segment.get("citation_macro")
+                    ),
+                })
+                full_text += f" {marker} "
+            else:
+                full_text += segment['text']
+
+        # Split into sentences
+        sentence_texts = self._split_into_sentences(full_text)
+
+        # Assign citations to sentences
+        sentences = []
         for sentence_text in sentence_texts:
-            sentence_start = char_pos
-            sentence_end = char_pos + len(sentence_text)
-            
-            # Find citations that overlap with this sentence
             sentence_citations = []
-            for cite_start, cite_end, citations in citation_positions:
-                if cite_start < sentence_end and cite_end > sentence_start:
-                    sentence_citations.extend(citations)
-            
+            for marker_info in citation_markers:
+                if marker_info["marker"] in sentence_text:
+                    sentence_citations.extend(marker_info["keys"])
+                    sentence_text = sentence_text.replace(marker_info["marker"], f" {marker_info['text']} ")
+
             # Remove duplicates while preserving order
             unique_citations = []
             for cite in sentence_citations:
                 if cite not in unique_citations:
                     unique_citations.append(cite)
-            
-            sentence = LatexSentence(text=sentence_text.strip(), citations=unique_citations)
+
+            sentence_text = re.sub(r"\s+", " ", sentence_text).strip()
+            sentence_text = re.sub(r"\s+([,.;:!?])", r"\1", sentence_text)
+            sentence_text = self._normalize_rendered_citation_punctuation(sentence_text)
+            if not sentence_text and not unique_citations:
+                continue
+            sentence = LatexSentence(text=sentence_text, citations=unique_citations)
             sentences.append(sentence)
-            
-            # Check if there's a paragraph break after this sentence
-            for break_pos in paragraph_break_positions:
-                if sentence_start < break_pos <= sentence_end:
-                    # Mark paragraph break by inserting a marker
-                    sentences.append({'paragraph_break': True})
-                    break
-            
-            char_pos = sentence_end
-        
+
         return sentences
-    
+
+    def _split_text_by_latex_paragraphs(self, text: str):
+        """Split plain LaTeX chars by blank-line paragraph breaks after removing comments."""
+        text = self._strip_latex_comments(text)
+        if not text:
+            return []
+
+        segments = []
+        pending_break = False
+        parts = re.split(r"((?:[ \t]*\r?\n){2,})", text)
+        for part in parts:
+            if not part:
+                continue
+            if re.fullmatch(r"(?:[ \t]*\r?\n){2,}", part):
+                pending_break = True
+                continue
+            if pending_break and segments:
+                segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
+            pending_break = False
+            segments.append({'text': part, 'citations': [], 'paragraph_break': False})
+
+        if pending_break:
+            segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
+
+        return segments
+
+    def _format_citation_text(self, citation_keys: list[str], macro_name: str | None = None) -> str:
+        if not citation_keys:
+            return "?"
+
+        author_texts = [
+            self.bibliography_entries.get(key, {}).get("ref_string", "?")
+            for key in citation_keys
+        ]
+        text = "; ".join(author_texts)
+        return text if macro_name in TEXTUAL_CITATION_MACROS else f"({text})"
+
+    def _normalize_rendered_citation_punctuation(self, text: str) -> str:
+        text = re.sub(r"\.\.", ".", text)
+        text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+        return text
+
     def _extract_text_segments_with_breaks(self, nodes):
         """
         Extract text segments from nodes, identifying citations and paragraph breaks
@@ -870,34 +1225,29 @@ class LatexPaperParser:
         
         segments = []
         for node in nodes:
-            if isinstance(node, LatexCharsNode):
-                # Check for paragraph breaks (multiple newlines)
-                text = node.chars
-                if '\n\n' in text or '\n\n\n' in text:
-                    # Split by paragraph breaks
-                    parts = re.split(r'\n\n+', text)
-                    for i, part in enumerate(parts):
-                        part = part.strip()
-                        if part:
-                            segments.append({'text': part, 'citations': [], 'paragraph_break': False})
-                            if i < len(parts) - 1:  # Not the last part
-                                segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
-                else:
-                    segments.append({'text': text, 'citations': [], 'paragraph_break': False})
+            if isinstance(node, LatexSpecialsNode):
+                segments.extend(self._split_text_by_latex_paragraphs(self._node_latex(node)))
+            elif isinstance(node, LatexCharsNode):
+                segments.extend(self._split_text_by_latex_paragraphs(node.chars))
             
             elif isinstance(node, LatexMacroNode):
-                if node.macroname in ['cite', 'citep', 'citet', 'citealt', "citeyearpar",
-                                      'citealp', 'citeauthor', 'citeyear', 'citetext']:
+                if node.macroname in CITATION_MACROS:
                     citations = self._extract_citation_keys(node)
-                    citation_text = f' \\cite{{{",".join(citations)}}} '
-                    segments.append({'text': citation_text, 'citations': citations, 'paragraph_break': False})
+                    citation_text = self._format_citation_text(citations, node.macroname)
+                    segments.append({
+                        'text': citation_text,
+                        'citations': citations,
+                        'citation_macro': node.macroname,
+                        'citation_text': citation_text,
+                        'paragraph_break': False,
+                    })
                 elif node.macroname == 'par':
                     # Explicit paragraph break command
                     segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
                 elif node.macroname not in DELETE_MACROS:
                     try:
                         text = self.converter.nodelist_to_text([node])
-                        segments.append({'text': text, 'citations': [], 'paragraph_break': False})
+                        segments.extend(self._split_text_by_latex_paragraphs(text))
                     except:
                         if node.nodeargd and node.nodeargd.argnlist:
                             for arg in node.nodeargd.argnlist:
@@ -906,10 +1256,14 @@ class LatexPaperParser:
             
             elif isinstance(node, LatexEnvironmentNode) and node.environmentname not in PRESERVED_ENVIRONMENTS:
                 segments.extend(self._extract_text_segments_with_breaks(self._safe_nodes(node.nodelist)))
+            elif isinstance(node, LatexCommentNode):
+                segments.extend(self._split_text_by_latex_paragraphs(getattr(node, "comment_post_space", "")))
+            elif hasattr(node, "nodelist"):
+                segments.extend(self._extract_text_segments_with_breaks(self._safe_nodes(node.nodelist)))
             else:
                 try:
                     text = self.converter.nodelist_to_text([node])
-                    segments.append({'text': text, 'citations': [], 'paragraph_break': False})
+                    segments.extend(self._split_text_by_latex_paragraphs(text))
                 except:
                     pass
         
@@ -946,8 +1300,14 @@ class LatexPaperParser:
                 current_paragraph.add_sentence(item)
                 paragraphs.append(current_paragraph)
                 current_paragraph = LatexParagraph()
+
+            elif isinstance(item, LatexParagraphName):
+                if current_paragraph.sentences:
+                    paragraphs.append(current_paragraph)
+                    current_paragraph = LatexParagraph()
+                current_paragraph.add_sentence(item)
                 
-            elif isinstance(item, LatexSentence) or isinstance(item, LatexEnvironment):
+            elif isinstance(item, (LatexSentence, LatexEnvironment)):
                 current_paragraph.add_sentence(item)
         
         # Add final paragraph if not empty
@@ -967,6 +1327,13 @@ class LatexPaperParser:
         Returns:
             list: List of citation keys
         """
+        raw_keys = self._macro_argument_latex(node)
+        if raw_keys:
+            keys = [re.sub(r"\s+", "", key) for key in raw_keys.split(",")]
+            keys = [key for key in keys if key and self._looks_like_citation_key(key)]
+            if keys:
+                return list(dict.fromkeys(keys))
+
         citations = []
         if node.nodeargd and node.nodeargd.argnlist:
             # Citation commands can have optional arguments before the key
@@ -1022,10 +1389,6 @@ class LatexPaperParser:
         if text.count(' ') > 2:
             return False
         
-        # If it's very long, it's likely a note
-        if len(text) > 50:
-            return False
-        
         # Check character composition
         allowed_chars = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-:.')
         text_chars = set(text.replace(' ', ''))
@@ -1041,38 +1404,84 @@ class LatexPaperParser:
         text = text.strip()
         if not text:
             return []
-        
-        # Handle abbreviations
-        abbreviations = [
-            "Dr", "Mr", "Mrs", "Ms", "Prof", "Sr", "Jr", "vs", "etc",
+
+        candidates = self._scan_sentence_candidates(text)
+        result = []
+        for sentence in candidates:
+            sentence = sentence.strip()
+            if sentence:
+                if result and self._starts_with_lowercase_ascii(sentence):
+                    result[-1] = f"{result[-1].rstrip()} {sentence}"
+                else:
+                    result.append(sentence)
+        return result
+
+    def _scan_sentence_candidates(self, text: str) -> list[str]:
+        abbreviations = {
+            "Dr", "Mr", "Mrs", "Ms", "Prof", "Sr", "Jr", "vs",
             "Fig", "Figs", "Sec", "Secs", "Eq", "Eqs", "Ref", "Refs",
             "Tab", "Tabs", "No", "Vol", "Inc", "Ltd", "Co",
-        ]
-        for abbr in abbreviations:
-            text = re.sub(rf'\b{re.escape(abbr)}\.\s', f'{abbr}<PERIOD> ', text)
-        text = re.sub(r'\be\.g\.\s', r'e<PERIOD>g<PERIOD> ', text)
-        text = re.sub(r'\bi\.e\.\s', r'i<PERIOD>e<PERIOD> ', text)
-        text = re.sub(r'\bet al\.\s', r'et al<PERIOD> ', text)
-        
-        # Split on sentence boundaries
-        sentences = re.split(r'([.!?]+(?:\s+|$)|\.\.\.(?:\s+|$))', text)
-        
-        # Recombine sentences with punctuation
-        result = []
+        }
+        open_to_close = {"(": ")", "[": "]", "{": "}"}
+        close_chars = set(open_to_close.values())
+        stack = []
+        sentences = []
+        start = 0
         i = 0
-        while i < len(sentences):
-            if i + 1 < len(sentences) and sentences[i + 1].strip():
-                sentence = sentences[i] + sentences[i + 1]
-                i += 2
-            else:
-                sentence = sentences[i]
-                i += 1
-            
-            sentence = sentence.replace('<PERIOD>', '.')
-            if sentence:
-                result.append(sentence)
-        
-        return result
+        while i < len(text):
+            char = text[i]
+            if char in open_to_close:
+                stack.append(open_to_close[char])
+            elif char in close_chars and stack and char == stack[-1]:
+                stack.pop()
+
+            if char in ".!?" and not stack and self._is_sentence_boundary(text, i, abbreviations):
+                end = i + 1
+                while end < len(text) and text[end] in ".!?":
+                    end += 1
+                while end < len(text) and text[end] in "\"')]}":
+                    end += 1
+                sentences.append(text[start:end])
+                start = end
+                while start < len(text) and text[start].isspace():
+                    start += 1
+                i = start
+                continue
+            i += 1
+
+        if start < len(text):
+            sentences.append(text[start:])
+        return sentences
+
+    def _is_sentence_boundary(self, text: str, idx: int, abbreviations: set[str]) -> bool:
+        char = text[idx]
+        if char in "!?":
+            return True
+        if text[idx:idx + 3] == "...":
+            return True
+        if idx > 0 and idx + 1 < len(text) and text[idx - 1].isalpha() and text[idx + 1].isalpha():
+            return False
+
+        word_match = re.search(r"([A-Za-z]+)$", text[:idx])
+        word = word_match.group(1) if word_match else ""
+        if word in {"e", "i", "g"} and self._is_part_of_latin_abbreviation(text, idx):
+            return False
+        if word == "al" and re.search(r"\bet\s+al$", text[:idx]):
+            return False
+        if word == "etc":
+            return idx + 1 >= len(text) or text[idx + 1].isspace()
+        if word in abbreviations:
+            return False
+
+        return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}。！？"
+
+    def _is_part_of_latin_abbreviation(self, text: str, idx: int) -> bool:
+        window = text[max(0, idx - 3):idx + 3].lower()
+        return "e.g." in window or "i.e." in window
+
+    def _starts_with_lowercase_ascii(self, text: str) -> bool:
+        stripped = text.lstrip()
+        return bool(stripped) and "a" <= stripped[0] <= "z"
     
     def _extract_title(self, node):
         """Extract title from a section/subsection macro node"""
@@ -1093,8 +1502,7 @@ class LatexPaperParser:
             
             for node in nodes:
                 if isinstance(node, LatexMacroNode):
-                    if node.macroname in ['cite', 'citep', 'citet', 'citealt', 'citeyearpar',
-                                          'citealp', 'citeauthor', 'citeyear', 'citetext']:
+                    if node.macroname in CITATION_MACROS:
                         citations.update(self._extract_citation_keys(node))
                 
                 if isinstance(node, LatexEnvironmentNode):
@@ -1117,7 +1525,9 @@ class LatexPaperParser:
         if not section_name: return None
         return {"section_index": section_index, "section_name": section_name}
     
-    def get_titles(self):
+    def get_titles(self, source: str | os.PathLike | None = None, base_path: str | os.PathLike | None = None):
+        if source is not None:
+            self._prepare_source(source, base_path=base_path)
         content = self.latex_content
         appendix = self.TEX_APPENDIX_RE.search(content)
         if appendix: content = content[:appendix.start()]

@@ -10,8 +10,7 @@ import tqdm
 
 
 BASE_DIR = Path(__file__).resolve().parent
-PDF_DIR = BASE_DIR / "pdf"
-DEFAULT_PAPER_FILE = "Transformer.json"
+DEFAULT_PAPER_FILE = "golden/0.json"
 DEBUG_DIR = BASE_DIR / "debug" / DEFAULT_PAPER_FILE.replace(' ', '_').split('.')[0]
 DEFAULT_QUERY = "Transformers Natural Language Processing"
 DEFAULT_SURVEY_TITLE = "Transformer models in Natural Language Processing: A Survey"
@@ -81,8 +80,9 @@ def _load_references() -> dict[str, Any]:
 
 
 def _load_paper(name: str = DEFAULT_PAPER_FILE):
-    with (PDF_DIR / name).open(encoding="utf-8") as f:
-        return json.load(f)
+    with Path(name).open(encoding="utf-8") as f:
+        paper = json.load(f)
+    return paper.get('full_content', paper.get('paper', paper))
 
 
 def _status_counter(paper_content_map: dict[str, Any]) -> dict[str, int]:
@@ -100,81 +100,32 @@ def _minimum_details(minimum_result: dict[str, Any]) -> dict[str, Any]:
 
 if __package__:
     from .agent import SurveyEvaluationAgent
-    from .tools.eval.argument_eval import ArgumentStructureEvaluator
-    from .tools.eval.fact_check import FactualCorrectnessCritic
-    from .tools.eval.minimum_completion import minimum_completion
-    from .tools.eval.structure_eval import StructureCheck
-    from .tools.preprocess.golden_topics import GoldenTopicGenerator
-    from .tools.eval.missing_papers import MissingPaperCheck
-    from .tools.preprocess.citation_parser import CitationParser
+    from .tools.fact.citation_check import CitationCorrectnessCheck
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
-    from .tools.eval.topic_coverage import TopicCoverageCritic
+    from .tools.fact.fact_check import FactualCorrectnessCritic
+    from .tools.preprocess.minimum_completion import minimum_completion
+    from .tools.scope.missing_papers import MissingPaperCheck
+    from .tools.preprocess.citation_parser import CitationParser
+    from .tools.preprocess.contribution_classify import ContributionClassification
+    from .tools.preprocess.section_classify import SectionClassification
+    from .tools.preprocess.sentences import SentenceClassification
+    from .tools.scope.topic_coverage import TopicCoverageCritic
     from .tools.utility.request_utils import SessionManager
     from .tools.utility.tool_config import ToolConfig
 else:
     from agent import SurveyEvaluationAgent
-    from tools.eval.argument_eval import ArgumentStructureEvaluator
-    from tools.eval.fact_check import FactualCorrectnessCritic
-    from tools.eval.minimum_completion import minimum_completion
-    from tools.eval.structure_eval import StructureCheck
-    from tools.preprocess.golden_topics import GoldenTopicGenerator
-    from tools.eval.missing_papers import MissingPaperCheck
-    from tools.preprocess.citation_parser import CitationParser
+    from tools.fact.citation_check import CitationCorrectnessCheck
     from tools.preprocess.claim_segmentation import ClaimSegmentation
-    from tools.eval.topic_coverage import TopicCoverageCritic
+    from tools.fact.fact_check import FactualCorrectnessCritic
+    from tools.preprocess.minimum_completion import minimum_completion
+    from tools.scope.missing_papers import MissingPaperCheck
+    from tools.preprocess.citation_parser import CitationParser
+    from tools.preprocess.contribution_classify import ContributionClassification
+    from tools.preprocess.section_classify import SectionClassification
+    from tools.preprocess.sentences import SentenceClassification
+    from tools.scope.topic_coverage import TopicCoverageCritic
     from tools.utility.request_utils import SessionManager
     from tools.utility.tool_config import ToolConfig
-
-
-async def testGoldenTopicGenerator(config, query, paper):
-    generator = GoldenTopicGenerator(config)
-    # anchor_data_path = _debug_path("anchor_data.json")
-    # anchor_survey_path = _debug_path("anchor_survey.json")
-    # if anchor_data_path.exists() and anchor_survey_path.exists():
-    #     reference_data = {
-    #         "reference_papers": _load_json("anchor_data.json"),
-    #         "reference_surveys": _load_json("anchor_survey.json"),
-    #     }
-    # else:
-    reference_data = await generator.source(DEFAULT_SURVEY_TITLE)
-    _write_json("anchor_data.json", reference_data.get("reference_papers", {}))
-    _write_json("anchor_survey.json", reference_data.get("reference_surveys", {}))
-
-    reference_surveys = reference_data.get("reference_surveys", {}) or {}
-    reference_topics = []
-    if len(reference_surveys) >= 2:
-        raw_topics = await generator.llm.call(inputs={"query": DEFAULT_SURVEY_TITLE, "anchor_surveys": reference_surveys})
-        reference_topics = raw_topics["topics"]
-
-    result = {
-        "reference_data": reference_data,
-        "reference_topics": reference_topics,
-        "paper_topics": generator._paper_topics_from_headings(paper),
-        "self_topics": await generator._self_scope(paper, ['introduction', 'first_sentences']),
-    }
-    _write_json(
-        "topics.json",
-        {
-            "reference_topics": result["reference_topics"],
-            "paper_topics": result["paper_topics"],
-            "self_topics": result["self_topics"],
-            "reference_data": result["reference_data"],
-        },
-    )
-    print(
-        "GoldenTopicGenerator: "
-        f"{len(result.get('reference_topics', []))} reference topics, "
-        f"{len((result.get('self_topics', {}) or {}).get('aspect_list', []))} self aspects"
-    )
-    return result
-
-
-async def testScopeClaimExtract(config, paper):
-    extractor = GoldenTopicGenerator(config)
-    result = await extractor._self_scope(paper, ["introduction", "first_sentences", "conclusion"])
-    _write_json("scope_claims.json", result)
-    for k, v in result.items(): print(f"{k}: {v}")
-    return result
 
 
 async def testMinimumCompletion(paper):
@@ -204,10 +155,88 @@ async def testCitationParser(config, paper):
         print(f"CitationParser: statuses={_status_counter(paper_content_map)}")
 
 
-async def testClaimSegmentation(config, paper):
+async def testSentenceClassification(config, paper):
+    result = await SentenceClassification(config)(paper)
+    _write_json("classified_paper.json", result)
+    print("SentenceClassification: wrote classified_paper.json")
+
+
+async def testClaimSegmentation(config, paper=None):
+    if paper is None:
+        paper = _load_json("classified_paper.json")
     result = await ClaimSegmentation(config)(paper)
-    _write_jsonl("claims.jsonl", result['claims'])
-    print(f"ClaimSegmentation: {len(result['claims'])} claims, {len(result['errors'])} errors")
+    _write_json("claim_segmentation.json", result)
+    _write_jsonl("claims.jsonl", result["claims"])
+    print(
+        "ClaimSegmentation: "
+        f"{len(result['claims'])} claims, {len(result['errors'])} errors"
+    )
+
+
+async def testCitationCorrectnessCheck(config, paper):
+    citation_data = _load_references()
+    result = await CitationCorrectnessCheck()(paper.get("citations", {}), citation_data)
+    _write_json("citation_correctness.json", result["citation_evals"])
+    print(
+        "CitationCorrectnessCheck: "
+        f"{result['citation_evals']['failed_count']}/{result['citation_evals']['checked_count']} failed"
+    )
+
+
+async def testClassification(config, paper, output_file: str | os.PathLike = "classified_paper.json"):
+    result = await SectionClassification(config)(paper)
+    result = await SentenceClassification(config)(result)
+    result = await ContributionClassification(config)(result)
+    output_path = Path(output_file)
+    if not output_path.is_absolute():
+        output_path = _debug_path(str(output_path))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    print(f"Classification: wrote {output_path}")
+    return result
+
+
+async def batch_testClassification(
+    config,
+    input_dir: str | os.PathLike,
+    output_dir: str | os.PathLike,
+):
+    input_root = Path(input_dir)
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    paper_paths = sorted(path for path in input_root.rglob("*.json") if path.is_file())
+
+    for paper_path in tqdm.tqdm(paper_paths, desc="Classification"):
+        paper = _load_paper(paper_path)
+        result = await SectionClassification(config)(paper)
+        result = await SentenceClassification(config)(result)
+        # result = await ContributionClassification(config)(result)
+        output_path = output_root / paper_path.relative_to(input_root)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    print(f"batch_testClassification: wrote {len(paper_paths)} files to {output_root}")
+
+    # async def _single(paper_path):
+    #     with paper_path.open(encoding="utf-8") as f:
+    #         paper = json.load(f)['full_content']
+    #     paper = await SentenceClassification(config)(await SectionClassification(config)(paper))
+    #     output_path = output_root / paper_path.relative_to(input_root)
+    #     return output_path, paper
+
+    # tasks = [asyncio.create_task(_single(x)) for x in paper_paths]
+    # success = 0
+    # for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Classification"):
+    #     try:
+    #         output_path, result = await task
+    #         output_path.parent.mkdir(parents=True, exist_ok=True)
+    #         with output_path.open("w", encoding="utf-8") as f:
+    #             json.dump(result, f, ensure_ascii=False, indent=2)
+    #         success += 1
+    #     except Exception as e:
+    #         print(f"testClassification {e}")
+    # print(f"batch_testClassification: wrote {success}/{len(paper_paths)} files to {output_root}")
 
 
 async def testFactualCorrectnessCritic(config):
@@ -271,28 +300,9 @@ async def testTopicCoverageCritic(config, paper):
 
 async def testMissingPaperCheck(config, query):
     citations = _load_references()
-    topics = _load_json("topics.json")
-    topic_eval = _load_json("topic_coverage.json")
-    result = (await MissingPaperCheck(config)(query, citations, topics, topic_eval))["source_evals"]
-    missing_references = [x['title'] for x in result['missing_reference_papers']]
-    missing_new = [x['title'] for x in result['missing_new_papers']]
-    _write_json("missing_paper_check.json", {"old": missing_references, "new": missing_new})
-    print(
-        "MissingPaperCheck: "
-        f"{len(missing_references)} old, "
-        f"{len(missing_references)} new"
-    )
-
-
-async def testStructureCheck(config, paper):
-    result = await StructureCheck(config)(paper)
-    print(f"StructureCheck: {result['structure_evals']}")
-
-
-async def testArgumentStructureEvaluator(config, paper):
-    minimum_result = _load_json("minimum_check.json")
-    result = await ArgumentStructureEvaluator(config)(paper, _minimum_details(minimum_result))
-    _write_json("argument_eval.json", result["argument_evals"])
+    paper = _load_json("classified_paper.json")
+    await MissingPaperCheck(config)(paper, citations)
+    print("MissingPaperCheck: expansion logic completed")
 
 
 async def testSurveyEvaluationAgent(config, query, paper):
@@ -307,19 +317,9 @@ async def main():
         config = ToolConfig()
         query = DEFAULT_QUERY
         survey_title = DEFAULT_SURVEY_TITLE
-        paper = _load_paper(DEFAULT_PAPER_FILE)
-
-        # await testMinimumCompletion(paper)
-        # await testGoldenTopicGenerator(config, query, paper)
-        # await testScopeClaimExtract(config, paper)
-        # await testCitationParser(config, paper)
-        # await testClaimSegmentation(config, paper)
-        # await testFactualCorrectnessCritic(config)
-        # await testTopicCoverageCritic(config, paper)
-        # await testMissingPaperCheck(config, query)
-        await testStructureCheck(config, paper)
-        # await testArgumentStructureEvaluator(config, paper)
-        # await testSurveyEvaluationAgent(config, query, paper)
+        # paper = _load_paper(BASE_DIR / DEFAULT_PAPER_FILE)
+        # await testClassification(config, paper, "class.json")
+        await batch_testClassification(config, "../golden/pdf_content", "../golden/pdf_class")
     finally:
         await SessionManager.close()
 

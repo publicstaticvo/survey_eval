@@ -1,6 +1,10 @@
 import json
+import re
 from typing import Any, List, Optional, Union, Dict
 from dataclasses import dataclass, field
+
+
+GRAPH_ENVIRONMENT_NAMES = {"tikzpicture", "figure", "figure*", "table", "table*", "tabular", "longtable"}
 
 
 @dataclass
@@ -20,7 +24,7 @@ class LatexSentence:
 
     def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
         return {
-            'text': self.text,
+            'text': re.sub(r"\s+", " ", self.text or "").strip(),
             'citations': self.citations,
             'environment_type': 'text'
         }
@@ -32,13 +36,15 @@ class LatexEnvironment:
     environment_name: str
     text: str
     citations: List[str] = field(default_factory=list)
+    caption: str = ""
     
     def to_dict(self):
         return {
             'type': 'latex_environment',
             'environment': self.environment_name,
             'content': self.text,
-            'citations': self.citations
+            'citations': self.citations,
+            'caption': self.caption,
         }
     
     def __repr__(self):
@@ -46,10 +52,37 @@ class LatexEnvironment:
         # return f"\\begin{{{self.environment_name}}}\n{self.text}\n\\end{{{self.environment_name}}}\n"
 
     def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
-        return {
+        result = {
             'text': self.text,
             'citations': self.citations,
             'environment_type': self.environment_name
+        }
+        if self.caption:
+            result['caption'] = self.caption
+        return result
+
+
+@dataclass
+class LatexParagraphName:
+    r"""Represents a \paragraph{...} heading as its own sentence-like item."""
+    text: str
+    citations: List[str] = field(default_factory=list)
+
+    def to_dict(self):
+        return {
+            'type': 'paragraph_name',
+            'content': self.text,
+            'citations': self.citations,
+        }
+
+    def __repr__(self):
+        return f"\\paragraph{{{self.text}}}"
+
+    def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
+        return {
+            'text': re.sub(r"\s+", " ", self.text or "").strip(),
+            'citations': self.citations,
+            'environment_type': 'paragraph_name'
         }
 
 
@@ -70,14 +103,21 @@ def debug_sentences(sentences: List[Union[LatexSentence, LatexEnvironment]], sta
 @dataclass
 class LatexParagraph:
     r"""Represents a paragraph (either \paragraph command or text block split by \n\n)"""
-    sentences: List[Union[LatexSentence, LatexEnvironment]] = field(default_factory=list)
+    sentences: List[Union[LatexSentence, LatexEnvironment, LatexParagraphName]] = field(default_factory=list)
     name: Optional[str] = None  # Only set if defined by \paragraph
     
-    def add_sentence(self, sentence: Union[LatexSentence, LatexEnvironment]):
+    def add_sentence(self, sentence: Union[LatexSentence, LatexEnvironment, LatexParagraphName]):
         self.sentences.append(sentence)
 
     def get_skeleton(self) -> List[Dict[str, Union[str, List[str]]]]:
         return [sentence.get_skeleton() for sentence in self.sentences]
+
+    def has_text_content(self) -> bool:
+        return any(
+            isinstance(sentence, (LatexSentence, LatexParagraphName))
+                or isinstance(sentence, LatexEnvironment)
+            for sentence in self.sentences
+        )
     
     def to_dict(self):
         result = {'sentences': [s.to_dict() for s in self.sentences]}
@@ -150,7 +190,11 @@ class LatexSubSubSection:
         return sentences
 
     def get_skeleton(self, section_id: str) -> Dict[str, Any]:
-        paragraphs = [child.get_skeleton() for child in self.children if isinstance(child, LatexParagraph)]
+        paragraphs = [
+            child.get_skeleton()
+            for child in self.children
+            if isinstance(child, LatexParagraph) and child.has_text_content()
+        ]
         sections = []
         sub_idx = 0
         for child in self.children:
@@ -203,7 +247,8 @@ class LatexSubSection:
         sub_idx = 0
         for child in self.children:
             if isinstance(child, LatexParagraph):
-                paragraphs.append(child.get_skeleton())
+                if child.has_text_content():
+                    paragraphs.append(child.get_skeleton())
             elif isinstance(child, LatexSubSubSection):
                 sub_idx += 1
                 child_id = f"{section_id}.{sub_idx}" if section_id else str(sub_idx)
@@ -253,7 +298,8 @@ class LatexSection:
         sub_idx = 0
         for child in self.children:
             if isinstance(child, LatexParagraph):
-                paragraphs.append(child.get_skeleton())
+                if child.has_text_content():
+                    paragraphs.append(child.get_skeleton())
             elif isinstance(child, LatexSubSection):
                 sub_idx += 1
                 child_id = f"{section_id}.{sub_idx}" if section_id else str(sub_idx)
@@ -277,7 +323,10 @@ class LatexPaper:
     abstract: Optional[LatexSubSubSection] = None
     keywords: List[str] = field(default_factory=list)
     sections: List[LatexSection] = field(default_factory=list)
+    limitation: List[LatexSection] = field(default_factory=list)
+    appendix: List[LatexSection] = field(default_factory=list)
     all_citation_keys: List[str] = field(default_factory=list)
+    unresolved_citation_keys: List[str] = field(default_factory=list)
     bibliography: dict = field(default_factory=dict)  # Maps citation keys to bibliography entries
     
     def add_section(self, section: LatexSection):
@@ -306,7 +355,7 @@ class LatexPaper:
         """Return all sentences in this subsection"""
         sentences = []
         if self.abstract is not None: sentences = self.abstract.get_sentences()
-        for p in self.sections:
+        for p in [*self.sections, *self.limitation, *self.appendix]:
             sentences.extend(p.get_sentences())
         return sentences
     
@@ -317,7 +366,11 @@ class LatexPaper:
             'abstract': self.abstract.get_skeleton("") if self.abstract else "",
             'paragraphs': [],
             'sections': [section.get_skeleton(i + 1) for i, section in enumerate(self.sections)],
-            'citations': self.bibliography
+            'limitation': [section.get_skeleton(i + 1) for i, section in enumerate(self.limitation)],
+            'appendix': [section.get_skeleton(i + 1) for i, section in enumerate(self.appendix)],
+            'citations': self.bibliography,
+            'missing_citations': self.unresolved_citation_keys,
+            'missing_citation_count': len(self.unresolved_citation_keys)
         }
     
     def __str__(self):

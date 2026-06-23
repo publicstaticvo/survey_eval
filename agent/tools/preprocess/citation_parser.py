@@ -152,17 +152,6 @@ class CitationParser:
             info = await self._fallback_websearch(title, info)
         return citation_key, info
 
-    # async def _parse_single_with_timeout(self, citation_key: str, citation_info: Any):
-    #     try:
-    #         return await asyncio.wait_for(
-    #             self._parse_single(citation_key, citation_info),
-    #             timeout=self.CITATION_TIMEOUT_SECONDS,
-    #         )
-    #     except asyncio.TimeoutError:
-    #         title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
-    #         print(f"CitationParser citation timeout: {citation_key} {title}")
-    #         return citation_key, self._empty_info(title)
-
     async def __call__(self, citations: Dict[str, Any]) -> Dict[str, Any]:
         tasks = [
             asyncio.create_task(self._parse_single(citation_key, citation_info))
