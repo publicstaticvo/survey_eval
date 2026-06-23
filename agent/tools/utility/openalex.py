@@ -716,7 +716,6 @@ def get_openalex_client(config: ToolConfig | None = None) -> OpenAlex:
             current_keys != next_keys
             or _OPENALEX_CLIENT.config.openalex_rate_limit_enabled != config.openalex_rate_limit_enabled
             or _OPENALEX_CLIENT.config.openalex_requests_per_second != config.openalex_requests_per_second
-            or _OPENALEX_CLIENT.config.openalex_max_concurrency != config.openalex_max_concurrency
             or _OPENALEX_CLIENT.config.grobid_url != config.grobid_url
         ):
             _OPENALEX_CLIENT = OpenAlex(config)

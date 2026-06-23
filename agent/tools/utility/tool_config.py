@@ -7,13 +7,12 @@ import yaml
 
 GREEDY_PARAMS = {
     'temperature': 0.0, "max_tokens": 16384, "seed": 42,
-    "top_p": 1.0,      # 璁剧疆涓?锛屼笉杩涜鏍搁噰鏍?
-    "top_k": 1,        # 鎴栬缃负1锛岀‘淇濇€绘槸閫夋嫨鏈€鍙兘鐨則oken
-    "repetition_penalty": 1.0,  # 璁剧疆涓?锛岀鐢ㄩ噸澶嶆儵缃?
-    "length_penalty": 1.0,      # 璁剧疆涓?锛岀鐢ㄩ暱搴︽儵缃?
-    "no_repeat_ngram_size": 0,  # 璁剧疆涓?锛岀鐢╪-gram閲嶅鎯╃綒
+    "top_p": 1.0,      # set to 1.0 to disable nucleus sampling
+    "top_k": 1,        # choose the most likely token
+    "repetition_penalty": 1.0,  # disable repetition penalty
+    "length_penalty": 1.0,      # disable length penalty
+    "no_repeat_ngram_size": 0,  # disable n-gram repetition penalty
 }
-
 
 @dataclass(frozen=True)
 class LLMServerInfo:
@@ -34,9 +33,6 @@ class ToolConfig:
     # external LLM
     llm_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     sampling_params: Mapping[str, Any] = field(default_factory=lambda: GREEDY_PARAMS)
-    # dynamic oracle
-    num_oracle_papers: int = 1000
-    letor_path: str = "backup/ranker.txt"
     # citation parser
     grobid_url: str = "http://172.18.36.90:8070"
     grobid_num_workers: int = 10
@@ -46,8 +42,6 @@ class ToolConfig:
     # factual correctness - reranking
     rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     rerank_n_documents: int = 5
-    # source selection
-    topn: int = 0
     # topic coverage
     topic_weak_sim_threshold: float = 0.45
     topic_sim_threshold: float = 0.55
@@ -75,10 +69,16 @@ class ToolConfig:
     # openalex
     openalex_rate_limit_enabled: bool = True
     openalex_requests_per_second: float = 100.0
-    openalex_max_concurrency: int = 3
     openalex_api_keys: list[str] = field(default_factory=list)
     default_academic_search_engine: str = "semantic scholar"
     semantic_scholar_api_key: str = ""
+    semantic_scholar_retry_count: int = 5
+
+    def is_openalex_only(self) -> bool:
+        return self.default_academic_search_engine in ['openalex only', 'openalex_only', 'openalex-only']
+
+    def use_semantic_scholar(self) -> bool:
+        return not self.is_openalex_only()
 
     @classmethod
     def from_yaml(cls, config_path):
@@ -103,8 +103,6 @@ class ToolConfig:
             ),
             agent_max_tokens=config['agent']['max_tokens'],
             evaluation_date=parsed_evaluation_date,
-            num_oracle_papers=config['dynamic_oracle']['num_oracle_papers'],
-            letor_path=config['dynamic_oracle']['letor_path'],
             llm_server_info=LLMServerInfo(
                 base_url=config['external_llm']['base_url'],
                 api_key=config['external_llm']['api_key'],
@@ -121,16 +119,9 @@ class ToolConfig:
                 model=config['rerank']['model'],
             ),
             rerank_n_documents=config['rerank']['num_documents'],
-            topn=config['source_selection']['topn'],
-            topic_weak_sim_threshold=config['topic_coverage']['topic_weak_sim_threshold'],
-            topic_sim_threshold=config['topic_coverage']['topic_sim_threshold'],
             topic_papers_search_limit=config.get('topic_papers', {}).get('search_limit', 10),
             topic_coverage_search_limit=config.get('topic_coverage', {}).get('search_limit', 10),
             new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
-            new_paper_reference_overlap_threshold=config.get('source_selection', {}).get('new_paper_reference_overlap_threshold', 0.6),
-            citation_velocity_keep_ratio=config.get('source_selection', {}).get('citation_velocity_keep_ratio', 0.4),
-            minimum_reference_survey_citations=config.get('source_selection', {}).get('minimum_reference_survey_citations', 10),
-            use_openalex_count_by_year=config.get('source_selection', {}).get('use_openalex_count_by_year', True),
             background_reference_similarity_threshold=config.get('fact_check', {}).get(
                 'background_reference_similarity_threshold',
                 0.6,
@@ -142,11 +133,11 @@ class ToolConfig:
             websearch_apikey=config['websearch']['api_key'],
             openalex_rate_limit_enabled=config.get('openalex', {}).get('rate_limit_enabled', True),
             openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 100.0),
-            openalex_max_concurrency=config.get('openalex', {}).get('max_concurrency', 3),
             openalex_api_keys=config.get('openalex', {}).get('api_keys', []),
             default_academic_search_engine=config.get('academic_search', {}).get(
                 'default_engine',
                 config.get('default_academic_search_engine', 'openalex'),
             ),
             semantic_scholar_api_key=config.get('semantic_scholar', {}).get('api_key', ''),
+            semantic_scholar_retry_count=config.get('semantic_scholar', {}).get('retry_count', 5),
         )

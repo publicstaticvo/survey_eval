@@ -55,7 +55,6 @@ class SurveyEvaluationAgent:
     output_dir: str | Path | None = None
 
     def __post_init__(self):
-        self._normalize_paths()
         self.logger = logging.getLogger(__name__)
         self.minimum_completion = minimum_completion
         try:
@@ -76,13 +75,6 @@ class SurveyEvaluationAgent:
         self.contribution_consistency = ContributionConsistency(self.config)
         self.internal_consistency = InternalConsistency(self.config)
         self.final_aggregate = FinalAggregate()
-
-    def _normalize_paths(self):
-        letor_path = Path(self.config.letor_path)
-        if not letor_path.is_absolute():
-            candidate = Path(__file__).resolve().parent / letor_path
-            if candidate.exists():
-                object.__setattr__(self.config, "letor_path", str(candidate))
 
     def _output_root(self) -> Path | None:
         if self.output_dir is None:

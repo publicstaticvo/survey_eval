@@ -26,6 +26,7 @@ class SemanticScholar:
         self.config = config
         self.api_key = (config.semantic_scholar_api_key or "").strip()
         self.proxy_url = get_proxy_url(config)
+        self.retry_count = int(getattr(config, "semantic_scholar_retry_count", 5))
 
     def _headers(self) -> dict[str, str]:
         headers = dict(HEADERS)
@@ -58,8 +59,10 @@ class SemanticScholar:
                         proxy=self.proxy_url,
                         timeout=aiohttp.ClientTimeout(total=S2_REQUEST_TIMEOUT_SECONDS),
                     ) as resp:
-                        if resp.status == 429:
+                        if resp.status in [429, 503, 504]:
                             retry_count += 1
+                            if self.retry_count >= 0 and retry_count > self.retry_count:
+                                resp.raise_for_status()
                             if retry_count == 1 or retry_count % 5 == 0:
                                 print(f"SemanticScholar 429 retrying {endpoint}, attempts={retry_count}")
                             await asyncio.sleep(random.uniform(1.0, 2.0))
@@ -68,6 +71,8 @@ class SemanticScholar:
                         return await resp.json()
             except asyncio.TimeoutError:
                 timeout_retry_count += 1
+                if self.retry_count >= 0 and timeout_retry_count > self.retry_count:
+                    raise
                 if timeout_retry_count == 1 or timeout_retry_count % 5 == 0:
                     print(f"SemanticScholar timeout retrying {endpoint}, attempts={timeout_retry_count}")
                 await asyncio.sleep(random.uniform(1.0, 2.0))
@@ -557,6 +562,7 @@ def get_semantic_scholar_client(config: ToolConfig | None = None) -> SemanticSch
     elif config is not None and (
         _S2_CLIENT.config.semantic_scholar_api_key != config.semantic_scholar_api_key
         or _S2_CLIENT.proxy_url != get_proxy_url(config)
+        or _S2_CLIENT.retry_count != config.semantic_scholar_retry_count
     ):
         _S2_CLIENT = SemanticScholar(config)
     return _S2_CLIENT

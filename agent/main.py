@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -41,7 +41,10 @@ def write_agent_yaml(path: str | Path):
         "external_llm": _to_yamlable(config.llm_server_info),
         "rerank": _to_yamlable(config.rerank_server_info) | {"num_documents": config.rerank_n_documents},
         "sbert": {"base_url": config.sbert_server_url},
-        "dynamic_oracle": {"num_oracle_papers": config.num_oracle_papers, "letor_path": config.letor_path},
+        "dynamic_oracle": {
+            "num_oracle_papers": getattr(config, "num_oracle_papers", 1000),
+            "letor_path": getattr(config, "letor_path", "backup/ranker.txt"),
+        },
         "citation_parser": {
             "grobid_url": config.grobid_url,
             "grobid_parse_mode": config.grobid_parse_mode,
@@ -75,7 +78,10 @@ def write_agent_yaml(path: str | Path):
             "api_keys": config.openalex_api_keys,
         },
         "academic_search": {"default_engine": config.default_academic_search_engine},
-        "semantic_scholar": {"api_key": config.semantic_scholar_api_key},
+        "semantic_scholar": {
+            "api_key": config.semantic_scholar_api_key,
+            "retry_count": config.semantic_scholar_retry_count,
+        },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")

@@ -41,8 +41,9 @@ class UncitedEntities:
     def __init__(self, config: ToolConfig):
         self.config = config
         self.find_entities = FindAllEntities(config.llm_server_info, config.sampling_params)
+        self.use_semantic_scholar = config.use_semantic_scholar()
         self.openalex = get_openalex_client(config)
-        self.semantic_scholar = get_semantic_scholar_client(config)
+        self.semantic_scholar = get_semantic_scholar_client(config) if self.use_semantic_scholar else None
 
     def _iter_sentences(self, paper: dict[str, Any]):
         def walk(node: Any):
@@ -80,6 +81,8 @@ class UncitedEntities:
         ]
 
     async def _search_semantic_scholar(self, entity: str) -> list[dict[str, Any]]:
+        if self.semantic_scholar is None:
+            return []
         payload = await self.semantic_scholar.search_works(
             search=entity,
             per_page=3,
@@ -100,10 +103,10 @@ class UncitedEntities:
 
     async def _search_entity(self, entity: str) -> dict[str, Any]:
         matches = []
-        for source, search in (
-            ("openalex", self._search_openalex),
-            ("semantic_scholar", self._search_semantic_scholar),
-        ):
+        searchers = [("openalex", self._search_openalex)]
+        if self.use_semantic_scholar:
+            searchers.append(("semantic_scholar", self._search_semantic_scholar))
+        for source, search in searchers:
             try:
                 papers = await search(entity)
             except Exception as exc:

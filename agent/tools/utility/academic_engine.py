@@ -6,7 +6,7 @@ from .tool_config import ToolConfig
 def get_academic_engine(config: ToolConfig | None = None):
     config = config or ToolConfig()
     engine_name = (config.default_academic_search_engine or "openalex").strip().lower()
-    if engine_name == "openalex":
+    if engine_name in {"openalex", "openalex_only", "openalex-only", "openalex only"}:
         return get_openalex_client(config)
     if engine_name in {"semantic_scholar", "semanticscholar", "semantic scholar", "s2"}:
         return get_semantic_scholar_client(config)

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TEI xml:space="preserve" xmlns="http://www.tei-c.org/ns/1.0" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xsi:schemaLocation="http://www.tei-c.org/ns/1.0 https://raw.githubusercontent.com/kermitt2/grobid/master/grobid-home/schemas/xsd/Grobid.xsd"
+ xmlns:xlink="http://www.w3.org/1999/xlink">
+	<teiHeader xml:lang="en">
+		<fileDesc>
+			<titleStmt>
+				<title level="a" type="main">DISCUSSION OF THE PAPER BY GRENANDER AND MILLER</title>
+			</titleStmt>
+			<publicationStmt>
+				<publisher/>
+				<availability status="unknown"><licence/></availability>
+			</publicationStmt>
+			<sourceDesc>
+				<biblStruct status="extracted">
+					<analytic>
+						<title level="a" type="main">DISCUSSION OF THE PAPER BY GRENANDER AND MILLER</title>
+					</analytic>
+					<monogr>
+						<imprint>
+							<date/>
+						</imprint>
+					</monogr>
+					<idno type="MD5">A82F661E64D94E571BE88A655A0E6ED4</idno>
+				</biblStruct>
+			</sourceDesc>
+		</fileDesc>
+		<encodingDesc>
+			<appInfo>
+				<application version="0.9.0" ident="GROBID" when="2026-06-23T15:09+0000">
+					<desc>GROBID - A machine learning software for extracting information from scholarly documents</desc>
+					<label type="revision">0.9.0</label>
+					<label type="parameters">startPage=-1, endPage=-1, consolidateCitations=0, consolidateHeader=0, consolidateFunders=0, includeRawAffiliations=false, includeRawCitations=false, includeRawCopyrights=false, generateTeiIds=false, generateTeiCoordinates=[], flavor=null</label>
+					<ref target="https://github.com/kermitt2/grobid"/>
+				</application>
+			</appInfo>
+		</encodingDesc>
+		<profileDesc>
+			<abstract xml:lang="so">
+<div xmlns="http://www.tei-c.org/ns/1.0"><head>p(x I y)cxf (y I x</head></div>
+			</abstract>
+		</profileDesc>
+	</teiHeader>
+	<text xml:lang="en">
+		<body>
+<div xmlns="http://www.tei-c.org/ns/1.0"><head>585</head><p>To determine the maximum a posteriori estimator of x we recursively update the current estimate x by considering the posterior likelihood ratio p(xU(allY) p(x I y) p(x U{a)) f (YI x U(a})   p(x) f (y Ix) updating either deterministically (an algorithm analogous to Besag's iterated conditional modes) or stochastically: the natural analogue of stochastic annealing is a spatial birth-and-death process with transition rates depending on the posterior likelihood ratios. We have studied these algorithms in the papers cited above.</p><p>This approach also provides an appreciation of some existing techniques in computer vision. We have shown that, for simple models of binary noise, the maximum likelihood estimator i coincides with the standard erosion and dilation operators of mathematical morphology <ref type="bibr">(Serra, 1982)</ref>, and, for models such as Gaussian additive noise, the log-likelihood ratio log f (y Ix U{ul)-log / (YI x)   is the celebrated Hough transform, used in computer vision to detect simple features such as lines and circular arcs <ref type="bibr">(Illingworth and Kittler, 1988)</ref>. M. N. M. van Lieshout (Free University Amsterdam and Centre for Mathematics and Computer Science, Amsterdam): In addition to Professor Baddeley's contribution I would like to mention a few results from our research.</p><p>To find an approximate maximum a posteriori (MAP) solution, we proposed to search iteratively for that object whose addition or deletion would most increase the posterior likelihood ratio and to update the scene accordingly <ref type="bibr">(Baddeley and van Lieshout, 1992a, b)</ref>.This is a variant of Besag's iterated conditional modes (ICM) algorithm for discretized images but is also defined on more general spaces.</p><p>The authors propose a jump-diffusion process to sample from the posterior distribution. The jump part bears a close resemblance to the spatial birth-and-death processes introduced by <ref type="bibr">Preston (1977)</ref>. These are well known in spatial statistics <ref type="bibr">(Ripley, 1977)</ref> for sampling Markov point processes. The rate of convergence was studied by <ref type="bibr">M111ller (1989)</ref>. Alternatively, a Metropolis-Hastings algorithm (Geyer and M!Zlller, 1993) is built as a mixture of two transition kernels: one can be regarded as the analogue of Grenander and Miller's diffusion process; the other generates new hypotheses.</p><p>The main advantage of sampling from the posterior distribution is the ability to estimate any functional of the posterior (see Section 1.2). In particular, the (estimated) first-order intensity surface can be regarded as an alternative to the Hough transform.</p><p>A sequence of birth-and-death processes can be combined in a stochastic annealing schedule. For H&gt;O define p 8 (x I y)cx{f (y Ix) p(x) } 118 • As for discrete Markov random fields, H has the interpretation of 'temperature'. If the set of MAP solutions has positive reference measure and the number of objects is effectively bounded above, a sequence can be constructed that converges in total variation to a uniform distribution on the set of global maxima of the posterior distribution, regardless of the initial state <ref type="bibr">(van Lieshout, 1994)</ref>.</p><p>When His very close to 0, the corresponding birth-death process behaves like the deterministic algorithm described above. This suggests using an algorithm which incorporates a search operation. However, there will be problems with the 'curse of dimension': as the dimension of the object space increases, the cost of searching it increases exponentially. To overcome this problem, we propose a multiresolution strategy <ref type="bibr">(Baddeley and van Lieshout, 1993)</ref>.</p><p>We have implemented the method and found that it performs creditably on simple test examples. The introduction of a Markov prior successfully combats the multiple-response problem and increases robustness to noise and initial scene selection. For digitized images, replacing the ICM pixel scan by steepest ascent also improves robustness and frees the technique of scanning order dependence. Moreover, Markov point processes are well suited to the techniques proposed, as posterior ratios are typically easy to evaluate.</p></div>		</body>
+		<back>
+			<div type="references">
+
+				<listBibl/>
+			</div>
+		</back>
+	</text>
+</TEI>

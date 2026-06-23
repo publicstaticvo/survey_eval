@@ -17,10 +17,11 @@ class CitationParser:
 
     def __init__(self, config: ToolConfig):
         self.paper_downloader = PaperDownload(config)
-        self.semantic_scholar_downloader = S2PaperDownload(config)
+        self.use_semantic_scholar = config.use_semantic_scholar()
+        self.semantic_scholar_downloader = S2PaperDownload(config) if self.use_semantic_scholar else None
         self.websearch = WebSearchFallback(config)
         self.openalex = get_openalex_client(config)
-        self.semantic_scholar = get_semantic_scholar_client(config)
+        self.semantic_scholar = get_semantic_scholar_client(config) if self.use_semantic_scholar else None
 
     def _empty_info(self, title: str) -> Dict[str, Any]:
         return {
@@ -72,6 +73,8 @@ class CitationParser:
         return self._finalize_info(info)
 
     async def _download_semantic_scholar_paper(self, info: Dict[str, Any], metadata: dict) -> Dict[str, Any]:
+        if self.semantic_scholar_downloader is None:
+            return self._finalize_info(info)
         matched_metadata = dict(metadata or {})
         downloaded = None
         excluded_urls = set(info.get("_attempted_openalex_urls", []) or [])
@@ -108,10 +111,14 @@ class CitationParser:
         openalex_task = asyncio.create_task(
             self._search_paper(title, self.openalex, "openalex", select=self.SELECT)
         )
-        semantic_task = asyncio.create_task(
-            self._search_paper(title, self.semantic_scholar, "semantic scholar")
-        )
-        openalex_meta, semantic_meta = await asyncio.gather(openalex_task, semantic_task)
+        if self.use_semantic_scholar:
+            semantic_task = asyncio.create_task(
+                self._search_paper(title, self.semantic_scholar, "semantic scholar")
+            )
+            openalex_meta, semantic_meta = await asyncio.gather(openalex_task, semantic_task)
+        else:
+            openalex_meta = await openalex_task
+            semantic_meta = None
         if openalex_meta:
             openalex_meta = dict(openalex_meta)
             info["metadata"]["openalex"] = openalex_meta
