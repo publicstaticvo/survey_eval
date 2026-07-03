@@ -71,7 +71,6 @@ class OpenAlex:
         self._init_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._initialized = False
-        configured_rps = float(config.openalex_requests_per_second or OPENALEX_MAX_REQUESTS_PER_SECOND)
         self.request_count = 0
         self.no_key_state = CredentialState("anonymous", None, FREE_CREDITS_PER_DAY, initialized=True)
         self.api_key_states = [
@@ -145,7 +144,8 @@ class OpenAlex:
 
     async def _choose_credential(self, estimated_cost: int, require_api_key: bool = False) -> CredentialState:
         await self.ensure_ready()
-        states = ([self.no_key_state] if not require_api_key else []) + self.api_key_states
+        # ([self.no_key_state] if not require_api_key else []) + 
+        states = self.api_key_states
         refresh_states = []
         async with self._state_lock:
             for state in states:

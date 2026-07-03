@@ -63,8 +63,7 @@ class MissingPaperCheck:
 
     def _reference_survey_papers(self, reference_surveys: Any) -> list[dict[str, Any]]:
         papers = []
-        if isinstance(reference_surveys, dict):
-            reference_surveys = reference_surveys.get("reference_surveys", reference_surveys)
+        reference_surveys = reference_surveys.get("reference_surveys", reference_surveys)
         if isinstance(reference_surveys, dict):
             values = reference_surveys.values()
         else:
@@ -111,6 +110,7 @@ class MissingPaperCheck:
         for reference_paper in self._reference_survey_papers(reference_surveys):
             if not self._is_cited(reference_paper, cited_papers):
                 self._add_missing(missing, seen, reference_paper, "reference_surveys")
+        print(f"{len(missing)} missing papers")
 
         topic_data = await self.topic_specific(paper, paper_content_map)
         for topic_item in topic_data.get("topic_specific_papers", []) or []:
@@ -123,8 +123,9 @@ class MissingPaperCheck:
                     topic=topic_item.get("topic", ""),
                     query=topic_item.get("query", ""),
                 )
+        print(f"{len(missing)} missing papers")
 
-        entity_data = entity_data or await self.uncited_entities(paper)
+        entity_data = entity_data or await self.uncited_entities(paper, cited_papers, paper_content_map, literature_pool)
         for entity_item in entity_data.get("uncited_entities", []) or []:
             for candidate in entity_item.get("matched_papers", []) or []:
                 self._add_missing(
@@ -134,6 +135,7 @@ class MissingPaperCheck:
                     "uncited_entities",
                     entity_name=entity_item.get("entity", ""),
                 )
+        print(f"{len(missing)} missing papers")
 
         prospective_data = {"uncited_prospective": []}
         if literature_pool:
@@ -142,25 +144,18 @@ class MissingPaperCheck:
                 literature_pool,
                 extra_claims=neutral_opinion_claims,
             )
-            for claim_item in prospective_data.get("uncited_prospective", []) or []:
-                fact_check = claim_item.get("fact_check", {}) or {}
-                sources = fact_check.get("sources") or []
-                evidence_sources = fact_check.get("evidence_sources") or {}
-                for entries in evidence_sources.values():
-                    for entry in entries:
-                        source_paper = entry.get("paper")
-                        if isinstance(source_paper, dict):
-                            sources.append(source_paper)
-                for source_paper in sources:
+            for claim_text, source_papers in (prospective_data.get("uncited_prospective", {}) or {}).items():
+                for source_paper in source_papers or []:
                     if isinstance(source_paper, dict) and source_paper.get("title"):
                         self._add_missing(
                             missing,
                             seen,
                             source_paper,
                             "uncited_prospective",
-                            claim=claim_item.get("claim", ""),
-                            judgment=fact_check.get("judgment", ""),
+                            claim=claim_text,
+                            judgment="REFUTED",
                         )
+        print(f"{len(missing)} missing papers")
 
         return {
             "source_evals": {
@@ -170,3 +165,4 @@ class MissingPaperCheck:
                 "uncited_prospective": prospective_data.get("uncited_prospective", []),
             }
         }
+

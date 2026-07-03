@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any
 
 from ..utility.academic_engine import get_academic_engine
+from ..utility.citation_utils import citation_keys as normalize_citation_keys
 from ..utility.tool_config import ToolConfig
 
 
@@ -147,21 +148,16 @@ class BuildLiteraturePool:
         return sections
 
     def _normalize_citations(self, citations: Any) -> list[str]:
-        normalized = []
-        for citation in citations or []:
-            if isinstance(citation, dict):
-                key = citation.get("key") or citation.get("ref_text")
-            else:
-                key = citation
-            if key:
-                normalized.append(str(key))
-        return normalized
+        return normalize_citation_keys(citations)
 
     def _section_core_citation_keys(self, sections: list[dict[str, Any]]) -> list[str]:
         keys = []
 
         def walk(node: Any):
             if isinstance(node, dict):
+                if "sentences" in node:
+                    walk(node.get("sentences", []) or [])
+                    return
                 for paragraph in node.get("paragraphs", []) or []:
                     walk(paragraph)
                 for child in node.get("sections", []) or []:
@@ -265,3 +261,4 @@ class BuildLiteraturePool:
         print(f"BuildLiteraturePool {len(pool)} neighbor")
 
         return {"literature_pool": pool}
+

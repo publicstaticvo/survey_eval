@@ -28,7 +28,7 @@ xsi:schemaLocation="http://www.tei-c.org/ns/1.0 https://raw.githubusercontent.co
 		</fileDesc>
 		<encodingDesc>
 			<appInfo>
-				<application version="0.9.0" ident="GROBID" when="2026-06-23T15:09+0000">
+				<application version="0.9.0" ident="GROBID" when="2026-06-26T06:09+0000">
 					<desc>GROBID - A machine learning software for extracting information from scholarly documents</desc>
 					<label type="revision">0.9.0</label>
 					<label type="parameters">startPage=-1, endPage=-1, consolidateCitations=0, consolidateHeader=0, consolidateFunders=0, includeRawAffiliations=false, includeRawCitations=false, includeRawCopyrights=false, generateTeiIds=false, generateTeiCoordinates=[], flavor=null</label>
@@ -37,7 +37,7 @@ xsi:schemaLocation="http://www.tei-c.org/ns/1.0 https://raw.githubusercontent.co
 			</appInfo>
 		</encodingDesc>
 		<profileDesc>
-			<abstract xml:lang="so">
+			<abstract xml:lang="es">
 <div xmlns="http://www.tei-c.org/ns/1.0"><head>p(x I y)cxf (y I x</head></div>
 			</abstract>
 		</profileDesc>

@@ -59,7 +59,7 @@ class OpenAlexBudgetExceeded(RuntimeError):
 
 # =============== Global Semaphore ===============
 class RateLimit:
-    AGENT_SEMAPHORE = asyncio.Semaphore(20)                # LLM
+    AGENT_SEMAPHORE = asyncio.Semaphore(10)                # LLM
     DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(20)
     CITATION_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
@@ -119,6 +119,7 @@ async def async_request_template(
             payload = {"raw_text": text}
         if payload.get("error") == "Rate limit exceeded":
             raise OpenAlexBudgetExceeded(payload)
+        resp.reason = text
         resp.raise_for_status()
     
     if method.lower() == "post":

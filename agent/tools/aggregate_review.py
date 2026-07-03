@@ -21,6 +21,9 @@ class FinalAggregate:
     def _iter_sentences(self, paper: dict[str, Any]):
         def walk(node: Any):
             if isinstance(node, dict):
+                if "sentences" in node:
+                    yield from walk(node.get("sentences", []) or [])
+                    return
                 for paragraph in node.get("paragraphs", []) or []:
                     yield from walk(paragraph)
                 for section in node.get("sections", []) or []:
@@ -31,16 +34,6 @@ class FinalAggregate:
                         yield sentence
 
         yield from walk(paper)
-
-    def _citation_weaknesses(self, citation_evals: dict[str, Any], paper_content_map: dict[str, Any]) -> list[dict[str, Any]]:
-        weaknesses = []
-        for key, info in (paper_content_map or {}).items():
-            if isinstance(info, dict) and info.get("status", 3) == 3:
-                weaknesses.append({"module": "fact.citation_check", "type": "citation_missing", "citation_key": key})
-        for item in citation_evals.get("results", []) or []:
-            if item.get("status") == "fail":
-                weaknesses.append({"module": "fact.citation_check", "type": "citation_metadata_mismatch", **item})
-        return weaknesses
 
     def _fact_items(self, fact_checks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         weaknesses, comments = [], []
@@ -69,7 +62,17 @@ class FinalAggregate:
 
     def _missing_paper_comments(self, source_evals: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         comments, hallucinations = [], []
+        grouped_prospective = source_evals.get("uncited_prospective", {}) or {}
+        for claim, papers in grouped_prospective.items() if isinstance(grouped_prospective, dict) else []:
+            comments.append({
+                "module": "scope.missing_papers",
+                "type": "uncited_prospective",
+                "claim": claim,
+                "alternative_papers": papers,
+            })
         for item in source_evals.get("missing_papers", []) or []:
+            if item.get("reason") == "uncited_prospective":
+                continue
             comments.append({"module": "scope.missing_papers", "type": item.get("reason", "missing_paper"), **item})
         for entity in source_evals.get("uncited_entities", []) or []:
             if not entity.get("matched_papers"):
@@ -119,13 +122,11 @@ class FinalAggregate:
         evaluations = result.get("evaluations", {}) or {}
         paper = preprocessing.get("classified_paper", {})
         fact_checks = evaluations.get("fact_checks", []) or []
-        citation_evals = evaluations.get("citation_evals", {}) or {}
         source_evals = evaluations.get("source_evals", {}) or {}
         topic_evals = evaluations.get("topic_evals", {}) or {}
 
         weaknesses = []
         comments = []
-        weaknesses.extend(self._citation_weaknesses(citation_evals, preprocessing.get("paper_content_map", {})))
         fact_weaknesses, fact_comments = self._fact_items(fact_checks)
         weaknesses.extend(fact_weaknesses)
         comments.extend(fact_comments)
@@ -140,3 +141,4 @@ class FinalAggregate:
             "comments": comments,
             "statistics": self._statistics(paper, fact_checks),
         }
+

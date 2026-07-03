@@ -138,6 +138,7 @@ class LatexPaperParser:
         self.bib_files = []
         self.bibliography_entries = {}
         self.unresolved_citation_keys = []
+        self.citation_number_map = {}
 
     def _read_text_file(self, path: os.PathLike | str) -> str:
         path = os.fspath(path)
@@ -219,6 +220,7 @@ class LatexPaperParser:
         self.bib_files = []
         self.bibliography_entries = {}
         self.unresolved_citation_keys = []
+        self.citation_number_map = {}
         self._collect_bibliography_files(processed_content)
 
     def _safe_nodes(self, nodes):
@@ -1160,13 +1162,14 @@ class LatexPaperParser:
             for cite in sentence_citations:
                 if cite not in unique_citations:
                     unique_citations.append(cite)
+            citation_map = self._citation_number_dict(unique_citations)
 
             sentence_text = re.sub(r"\s+", " ", sentence_text).strip()
             sentence_text = re.sub(r"\s+([,.;:!?])", r"\1", sentence_text)
             sentence_text = self._normalize_rendered_citation_punctuation(sentence_text)
-            if not sentence_text and not unique_citations:
+            if not sentence_text and not citation_map:
                 continue
-            sentence = LatexSentence(text=sentence_text, citations=unique_citations)
+            sentence = LatexSentence(text=sentence_text, citations=citation_map)
             sentences.append(sentence)
 
         return sentences
@@ -1196,16 +1199,19 @@ class LatexPaperParser:
 
         return segments
 
+    def _citation_number(self, citation_key: str) -> int:
+        if citation_key not in self.citation_number_map:
+            self.citation_number_map[citation_key] = len(self.citation_number_map) + 1
+        return self.citation_number_map[citation_key]
+
+    def _citation_number_dict(self, citation_keys: list[str]) -> dict[int, str]:
+        return {self._citation_number(key): key for key in citation_keys}
+
     def _format_citation_text(self, citation_keys: list[str], macro_name: str | None = None) -> str:
         if not citation_keys:
             return "?"
-
-        author_texts = [
-            self.bibliography_entries.get(key, {}).get("ref_string", "?")
-            for key in citation_keys
-        ]
-        text = "; ".join(author_texts)
-        return text if macro_name in TEXTUAL_CITATION_MACROS else f"({text})"
+        numbers = [self._citation_number(key) for key in citation_keys]
+        return f"[{', '.join(str(number) for number in numbers)}]"
 
     def _normalize_rendered_citation_punctuation(self, text: str) -> str:
         text = re.sub(r"\.\.", ".", text)
@@ -1373,7 +1379,7 @@ class LatexPaperParser:
             bool: True if it looks like a citation key
         """
         # Citation keys typically:
-        # - Don't start with special characters like \, §, etc.
+        # - Don't start with special characters like \, 闂? etc.
         # - Don't contain spaces (or very few)
         # - Are relatively short
         # - Contain mostly alphanumeric chars, underscores, hyphens, colons
@@ -1382,7 +1388,7 @@ class LatexPaperParser:
             return False
         
         # If it starts with Latex commands or special symbols, it's likely a note
-        if text.startswith('\\') or text.startswith('§'):
+        if text.startswith("\\"):
             return False
         
         # If it has multiple spaces, it's likely descriptive text
@@ -1414,7 +1420,23 @@ class LatexPaperParser:
                     result[-1] = f"{result[-1].rstrip()} {sentence}"
                 else:
                     result.append(sentence)
-        return result
+        return self._merge_short_sentences_forward(result)
+
+    def _sentence_word_count(self, sentence: str) -> int:
+        return len(re.findall(r"[A-Za-z0-9]+", sentence or ""))
+
+    def _merge_short_sentences_forward(self, sentences: list[str]) -> list[str]:
+        merged = []
+        index = 0
+        while index < len(sentences):
+            sentence = sentences[index]
+            if index + 1 < len(sentences) and self._sentence_word_count(sentence) <= 4:
+                merged.append(f"{sentence.rstrip()} {sentences[index + 1].lstrip()}".strip())
+                index += 2
+            else:
+                merged.append(sentence)
+                index += 1
+        return merged
 
     def _scan_sentence_candidates(self, text: str) -> list[str]:
         abbreviations = {
@@ -1473,7 +1495,7 @@ class LatexPaperParser:
         if word in abbreviations:
             return False
 
-        return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}。！？"
+        return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}"
 
     def _is_part_of_latin_abbreviation(self, text: str, idx: int) -> bool:
         window = text[max(0, idx - 3):idx + 3].lower()
@@ -1570,21 +1592,24 @@ def construct_citation_info(paper: LatexPaper, parser: LatexPaperParser) -> List
         sentences = []
         for i, sentence in enumerate(paragraph.sentences):
             if sentence.citations:
+                citation_keys = list(sentence.citations.values()) if isinstance(sentence.citations, dict) else list(sentence.citations)
                 citation_key_value = {}
-                for citation in sentence.citations:
+                for citation in citation_keys:
                     citation_value = parser.get_bibliography_entry(citation)
-                    if citation_value: citation_key_value[citation] = citation_value
-                    else: 
+                    if citation_value:
+                        citation_key_value[citation] = citation_value
+                    else:
                         citation_key_value = {}
                         break
                 if citation_key_value:
                     sentences.append({
-                        "text": sentence.text, 
-                        "citation": citation_key_value, 
+                        "text": sentence.text,
+                        "citation_keys": citation_keys,
+                        "citation": citation_key_value,
                         "serial": " ".join(paragraph.get_next_sentence_until_citation(i, 3))
                     })
         return sentences
-    
+
     all_citation_info = []
     # abstract
     if paper.abstract:
@@ -1619,3 +1644,4 @@ def construct_citation_info(paper: LatexPaper, parser: LatexPaperParser) -> List
                             for x in citation_info: x['section_id'] = chapter_str
                             all_citation_info.extend(citation_info)
     return all_citation_info
+

@@ -23,10 +23,14 @@ class CitationParser:
         self.openalex = get_openalex_client(config)
         self.semantic_scholar = get_semantic_scholar_client(config) if self.use_semantic_scholar else None
 
+    def _clean_title(self, title: str) -> str:
+        title = re.sub(r"[{}]", "", title or "")
+        return re.sub(r"\s+", " ", title).strip()
+
     def _empty_info(self, title: str) -> Dict[str, Any]:
         return {
             "metadata": {},
-            "title": title,
+            "title": self._clean_title(title),
             "abstract": "",
             "full_content": {},
             "status": 3,
@@ -34,7 +38,8 @@ class CitationParser:
         }
 
     def _normalize_title(self, title: str) -> str:
-        return re.sub(r"\s+", " ", re.sub(r"[:,.!?&]", " ", title or "")).strip()
+        title = self._clean_title(title)
+        return re.sub(r"\s+", " ", re.sub(r"[:,.!?&]", " ", title)).strip()
 
     def _finalize_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
         full_content = info.get("full_content")
@@ -106,7 +111,7 @@ class CitationParser:
         return None
 
     async def _search_paper_from_api(self, citation_info: str | Dict[str, Any]) -> Dict[str, Any]:
-        title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
+        title = self._clean_title(citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or ""))
         info = self._empty_info(title)
         openalex_task = asyncio.create_task(
             self._search_paper(title, self.openalex, "openalex", select=self.SELECT)
@@ -155,7 +160,7 @@ class CitationParser:
     async def _parse_single(self, citation_key: str, citation_info: Any):
         info = await self._search_paper_from_api(citation_info)
         if info["status"] == 3:
-            title = citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or "")
+            title = self._clean_title(citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or ""))
             info = await self._fallback_websearch(title, info)
         return citation_key, info
 
@@ -172,3 +177,4 @@ class CitationParser:
             except Exception as e:
                 print(f"CitationParser {e}")
         return {"paper_content_map": paper_content_map}
+

@@ -11,7 +11,7 @@ GRAPH_ENVIRONMENT_NAMES = {"tikzpicture", "figure", "figure*", "table", "table*"
 class LatexSentence:
     """Represents a single sentence with its citations"""
     text: str
-    citations: List[str] = field(default_factory=list)
+    citations: Dict[int, str] = field(default_factory=dict)
     
     def to_dict(self):
         return {
@@ -22,7 +22,7 @@ class LatexSentence:
     def __repr__(self):
         return self.text
 
-    def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
+    def get_skeleton(self) -> Dict[str, Any]:
         return {
             'text': re.sub(r"\s+", " ", self.text or "").strip(),
             'citations': self.citations,
@@ -35,7 +35,7 @@ class LatexEnvironment:
     """Represents a Latex environment block (theorem, remark, tikzpicture, etc.)"""
     environment_name: str
     text: str
-    citations: List[str] = field(default_factory=list)
+    citations: Dict[int, str] = field(default_factory=dict)
     caption: str = ""
     
     def to_dict(self):
@@ -51,7 +51,7 @@ class LatexEnvironment:
         return self.text
         # return f"\\begin{{{self.environment_name}}}\n{self.text}\n\\end{{{self.environment_name}}}\n"
 
-    def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
+    def get_skeleton(self) -> Dict[str, Any]:
         result = {
             'text': self.text,
             'citations': self.citations,
@@ -66,7 +66,7 @@ class LatexEnvironment:
 class LatexParagraphName:
     r"""Represents a \paragraph{...} heading as its own sentence-like item."""
     text: str
-    citations: List[str] = field(default_factory=list)
+    citations: Dict[int, str] = field(default_factory=dict)
 
     def to_dict(self):
         return {
@@ -78,7 +78,7 @@ class LatexParagraphName:
     def __repr__(self):
         return f"\\paragraph{{{self.text}}}"
 
-    def get_skeleton(self) -> Dict[str, Union[str, List[str]]]:
+    def get_skeleton(self) -> Dict[str, Any]:
         return {
             'text': re.sub(r"\s+", " ", self.text or "").strip(),
             'citations': self.citations,
@@ -93,7 +93,7 @@ def debug_sentences(sentences: List[Union[LatexSentence, LatexEnvironment]], sta
             sentence = sentence.to_dict()
             s = f"{i + start_id}\t{sentence['text']}\n"
             if sentence['citations']:
-                s += f"-\tCitations: {', '.join(sentence['citations'])}\n"
+                s += f"-\tCitations: {sentence['citations']}\n"
         else:
             s = f"{i + start_id}\t{sentence.__repr__()}\n"
         output += s
@@ -109,7 +109,7 @@ class LatexParagraph:
     def add_sentence(self, sentence: Union[LatexSentence, LatexEnvironment, LatexParagraphName]):
         self.sentences.append(sentence)
 
-    def get_skeleton(self) -> List[Dict[str, Union[str, List[str]]]]:
+    def get_skeleton(self) -> List[Dict[str, Any]]:
         return [sentence.get_skeleton() for sentence in self.sentences]
 
     def has_text_content(self) -> bool:

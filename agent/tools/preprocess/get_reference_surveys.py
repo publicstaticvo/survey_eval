@@ -20,8 +20,6 @@ from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
 from ..utility.grobidpdf import PaperParser
 from ..utility.latex_parser import LatexPaperParser
-from .section_classify import SectionClassification
-from .sentences import SentenceClassification
 from .utils import extract_json
 
 
@@ -40,9 +38,9 @@ class SurveyDownload(PaperDownload):
         print(f"This survey has {len(titles)} titles")
         return result
 
-    def _latex_post_hook(self, paper, latex_content: str = "") -> dict:
+    def _latex_post_hook(self, latex_content: str = "") -> dict:
         titles = LatexPaperParser().get_titles(latex_content)
-        result = super()._latex_post_hook(paper, latex_content)
+        result = super()._latex_post_hook(latex_content)
         result["titles"] = titles
         print(f"This TeX survey has {len(titles)} titles")
         return result
@@ -58,9 +56,9 @@ class SurveyS2Download(S2PaperDownload):
         print(f"This survey has {len(titles)} titles")
         return result
 
-    def _latex_post_hook(self, paper, latex_content: str = "") -> dict:
+    def _latex_post_hook(self, latex_content: str = "") -> dict:
         titles = LatexPaperParser().get_titles(latex_content)
-        result = super()._latex_post_hook(paper, latex_content)
+        result = super()._latex_post_hook(latex_content)
         result["titles"] = titles
         print(f"This TeX survey has {len(titles)} titles")
         return result
@@ -77,7 +75,7 @@ class ReferenceSurveySelect(AsyncChat):
         for tier in ("strict_reference_surveys", "partial_reference_surveys"):
             selected[tier] = []
             for item in results[tier]:
-                # 若title不在title_to_paper中，会弹出KeyError给tenacity捕捉并重试。
+                # 鑻itle涓嶅湪title_to_paper涓紝浼氬脊鍑篕eyError缁檛enacity鎹曟崏骞堕噸璇曘€?
                 paper = dict(title_to_paper[item["title"]])
                 paper["reference_survey_tier"] = tier
                 paper["reference_survey_reason"] = item["reason"]
@@ -108,8 +106,6 @@ class GetReferenceSurveys:
         self.semantic_scholar = get_semantic_scholar_client(config)
         self.academic_engine = get_academic_engine(config)
         self.academic_engine_type = config.default_academic_search_engine
-        self.sentence_classification = SentenceClassification(config)
-        self.section_classification = SectionClassification(config)
 
     def _uses_semantic_scholar_engine(self) -> bool:
         return (self.academic_engine_type or "").strip().lower() in S2_ENGINE_NAMES
@@ -126,7 +122,7 @@ class GetReferenceSurveys:
                 select=self.SELECT,
             )
         else:
-            search_query = f'{query} + (survey | summary | review | overview | "comprehensive study")'
+            search_query = f'{query} AND (survey OR summary OR review OR overview OR "comprehensive study")'
             print(f"Search keywords: {search_query}")
             payload = await self.academic_engine.search_works(
                 search=search_query,
@@ -236,27 +232,6 @@ class GetReferenceSurveys:
             "sections": [],
         }
 
-    async def _classify_full_content(self, full_content: dict, metadata: dict) -> dict:
-        content = full_content.get("full_content") if isinstance(full_content, dict) else {}
-        if not isinstance(content, dict) or not (content.get("paragraphs") or content.get("sections")):
-            abstract = ""
-            if isinstance(full_content, dict):
-                abstract = full_content.get("abstract", "")
-            abstract = abstract or metadata.get("abstract", "") or ""
-            content = self._abstract_content(metadata, abstract)
-        else:
-            content = dict(content)
-            content.setdefault("title", metadata.get("title", ""))
-            if not content.get("abstract"):
-                abstract = full_content.get("abstract", "") or metadata.get("abstract", "")
-                if abstract:
-                    content["abstract"] = {"paragraphs": [self._split_abstract_sentences(abstract)]}
-        content = await self.sentence_classification(content)
-        content = await self.section_classification(content)
-        updated = dict(full_content or {})
-        updated["full_content"] = content
-        updated["abstract"] = updated.get("abstract") or metadata.get("abstract", "")
-        return updated
 
     async def _download_selected_surveys(self, surveys: list[dict]) -> list[dict]:
         async def _single(survey: dict):
@@ -282,7 +257,7 @@ class GetReferenceSurveys:
             item["reference_survey_tier"] = survey.get("reference_survey_tier", "")
             item["reference_survey_reason"] = survey.get("reference_survey_reason", "")
             item["covered_subtopics"] = survey.get("covered_subtopics", [])
-            item["full_content"] = await self._classify_full_content(full_content, metadata)
+            item["full_content"] = full_content
             return item
 
         tasks = [asyncio.create_task(_single(survey)) for survey in surveys]

@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from ..fact.fact_check import FactualCorrectnessCritic
+from ..utility.citation_utils import has_citations
 from ..utility.llmclient import AsyncRerank
 from ..utility.paper_download import PaperDownload, S2PaperDownload
 from ..utility.sbert_client import SentenceTransformerClient
@@ -25,6 +26,9 @@ class UncitedProspective:
     def _iter_sentences(self, paper: dict[str, Any]):
         def walk(node: Any):
             if isinstance(node, dict):
+                if "sentences" in node:
+                    yield from walk(node.get("sentences", []) or [])
+                    return
                 for paragraph in node.get("paragraphs", []) or []:
                     yield from walk(paragraph)
                 for section in node.get("sections", []) or []:
@@ -40,8 +44,39 @@ class UncitedProspective:
         return [
             {"text": sentence["text"], "label": sentence.get("label", "")}
             for sentence in self._iter_sentences(paper)
-            if sentence.get("label") in TARGET_CLAIM_LABELS and not sentence.get("citations")
+            if sentence.get("label") in TARGET_CLAIM_LABELS and not has_citations(sentence.get("citations"))
         ]
+
+    def _normalize_extra_claim(self, claim: dict[str, Any] | str) -> dict[str, Any] | None:
+        if isinstance(claim, str):
+            text = claim.strip()
+            label = ""
+        elif isinstance(claim, dict):
+            text = str(claim.get("text", "") or claim.get("claim", "")).strip()
+            label = str(claim.get("label", "") or "").strip()
+        else:
+            return None
+        if not text:
+            return None
+        return {"text": text, "label": label}
+
+    def _merge_claims(
+        self,
+        claims: list[dict[str, Any]],
+        extra_claims: list[dict[str, Any] | str] | None = None,
+    ) -> list[dict[str, Any]]:
+        merged = []
+        seen = set()
+        for claim in [*claims, *(extra_claims or [])]:
+            normalized = self._normalize_extra_claim(claim)
+            if not normalized:
+                continue
+            key = " ".join(normalized["text"].lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(normalized)
+        return merged
 
     def _pool_items(self, literature_pool: dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
         raw_items = literature_pool.get("literature_pool", literature_pool) if isinstance(literature_pool, dict) else literature_pool
@@ -60,8 +95,7 @@ class UncitedProspective:
         return f"Title: {paper.get('title', '')}\nAbstract: {paper.get('abstract', '')}".strip()
 
     def _top_similar_papers(self, claim: str, papers: list[dict[str, Any]], top_n: int = 200) -> list[dict[str, Any]]:
-        if not papers:
-            return []
+        if not papers: return []
         texts = [claim, *[self._paper_text(paper) for paper in papers]]
         embeddings = self.sbert.embed(texts)
         claim_vec, paper_vecs = embeddings[:1], embeddings[1:]
@@ -195,18 +229,45 @@ class UncitedProspective:
         fact_check = await self._fact_check_claim(claim["text"], downloaded)
         return {"claim": claim["text"], "label": claim["label"], "fact_check": fact_check}
 
-    async def __call__(self, paper: dict[str, Any], literature_pool: dict[str, Any] | list[dict[str, Any]]):
-        claims = self._claims(paper)
+    async def __call__(
+        self,
+        paper: dict[str, Any],
+        literature_pool: dict[str, Any] | list[dict[str, Any]],
+        extra_claims: list[dict[str, Any] | str] | None = None,
+    ):
+        claims = self._merge_claims(self._claims(paper), extra_claims)
         pool_papers = self._pool_items(literature_pool)
         tasks = [
             asyncio.create_task(self._process_claim(claim, pool_papers))
             for claim in claims
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        return {
-            "uncited_prospective": [
-                result
-                for result in results
-                if isinstance(result, dict)
-            ]
-        }
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        details: dict[str, dict[str, Any]] = {}
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            claim_text = result.get("claim", "")
+            fact_check = result.get("fact_check", {}) or {}
+            if fact_check.get("judgment") != "REFUTED":
+                continue
+            papers = []
+            sources = list(fact_check.get("sources") or [])
+            for entry in (fact_check.get("evidence_sources", {}) or {}).get("REFUTED", []) or []:
+                source_paper = entry.get("paper")
+                if isinstance(source_paper, dict):
+                    sources.append(source_paper)
+            seen = set()
+            for source in sources:
+                if not isinstance(source, dict) or not source.get("title"):
+                    continue
+                key = source.get("id") or source.get("paperId") or source.get("title")
+                if key in seen:
+                    continue
+                seen.add(key)
+                papers.append(source)
+            if papers:
+                grouped[claim_text] = papers
+                details[claim_text] = result
+        return {"uncited_prospective": grouped, "uncited_prospective_details": details}
+

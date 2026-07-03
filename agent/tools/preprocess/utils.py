@@ -13,7 +13,7 @@ def normalize_text(text: str) -> str:
 
 
 def extract_json(text: str) -> Dict:
-    """从文本中提取 JSON 对象"""
+    """浠庢枃鏈腑鎻愬彇 JSON 瀵硅薄"""
     if not text:
         return {}
     
@@ -51,10 +51,16 @@ def valid_check(query: str, target: str, ratio: float = 0.1) -> bool:
     return distance <= max(1, int(ratio * len(query)))
 
 
+def paragraph_sentences(paragraph):
+    if isinstance(paragraph, dict):
+        return paragraph.get("sentences", []) or []
+    return paragraph
+
+
 def split_content_to_paragraph(content: Dict | List):
     if isinstance(content, list): return list(content)
     paragraphs = [
-        paragraph.get("sentences", []) if isinstance(paragraph, dict) else paragraph
+        paragraph_sentences(paragraph)
         for paragraph in content.get("paragraphs", [])
     ]
     for section in content.get("sections", []):
@@ -83,9 +89,9 @@ def get_top_level_section_titles(content: dict) -> List[str]:
     return [section.get("title", "") for section in content.get("sections", []) if section.get("title")]
 
 
-def paragraph_to_text(content: list[dict], include_environments: bool):
+def paragraph_to_text(content, include_environments: bool):
     parts = []
-    for sentence in content:
+    for sentence in paragraph_sentences(content):
         if not isinstance(sentence, dict) or not sentence.get("text"):
             continue
         text = str(sentence.get("text") or "").strip()
@@ -110,3 +116,4 @@ def section_to_text(section: dict, ie: bool = False) -> str:
         if child_text:
             blocks.append(child_text)
     return "\n\n".join(filter(None, blocks))
+

@@ -319,7 +319,23 @@ class PaperParser:
                 result[-1] = f"{result[-1].rstrip()} {sentence}"
             else:
                 result.append(sentence)
-        return result
+        return self._merge_short_sentences_forward(result)
+
+    def _sentence_word_count(self, sentence: str) -> int:
+        return len(re.findall(r"[A-Za-z0-9]+", sentence or ""))
+
+    def _merge_short_sentences_forward(self, sentences: list[str]) -> list[str]:
+        merged = []
+        index = 0
+        while index < len(sentences):
+            sentence = sentences[index]
+            if index + 1 < len(sentences) and self._sentence_word_count(sentence) <= 4:
+                merged.append(f"{sentence.rstrip()} {sentences[index + 1].lstrip()}".strip())
+                index += 2
+            else:
+                merged.append(sentence)
+                index += 1
+        return merged
 
     def _scan_sentence_candidates(self, text: str) -> list[str]:
         abbreviations = {
@@ -383,7 +399,7 @@ class PaperParser:
         if word in abbreviations:
             return False
 
-        return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}。！？"
+        return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}"
 
     def _is_part_of_latin_abbreviation(self, text: str, idx: int) -> bool:
         window = text[max(0, idx - 3):idx + 3].lower()
@@ -484,4 +500,5 @@ if __name__ == "__main__":
     with open("P:\\AI4S\\survey_eval\\train_letor\\paper.json", 'w', encoding="utf-8") as f:
         json.dump(paper, f, indent=2, ensure_ascii=False)
     print(f"Sections {len(paper['sections'])}")
+
 

@@ -76,9 +76,17 @@ def parse_bib_file(filepath: str) -> Dict[str, Any]:
     return citations
 
 
+def clean_bibliography_title(title: str) -> str:
+    title = LatexNodes2Text(math_mode="verbatim").latex_to_text(str(title or ""))
+    title = re.sub(r"[{}]", "", title)
+    return re.sub(r"\s+", " ", title).strip()
+
+
 def add_ref_strings(citations: Dict[str, Any]) -> Dict[str, Any]:
     for entry in citations.values():
         if isinstance(entry, dict):
+            if "title" in entry:
+                entry["title"] = clean_bibliography_title(entry["title"])
             entry["ref_string"] = format_ref_string(entry)
     return citations
 
@@ -143,7 +151,7 @@ def last_name(author: str) -> str:
     else:
         parts = author.split()
         name = parts[-1] if parts else ""
-    return re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ'\\-]", "", name)
+    return re.sub("[^A-Za-z\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u00FF'\\\\-]", "", name)
 
 
 def _parse_standard_bibitem(content: str) -> Dict[str, Any]:
@@ -306,3 +314,4 @@ def parse_bbl_file(filepath: str) -> Dict[str, Any]:
     elif "\\entry" in content:
         return _parse_compiled_entry(content)
     return {}
+

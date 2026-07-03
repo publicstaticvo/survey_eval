@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..prompts import CONTENT_TAGS, MISSING_TOPIC_CLAIM, SECTION_LABELS
@@ -9,6 +10,7 @@ from ..utility.llmclient import AsyncChat
 from ..utility.openalex import OPENALEX_SELECT
 from ..utility.s2 import S2_DEFAULT_FIELDS
 from ..utility.tool_config import ToolConfig
+from ..preprocess.section_classify import SectionClassification
 from .utils import extract_json
 
 
@@ -59,6 +61,7 @@ class TopicCoverage:
         self.engine_name = (config.default_academic_search_engine or "openalex").strip().lower()
         self.missing_topic_client = MissingTopicClient(config)
         self.search_limit = config.topic_coverage_search_limit
+        self.section_classification = SectionClassification(config)
 
     def _uses_semantic_scholar(self) -> bool:
         return self.engine_name in {"semantic_scholar", "semanticscholar", "semantic scholar", "s2"}
@@ -80,6 +83,9 @@ class TopicCoverage:
     def _iter_sentences(self, paper: dict[str, Any]):
         def walk(node: Any):
             if isinstance(node, dict):
+                if "sentences" in node:
+                    yield from walk(node.get("sentences", []) or [])
+                    return
                 for paragraph in node.get("paragraphs", []) or []:
                     yield from walk(paragraph)
                 for section in node.get("sections", []) or []:
@@ -133,13 +139,36 @@ class TopicCoverage:
         for item in values:
             if not isinstance(item, dict):
                 continue
-            content = (item.get("full_content") or {}).get("full_content") or item.get("full_content")
+            full_content = item.get("full_content") or {}
+            content = full_content.get("full_content") if isinstance(full_content, dict) else full_content
             if isinstance(content, dict):
                 contents.append(content)
         return contents
 
-    def _reference_has_tag(self, reference_surveys: Any, tag: str) -> bool:
-        for content in self._reference_survey_contents(reference_surveys):
+    def _needs_section_classify(self, content: dict[str, Any]) -> bool:
+        sections = list(self._iter_sections(content))
+        return bool(sections) and any(
+            not section.get("functional_type") or not section.get("content_tags")
+            for section, _ in sections
+        )
+
+    async def _ensure_reference_sections_classified(self, reference_surveys: Any) -> list[dict[str, Any]]:
+        contents = self._reference_survey_contents(reference_surveys)
+        targets = [x for x in contents if self._needs_section_classify(x)]
+        if not targets: return contents
+        # results = await asyncio.gather(
+        #     *(self.section_classification(content) for content in targets),
+        #     return_exceptions=True,
+        # )
+        classified = []
+        for i, content in enumerate(targets):
+            logging.info(f"Sentence {i + 1} of {len(targets)} reference survey")
+            result = await self.section_classification(content)
+            classified.append(result)
+        return contents
+
+    async def _reference_has_tag(self, reference_surveys: Any, tag: str) -> bool:
+        for content in await self._ensure_reference_sections_classified(reference_surveys):
             for section, _ in self._iter_sections(content):
                 if tag in (section.get("content_tags", []) or []):
                     return True
@@ -204,7 +233,7 @@ class TopicCoverage:
         missing_tag_reports = []
         for tag in remaining_tags:
             if reference_surveys:
-                if self._reference_has_tag(reference_surveys, tag):
+                if await self._reference_has_tag(reference_surveys, tag):
                     missing_tag_reports.append({
                         "content_tag": tag,
                         "evidence_source": "reference_surveys",
@@ -240,3 +269,4 @@ class TopicCoverage:
 
 MissingTopicLLMClient = MissingTopicClient
 TopicCoverageCritic = TopicCoverage
+

@@ -219,11 +219,11 @@ class PaperDownload:
         abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
         return {"full_content": paper.get_skeleton(), "abstract": abstract}
 
-    def _latex_post_hook(self, paper: str = "") -> dict:
-        if not paper:
+    def _latex_post_hook(self, latex_content: str = "") -> dict:
+        if not latex_content:
             return {}
         parser = LatexPaperParser()
-        paper = parser.parse(paper)
+        paper = parser.parse(latex_content)
         abstract = None
         if paper.abstract:
             abstract = "\n\n".join(

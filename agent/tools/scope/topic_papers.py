@@ -4,6 +4,8 @@ import asyncio
 import re
 from typing import Any
 
+from ..utility.citation_utils import citation_keys as normalize_citation_keys
+
 import numpy as np
 
 from ..prompts import QUERY_EXPAND
@@ -51,22 +53,28 @@ class TopicSpecificPapers:
         return str(section.get("title") or "").strip()
 
     def _target_leaf_sections(self, paper: dict[str, Any]) -> list[tuple[list[str], dict[str, Any]]]:
+        """
+        如何识别能用来搜索文章的section标题
+        - 类别需要为CONTENT或TAXONOMY
+        - 没有CONTENT或TAXONOMY的子节点（这一项可以删除）
+        """
         targets = []
 
-        def has_target_child(section: dict[str, Any]) -> bool:
-            for child in section.get("sections", []) or []:
-                if not isinstance(child, dict):
-                    continue
-                if child.get("functional_type") in TARGET_SECTION_TYPES:
-                    return True
-                if has_target_child(child):
-                    return True
-            return False
+        # def has_target_child(section: dict[str, Any]) -> bool:
+        #     for child in section.get("sections", []) or []:
+        #         if not isinstance(child, dict):
+        #             continue
+        #         if child.get("functional_type") in TARGET_SECTION_TYPES:
+        #             return True
+        #         if has_target_child(child):
+        #             return True
+        #     return False
 
         def walk(section: dict[str, Any], path: list[str]):
             title = self._section_title(section)
             next_path = [*path, title] if title else path
-            if section.get("functional_type") in TARGET_SECTION_TYPES and not has_target_child(section):
+            #  and not has_target_child(section)
+            if section.get("functional_type") in TARGET_SECTION_TYPES:
                 targets.append((next_path, section))
             for child in section.get("sections", []) or []:
                 if isinstance(child, dict):
@@ -77,47 +85,46 @@ class TopicSpecificPapers:
                 walk(section, [])
         return targets
 
-    def _sentence_entities(self, sentence: dict[str, Any]) -> list[dict[str, Any]]:
-        entities = sentence.get("entities", []) or []
+    def _paragraph_entities(self, paragraph: Any) -> list[dict[str, Any]]:
+        entities = paragraph.get("entities", []) if isinstance(paragraph, dict) else []
         return [entity for entity in entities if isinstance(entity, dict)]
 
-    def _has_cited_entity(self, sentence: dict[str, Any]) -> bool:
-        return any(entity.get("sentence_has_citation") for entity in self._sentence_entities(sentence))
+    def _has_cited_entity(self, paragraph: Any) -> bool:
+        return any(entity.get("sentence_has_citation") for entity in self._paragraph_entities(paragraph))
 
     def _citation_keys(self, sentence: dict[str, Any]) -> list[str]:
-        keys = []
-        for citation in sentence.get("citations", []) or []:
-            key = citation.get("key") or citation.get("ref_text") if isinstance(citation, dict) else citation
-            if key:
-                keys.append(str(key))
-        return keys
+        return normalize_citation_keys(sentence.get("citations"))
 
-    def _section_sentences(self, section: dict[str, Any]) -> list[dict[str, Any]]:
-        sentences = []
+    def _section_paragraphs(self, section: dict[str, Any]) -> list[Any]:
+        paragraphs = []
 
         def walk(node: Any):
             if isinstance(node, dict):
                 for paragraph in node.get("paragraphs", []) or []:
-                    walk(paragraph)
+                    paragraphs.append(paragraph)
                 for child in node.get("sections", []) or []:
                     walk(child)
-            elif isinstance(node, list):
-                for sentence in node:
-                    if isinstance(sentence, dict) and sentence.get("text"):
-                        sentences.append(sentence)
 
         walk(section)
-        return sentences
+        return paragraphs
+
+    def _paragraph_sentences(self, paragraph: Any) -> list[dict[str, Any]]:
+        if isinstance(paragraph, dict):
+            return [sentence for sentence in paragraph.get("sentences", []) or [] if isinstance(sentence, dict) and sentence.get("text")]
+        if isinstance(paragraph, list):
+            return [sentence for sentence in paragraph if isinstance(sentence, dict) and sentence.get("text")]
+        return []
 
     def _section_evidence(self, section: dict[str, Any]) -> tuple[list[str], list[str]]:
         texts, citations = [], []
-        for sentence in self._section_sentences(section):
-            if sentence.get("label") not in TARGET_SENTENCE_LABELS:
+        for paragraph in self._section_paragraphs(section):
+            if not self._has_cited_entity(paragraph):
                 continue
-            if not self._has_cited_entity(sentence):
-                continue
-            texts.append(sentence["text"])
-            citations.extend(self._citation_keys(sentence))
+            for sentence in self._paragraph_sentences(paragraph):
+                if sentence.get("label") not in TARGET_SENTENCE_LABELS:
+                    continue
+                texts.append(sentence["text"])
+                citations.extend(self._citation_keys(sentence))
         return texts, list(dict.fromkeys(citations))
 
     def _paper_sources(self, info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -251,3 +258,4 @@ class TopicSpecificPapers:
                 if isinstance(result, dict)
             ]
         }
+

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import tqdm
 import asyncio
 from typing import Any, Dict
 
 from ..utility.evidence_check import EvidenceCheck
 from ..prompts import FACTUAL_CORRECTNESS_PROMPT
 from ..utility.llmclient import AsyncChat, AsyncRerank
-from ..utility.sbert_client import SentenceTransformerClient
+from ..utility.citation_utils import citation_keys as normalize_citation_keys
 from ..utility.tool_config import ToolConfig
-from .utils import extract_json, split_content_to_paragraph, paragraph_to_text, cosine_similarity_matrix
+from .utils import extract_json, split_content_to_paragraph, paragraph_to_text
 
 
 class FactCheckLLMClient(AsyncChat):
@@ -26,9 +27,9 @@ class FactCheckLLMClient(AsyncChat):
             evidence_list = evidence if isinstance(evidence, list) else [evidence]
             verified, score = self.check.verify(evidence_list, context["text"])
             if not verified:
-                return "NEUTRAL", "", score
-            return judgment, evidence, score
-        return "NEUTRAL", "", 0.0
+                return "NEUTRAL", "", score, "evidence verify error"
+            return judgment, evidence, score, ""
+        return "NEUTRAL", "", 0.0, ""
 
     def _organize_inputs(self, inputs):
         prompt = self.PROMPT.format(**inputs)
@@ -99,123 +100,116 @@ class FactualCorrectnessCritic:
                     break
         return selected or candidates[:self.max_passages]
 
-    async def _judge(self, claim: str, material: str, text: str) -> tuple[str, str, float]:
+    async def _judge(self, claim: str, material: str, text: str) -> tuple[str, str, float, str]:
         content_type = "title and abstract" if material == "title_abstract" else "title, abstract, and full text"
         return await self.llm.call(inputs={"claim": claim, "text": text, "content_type": content_type})
 
+    def _error_result(self, claim: str, reason: str, material: str = "") -> Dict[str, Any]:
+        return {
+            "fact_check": {
+                "claim": claim,
+                "judgment": "ERROR",
+                "evidence": "",
+                "reason": reason,
+                "score": 0.0,
+                "material": material,
+            }
+        }
+
+    def _neutral_reason_rank(self, reason: str) -> int:
+        if reason == "evidence verify error":
+            return 3
+        if reason == "":
+            return 2
+        if reason == "insufficient information":
+            return 1
+        return 0
+
+    def _is_better_result(self, judgment: str, reason: str, score: float, best_result: Dict[str, Any]) -> bool:
+        best_judgment = best_result["judgment"]
+        if judgment == "SUPPORTED":
+            return True
+        if best_judgment == "SUPPORTED":
+            return False
+        if judgment == "REFUTED":
+            return True
+        if best_judgment == "REFUTED":
+            return False
+        if judgment == "NEUTRAL" and best_judgment == "NEUTRAL":
+            reason_rank = self._neutral_reason_rank(reason)
+            best_reason_rank = self._neutral_reason_rank(best_result.get("reason", ""))
+            return reason_rank > best_reason_rank or (reason_rank == best_reason_rank and score > best_result["score"])
+        return False
     async def __call__(self, claim: str, cited_paper: Dict[str, Any]) -> Dict[str, Any]:
-        candidates = self._content_candidates(cited_paper)
-        selected = await self._select_candidates(claim, candidates)
+        try:
+            candidates = self._content_candidates(cited_paper)
+            selected = await self._select_candidates(claim, candidates)
+            has_full_text = any(material == "full_text" for material, _ in candidates)
+        except Exception as exc:
+            return self._error_result(claim, f"fact check preparation error: {type(exc).__name__}: {exc}")
+
         best_result = {
             "claim": claim,
             "judgment": "NEUTRAL",
             "evidence": "",
-            "reason": "insufficient information",
+            "reason": "" if has_full_text else "insufficient information",
             "score": 0.0,
             "material": "title_abstract",
         }
         for material, text in selected:
-            judgment, evidence, score = await self._judge(claim, material, text)
-            if score > best_result["score"] or judgment != "NEUTRAL":
+            try:
+                judgment, evidence, score, reason = await self._judge(claim, material, text)
+            except Exception as exc:
+                return self._error_result(claim, f"LLM call error: {type(exc).__name__}: {exc}", material)
+            if judgment == "NEUTRAL" and reason == "" and not has_full_text:
+                reason = "insufficient information"
+            if self._is_better_result(judgment, reason, score, best_result):
                 best_result = {
                     "claim": claim,
                     "judgment": judgment,
                     "evidence": evidence,
-                    "reason": "" if judgment != "NEUTRAL" else "insufficient information",
+                    "reason": reason,
                     "score": score,
                     "material": material,
                 }
-            if judgment in {"SUPPORTED", "REFUTED"}:
+            if judgment == "SUPPORTED":
                 break
         return {"fact_check": best_result}
 
 
 class CitedClaimVerifier:
-    TARGET_LABELS = {"BACKGROUND", "SUMMARY", "SYNTHESIS", "EVALUATION"}
-    FACT_LABELS = {"SUMMARY", "SYNTHESIS", "EVALUATION"}
-
     def __init__(self, config: ToolConfig):
         self.fact_check = FactualCorrectnessCritic(config)
-        self.sbert = SentenceTransformerClient(config.sbert_server_url)
-        self.background_threshold = config.background_reference_similarity_threshold
 
-    def _iter_sentences(self, paper: dict[str, Any]):
-        def walk(node: Any):
-            if isinstance(node, dict):
-                for paragraph in node.get("paragraphs", []) or []:
-                    yield from walk(paragraph)
-                for section in node.get("sections", []) or []:
-                    yield from walk(section)
-            elif isinstance(node, list):
-                for sentence in node:
-                    if isinstance(sentence, dict) and sentence.get("text"):
-                        yield sentence
-
-        yield from walk(paper)
-
-    def _citation_keys(self, sentence: dict[str, Any]) -> list[str]:
-        keys = []
-        for citation in sentence.get("citations", []) or []:
-            key = citation.get("key") or citation.get("ref_text") if isinstance(citation, dict) else citation
-            if key:
-                keys.append(str(key))
-        return list(dict.fromkeys(keys))
-
-    def _metadata_papers(self, citation_data: dict[str, Any]) -> list[dict[str, Any]]:
-        metadata = citation_data.get("metadata") or {}
-        if isinstance(metadata, dict) and ("openalex" in metadata or "semantic scholar" in metadata):
-            return [paper for paper in metadata.values() if isinstance(paper, dict)]
-        return [metadata] if isinstance(metadata, dict) and metadata else []
-
-    def _reference_text(self, citation_data: dict[str, Any]) -> str:
-        papers = self._metadata_papers(citation_data)
-        if papers:
-            paper = papers[0]
-            return f"{paper.get('title', '')}\n{paper.get('abstract', '')}".strip()
-        return f"{citation_data.get('title', '')}\n{citation_data.get('abstract', '')}".strip()
-
-    def _background_relevance(self, sentence: dict[str, Any], citation_keys: list[str], paper_content_map: dict[str, Any]):
-        references = [
-            {"citation_key": key, "text": self._reference_text(paper_content_map.get(key, {}))}
-            for key in citation_keys
-        ]
-        references = [item for item in references if item["text"]]
-        if not references:
-            return {"judgment": "NEUTRAL", "reason": "no reference metadata", "references": []}
-        texts = [sentence["text"], *[item["text"] for item in references]]
-        embeddings = self.sbert.embed(texts)
-        scores = cosine_similarity_matrix(embeddings[:1], embeddings[1:])[0].tolist()
-        reference_results = []
-        for item, score in zip(references, scores):
-            reference_results.append({
-                "citation_key": item["citation_key"],
-                "similarity": float(score),
-                "relevant": float(score) >= self.background_threshold,
-            })
-        judgment = "SUPPORTED" if all(item["relevant"] for item in reference_results) else "REFUTED"
-        return {"judgment": judgment, "threshold": self.background_threshold, "references": reference_results}
+    def _citation_keys(self, claim: dict[str, Any]) -> list[str]:
+        return normalize_citation_keys(claim.get("citations"))
 
     def _aggregate_fact_results(self, results: list[dict[str, Any]]) -> str:
         judgments = [item.get("fact_check", {}).get("judgment", "NEUTRAL") for item in results]
-        if "REFUTED" in judgments:
-            return "REFUTED"
         if "SUPPORTED" in judgments:
             return "SUPPORTED"
+        if "REFUTED" in judgments:
+            return "REFUTED"
+        if "ERROR" in judgments:
+            return "ERROR"
         return "NEUTRAL"
 
-    async def _verify_fact_sentence(self, sentence: dict[str, Any], citation_keys: list[str], paper_content_map: dict[str, Any]):
+    def _aggregate_neutral_reason(self, results: list[dict[str, Any]]) -> str:
+        reasons = [item.get("fact_check", {}).get("reason", "") for item in results]
+        if "evidence verify error" in reasons:
+            return "evidence verify error"
+        if "" in reasons:
+            return ""
+        if "insufficient information" in reasons:
+            return "insufficient information"
+        return reasons[0] if reasons else "insufficient information"
+    async def _fact_verification(self, claim: dict[str, Any], paper_content_map: dict[str, Any]) -> dict[str, Any]:
+        citation_keys = self._citation_keys(claim)
         async def _single(key: str):
             citation_data = paper_content_map.get(key, {})
             if not citation_data or citation_data.get("status", 3) >= 3:
-                return {
-                    "fact_check": {
-                        "claim": sentence["text"],
-                        "judgment": "NEUTRAL",
-                        "reason": "citation unresolved",
-                        "citation_key": key,
-                    }
-                }
-            result = await self.fact_check(sentence["text"], citation_data)
+                return {"fact_check": {"claim": claim["claim"], "judgment": "NEUTRAL", "reason": "citation unresolved", "citation_key": key}}
+            result = await self.fact_check(claim["claim"], citation_data)
             result["fact_check"]["citation_key"] = key
             return result
 
@@ -226,41 +220,28 @@ class CitedClaimVerifier:
             if isinstance(result, dict):
                 checked.append(result)
             else:
-                checked.append({
-                    "fact_check": {
-                        "claim": sentence["text"],
-                        "judgment": "NEUTRAL",
-                        "reason": str(result),
-                        "citation_key": key,
-                    }
-                })
-        return {"judgment": self._aggregate_fact_results(checked), "references": [item["fact_check"] for item in checked]}
+                checked.append({"fact_check": {"claim": claim["claim"], "judgment": "ERROR", "reason": f"{type(result).__name__}: {result}", "citation_key": key}})
+        judgment = self._aggregate_fact_results(checked)
+        result = {"judgment": judgment, "references": [item["fact_check"] for item in checked]}
+        if judgment == "NEUTRAL":
+            result["reason"] = self._aggregate_neutral_reason(checked)
+        return result
 
-    async def __call__(self, paper: dict[str, Any], paper_content_map: dict[str, Any]) -> dict[str, Any]:
-        targets = [
-            sentence
-            for sentence in self._iter_sentences(paper)
-            if sentence.get("label") in self.TARGET_LABELS and self._citation_keys(sentence)
-        ]
-        results, neutral_opinions = [], []
-        for sentence in targets:
-            citation_keys = self._citation_keys(sentence)
-            if sentence.get("label") == "BACKGROUND":
-                verification = self._background_relevance(sentence, citation_keys, paper_content_map)
-                kind = "background_relevance"
-            else:
-                verification = await self._verify_fact_sentence(sentence, citation_keys, paper_content_map)
-                kind = "fact_check"
-                if verification["judgment"] == "NEUTRAL" and sentence.get("label") in {"SYNTHESIS", "EVALUATION"}:
-                    sentence["needs_uncited_prospective"] = True
-                    neutral_opinions.append({"text": sentence["text"], "label": sentence.get("label", "")})
-            item = {
-                "sentence": sentence["text"],
-                "label": sentence.get("label", ""),
-                "citation_keys": citation_keys,
-                "kind": kind,
-                **verification,
-            }
-            sentence["citation_verification"] = item
-            results.append(item)
-        return {"fact_checks": results, "neutral_opinion_claims": neutral_opinions, "checked_count": len(results)}
+    async def _verify_claim(self, claim: dict[str, Any], paper_content_map: dict[str, Any]) -> dict[str, Any]:
+        citation_keys = self._citation_keys(claim)
+        verification = await self._fact_verification(claim, paper_content_map)
+        return {
+            "claim": claim["claim"],
+            "claim_type": claim.get("claim_type", ""),
+            "citation_keys": citation_keys,
+            "kind": "fact_check",
+            **verification,
+        }
+
+    async def __call__(self, claims: list[dict[str, Any]], paper_content_map: dict[str, Any]) -> dict[str, Any]:
+        tasks = [asyncio.create_task(self._verify_claim(claim, paper_content_map)) for claim in claims]
+        results = []
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="CitedClaimVerifier"):
+            results.append(await task)
+        print(f"We check {len(results)} claims")
+        return {"fact_checks": results, "checked_count": len(results)}

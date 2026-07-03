@@ -149,9 +149,9 @@ class ContributionConsistency:
             return True
         return self._semantic_match(str(target), candidates)
 
-    def __call__(self, paper: dict[str, Any], contributions: dict[str, list[dict[str, Any]]]):
+    def __call__(self, paper: dict[str, Any]):
         checks = []
-        for key, claims in contributions.items():
+        for key, claims in paper['contribution_claims'].items():
             sections = self._scope_sections(paper, key)
             scoped_sentences = self._scope_sentences(paper, key)
             for claim in claims:

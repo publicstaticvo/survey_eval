@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import tqdm
 from typing import Any
 
 import jsonschema, json
@@ -100,7 +101,7 @@ class SentenceClassification:
         paragraphs = split_content_to_paragraph(paper)
         if paper.get('abstract', []): paragraphs = [*paper['abstract']['paragraphs'], *paragraphs]
         tasks = [asyncio.create_task(self._classify_paragraph(paragraph)) for paragraph in paragraphs]
-        for paragraph_result in await asyncio.gather(*tasks, return_exceptions=True):
+        for paragraph_result in tqdm.tqdm(await asyncio.gather(*tasks, return_exceptions=True), total=len(tasks), desc='sentence classify'):
             if not isinstance(paragraph_result, list): continue
             for sentence, label, confidence in paragraph_result:
                 sentence.update({"label": label, "confidence": confidence})

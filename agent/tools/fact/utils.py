@@ -5,7 +5,7 @@ from typing import Any, Iterable, Iterator, List, Dict
 
 
 def extract_json(text: str) -> dict:
-    """从文本中提取 JSON 对象"""
+    """浠庢枃鏈腑鎻愬彇 JSON 瀵硅薄"""
     if not text:
         return {}
     
@@ -30,6 +30,12 @@ def extract_json(text: str) -> dict:
     return json.loads(candidate)
     
 
+def paragraph_sentences(paragraph):
+    if isinstance(paragraph, dict):
+        return paragraph.get("sentences", []) or []
+    return paragraph
+
+
 def split_content_to_paragraph(content: dict | list):
     if isinstance(content, list):
         return list(content)
@@ -39,9 +45,9 @@ def split_content_to_paragraph(content: dict | list):
     return paragraphs
 
 
-def paragraph_to_text(content: list[dict]):
+def paragraph_to_text(content):
     parts = []
-    for sentence in content:
+    for sentence in paragraph_sentences(content):
         if not isinstance(sentence, dict) or not sentence.get("text"):
             continue
         text = str(sentence.get("text") or "").strip()
@@ -105,3 +111,4 @@ def cosine_similarity_matrix(left, right):
     left = left / left_norm
     right = right / right_norm
     return left @ right.T
+

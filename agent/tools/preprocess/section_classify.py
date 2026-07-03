@@ -1,3 +1,4 @@
+import tqdm
 import asyncio
 from typing import Any, List, Tuple
 
@@ -101,7 +102,7 @@ class SectionClassification:
             )
             for container, index, kind, parent_title in targets
         ]
-        for (c, i, _, _), result in zip(targets, await asyncio.gather(*tasks, return_exceptions=True)):
+        for (c, i, _, _), result in tqdm.tqdm(zip(targets, await asyncio.gather(*tasks, return_exceptions=True)), total=len(tasks), desc='section classify'):
             if not isinstance(result, dict): continue
             c[i] = {**c[i], **result}
         return paper_content
