@@ -315,7 +315,9 @@ def run_claude_code_eval(args: argparse.Namespace) -> None:
         raise SystemExit(f"Output file already exists: {output_path}")
     args.output_file = str(output_path)
     prompt = build_claude_code_prompt(args)
-    subprocess.run(["claude", "-p", prompt], check=True)
+    print("Start!")
+    subprocess.run(["claude", "-p", prompt, "--dangerously-skip-permissions"], check=True)
+    print("Finish!")
 
 
 async def evaluate_one(path: Path, client: SurveyLLMEvalClient, output_root: Path, output_file: str | None) -> Path:
@@ -323,6 +325,7 @@ async def evaluate_one(path: Path, client: SurveyLLMEvalClient, output_root: Pat
     output_path = resolve_output_path(output_root, client.mode, path, paper, output_file)
     if output_path.exists():
         raise FileExistsError(f"Output file already exists: {output_path}")
+    print(f"Save to: {output_path}")
     survey_full_text = render_paper_markdown(paper)
     print("Start!")
     result = await client.call(inputs=survey_full_text)

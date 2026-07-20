@@ -101,6 +101,7 @@ class MissingPaperCheck:
         paper_content_map: dict[str, Any],
         reference_surveys: Any = None,
         literature_pool: dict[str, Any] | list[dict[str, Any]] | None = None,
+        citation_graph: dict[str, Any] | None = None,
         neutral_opinion_claims: list[dict[str, Any]] | None = None,
         entity_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -112,17 +113,27 @@ class MissingPaperCheck:
                 self._add_missing(missing, seen, reference_paper, "reference_surveys")
         print(f"{len(missing)} missing papers")
 
-        topic_data = await self.topic_specific(paper, paper_content_map)
-        for topic_item in topic_data.get("topic_specific_papers", []) or []:
-            for candidate in topic_item.get("papers", []) or []:
-                self._add_missing(
-                    missing,
-                    seen,
-                    candidate,
-                    "topic_specific",
-                    topic=topic_item.get("topic", ""),
-                    query=topic_item.get("query", ""),
-                )
+        topic_data = await self.topic_specific(
+            paper.get("title", ""),
+            paper,
+            literature_pool=literature_pool,
+            citation_graph=citation_graph,
+            paper_content_map=paper_content_map,
+        )
+        topic_specific = topic_data.get("topic_specific_papers", {}) or {}
+        for section_item in topic_specific.get("landmarks", []) or []:
+            for candidate in section_item.get("papers", []) or []:
+                candidate_paper = candidate.get("paper") if isinstance(candidate, dict) else None
+                if isinstance(candidate_paper, dict):
+                    self._add_missing(
+                        missing,
+                        seen,
+                        candidate_paper,
+                        "topic_specific",
+                        topic=section_item.get("section", ""),
+                        landmark_type=candidate.get("landmark_type", ""),
+                        pagerank=candidate.get("pagerank", 0.0),
+                    )
         print(f"{len(missing)} missing papers")
 
         entity_data = entity_data or await self.uncited_entities(paper, cited_papers, paper_content_map, literature_pool)
@@ -137,24 +148,21 @@ class MissingPaperCheck:
                 )
         print(f"{len(missing)} missing papers")
 
-        prospective_data = {"uncited_prospective": []}
-        if literature_pool:
-            prospective_data = await self.uncited_prospective(
-                paper,
-                literature_pool,
-                extra_claims=neutral_opinion_claims,
-            )
-            for claim_text, source_papers in (prospective_data.get("uncited_prospective", {}) or {}).items():
-                for source_paper in source_papers or []:
-                    if isinstance(source_paper, dict) and source_paper.get("title"):
-                        self._add_missing(
-                            missing,
-                            seen,
-                            source_paper,
-                            "uncited_prospective",
-                            claim=claim_text,
-                            judgment="REFUTED",
-                        )
+        prospective_data = await self.uncited_prospective(
+            paper,
+            extra_claims=neutral_opinion_claims,
+        )
+        for claim_text, source_papers in (prospective_data.get("uncited_prospective", {}) or {}).items():
+            for source_paper in source_papers or []:
+                if isinstance(source_paper, dict) and source_paper.get("title"):
+                    self._add_missing(
+                        missing,
+                        seen,
+                        source_paper,
+                        "uncited_prospective",
+                        claim=claim_text,
+                        judgment="REFUTED",
+                    )
         print(f"{len(missing)} missing papers")
 
         return {
@@ -165,4 +173,6 @@ class MissingPaperCheck:
                 "uncited_prospective": prospective_data.get("uncited_prospective", []),
             }
         }
+
+
 

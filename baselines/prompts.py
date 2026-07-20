@@ -1,6 +1,6 @@
 SYSTEM = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. You will be given the full text of a survey paper. Your task is to assess its overall quality."""
 
-CC_PROMPT = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. The survey paper to be evaluated is in {input_dir}. Your task is to assess its overall quality. 
+CC_PROMPT = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. The survey paper to be evaluated is in {input_dir}, in LaTeX format. Your task is to assess its overall quality. 
 
 {requirements}
 
@@ -259,23 +259,29 @@ LEVEL 1 — MINIMAL VALIDITY
 - Does every major section engage substantively with cited literature, rather than reading as a bare list?
 - Is there a discussion of future directions or open problems?
 
-LEVEL 2 — FACTUAL INTEGRITY
+LEVEL 2 — VERIFIABLE CONTENT INTEGRITY
+(Every judgment here must be traceable to a specific, checkable piece of evidence — the cited work's actual content, or another explicit passage in the paper. Do not rely on general impressions.)
 - Do all citations refer to papers that actually exist?
 - Are citations made to the original/canonical version of a work (e.g., published version rather than an outdated preprint), where applicable?
 - Does every factual claim attributed to a cited work actually match what that work says? Flag any claim that misrepresents, exaggerates, or contradicts its cited source.
+- Are there factual claims stated without any citation that contradict what is established in the relevant literature?
+- Are there internal contradictions between what is declared elsewhere in the paper (e.g., in the abstract, introduction, or a stated definition/scope) and what is actually presented or argued in the body?
 
-LEVEL 3 — STRUCTURAL INTEGRITY
-- Does the survey's stated contribution/scope (as declared in the abstract and introduction) match what the paper actually delivers?
-- Does each section's content match what its title promises?
-- Are there internal contradictions between what is claimed and what is presented elsewhere in the paper?
+LEVEL 3 — ARGUMENTATIVE COMPLETENESS
+(These are judgments about whether standard components of survey argumentation are present, based on established conventions of academic survey writing — not about their depth or quality.)
+- Does the paper explicitly state its own contribution, perspective, or organizing framework, rather than only presenting prior work?
+- Does the paper explicitly compare or contrast different works, rather than only listing/summarizing them one by one?
+- Is a discussion of future directions or open problems present, and does it engage with the specific gaps raised earlier in the paper?
+- Is the survey's own methodology (how works were searched, selected, or organized) explicitly stated anywhere in the paper?
 
-LEVEL 4 — DOMAIN INTEGRITY
-- Are there important, well-known works in this area that are conspicuously missing from the citation list?
-- Are there named methods, concepts, or claims introduced without any supporting citation?
-- Are there important subtopics of this field (e.g., datasets/benchmarks, real-world deployment, ethical/safety considerations) that are entirely absent, without explanation?
-- Does the survey's own comparative or synthesizing discussion imply the existence of topics or categories that are never actually discussed?
+LEVEL 4 — LITERATURE-GROUNDED COVERAGE
+(For every judgment at this level, you must actually search the literature before making a claim. Do not rely on your own memory of "well-known" works or topics — retrieve and cite what you find.)
+- Search for recent and influential surveys or papers on this exact topic. Based on what you find, are there important, well-established works in this area that are conspicuously missing from the citation list?
+- Based on the same search, are there important subtopics of this field that are entirely absent from the paper, without any stated reason for exclusion?
+- Does the survey's own comparative or synthesizing discussion imply the existence of topics, categories, or works that are never actually cited or discussed?
+- Based on your search of existing surveys on this topic, does this paper offer a distinct organizing perspective, or does it substantially duplicate the scope and structure of an already-existing survey?
 
-You may use your own judgment and knowledge of the field to apply these criteria. You are not restricted to a fixed order or fixed procedure — use whatever approach you find most effective to assess the survey against this framework.
+Evaluate the survey using minimal validity together with all checks in Levels 2–4 above. You may use your own judgment and knowledge of the field to apply these criteria. You are not restricted to a fixed order or fixed procedure — use whatever approach you find most effective to assess the survey against this framework.
 </evaluation_framework>
 
 Provide your evaluation in the following JSON format. Do not include any text outside the JSON object.

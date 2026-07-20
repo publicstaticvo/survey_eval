@@ -11,6 +11,8 @@ from .utils import extract_json, split_content_to_paragraph
 
 
 GRAPH_ENVIRONMENT_TYPES = {"figure", "figure*", "table", "table*", "tabular", "longtable"}
+SELF_REFLECT = {"this section", "this chapter", "this subsection"}
+SECTION_RANGE_RE = re.compile(r"^(?:Section\s+)?(?P<start>\d+(?:\.\d+)*)\s*-\s*(?P<end>\d+(?:\.\d+)*)$")
 
 
 def _paragraph_sentences(paragraph):
@@ -47,11 +49,12 @@ def _walk_paragraphs(paper: dict[str, Any]):
 
 
 def build_section_enum_set(paper: dict[str, Any]) -> set[str]:
-    SECTION_ENUM_SET = {"document", "this section"}
+    SECTION_ENUM_SET = {"document", *SELF_REFLECT}
     for section in _walk_sections(paper):
         section_id = str(section.get("section_id", "") or "").strip()
         title = str(section.get("title", "") or "").strip()
         if section_id:
+            SECTION_ENUM_SET.add(str(section_id))
             SECTION_ENUM_SET.add(f"Section {section_id}")
         if title:
             SECTION_ENUM_SET.add(title)
@@ -70,6 +73,50 @@ def build_section_enum_set(paper: dict[str, Any]) -> set[str]:
     return SECTION_ENUM_SET
 
 
+def _section_id_parts(section_id: str) -> tuple[int, ...] | None:
+    if not re.match(r"^\d+(?:\.\d+)*$", section_id):
+        return None
+    return tuple(int(part) for part in section_id.split("."))
+
+
+def _expand_section_range(start: str, end: str, ordered_ids: list[str]) -> list[str]:
+    id_set = set(ordered_ids)
+    start_parts = _section_id_parts(start)
+    end_parts = _section_id_parts(end)
+    if start_parts and end_parts and len(start_parts) == len(end_parts) and start_parts[:-1] == end_parts[:-1]:
+        step = 1 if start_parts[-1] <= end_parts[-1] else -1
+        generated = [
+            ".".join(str(part) for part in (*start_parts[:-1], value))
+            for value in range(start_parts[-1], end_parts[-1] + step, step)
+        ]
+        if all(section_id in id_set for section_id in generated):
+            return generated
+
+    if start in id_set and end in id_set:
+        start_index = ordered_ids.index(start)
+        end_index = ordered_ids.index(end)
+        if start_index <= end_index:
+            return ordered_ids[start_index:end_index + 1]
+        return ordered_ids[end_index:start_index + 1]
+    return []
+
+
+def _normalize_section_range(section: str, paper: dict[str, Any]) -> str | None:
+    match = SECTION_RANGE_RE.match(section)
+    if not match:
+        return None
+    ordered_ids = [
+        str(item.get("section_id", "") or "").strip()
+        for item in _walk_sections(paper)
+        if str(item.get("section_id", "") or "").strip()
+    ]
+    start = match.group("start")
+    end = match.group("end")
+    section_ids = _expand_section_range(start, end, ordered_ids)
+    assert section_ids
+    return f"Section {section_ids[0]}-{section_ids[-1]}"
+
+
 def _section_lookup(paper: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
     id_lookup, title_lookup = {}, {}
     for section in _walk_sections(paper):
@@ -82,16 +129,27 @@ def _section_lookup(paper: dict[str, Any]) -> tuple[dict[str, str], dict[str, st
             title_lookup[title.casefold()] = section_id
     id_lookup.setdefault("Limitation", "Limitation")
     id_lookup.setdefault("Section Limitation", "Limitation")
+    id_lookup.setdefault("Appendix", "Appendix")
+    id_lookup.setdefault("Section Appendix", "Appendix")
     title_lookup.setdefault("limitation", "Limitation")
+    title_lookup.setdefault("appendix", "Appendix")
     return id_lookup, title_lookup
 
 
 def normalize_claim_section(raw_section: str, current_section_id: str, paper: dict[str, Any]) -> str:
     section = str(raw_section or "").strip()
-    if section == "this section":
+    if section in SELF_REFLECT:
         return current_section_id
-    if section == "document" or re.match(r"^(?:Figure|Table)\s+\S+", section):
+    if section == "document":
         return section
+    graph_match = re.match(r"^(?:Figure|Table)\s+(?P<index>\S+)$", section)
+    if graph_match:
+        assert re.match(r"^[1-9]\d*$", graph_match.group("index"))
+        return section
+
+    normalized_range = _normalize_section_range(section, paper)
+    if normalized_range is not None:
+        return normalized_range
 
     id_lookup, title_lookup = _section_lookup(paper)
     if section in id_lookup:
@@ -120,6 +178,9 @@ class ContributionClassificationClient(AsyncChat):
         result = extract_json(response)
         SECTION_ENUM_SET = build_section_enum_set(context["paper"])
         jsonschema.validate(result, CONTRIBUTION_SCHEMA(SECTION_ENUM_SET))
+        if not result["excluded"]:
+            for claim in result["claims"]:
+                normalize_claim_section(claim["section"], context.get("current_section_id", ""), context["paper"])
         return result
 
     def _organize_inputs(self, inputs):
@@ -127,7 +188,7 @@ class ContributionClassificationClient(AsyncChat):
         return self.PROMPT.format(
             S=sentence["text"],
             CONTEXT=inputs.get("context", ""),
-        ), {"paper": inputs["paper"]}
+        ), {"paper": inputs["paper"], "current_section_id": inputs.get("current_section_id", "")}
 
 
 class ContributionClassification:
@@ -171,9 +232,14 @@ class ContributionClassification:
         targets = self._collect_targets(paper_content)
         tasks = [
             asyncio.create_task(
-                self.llm.call(inputs={"sentence": sentence, "context": context, "paper": paper_content})
+                self.llm.call(inputs={
+                    "sentence": sentence,
+                    "context": context,
+                    "paper": paper_content,
+                    "current_section_id": current_section_id,
+                })
             )
-            for sentence, context, _ in targets
+            for sentence, context, current_section_id in targets
         ]
         all_claims = {}
         for (sentence, _, current_section_id), result in zip(targets, await asyncio.gather(*tasks)):
@@ -187,15 +253,18 @@ class ContributionClassification:
             sentence_claims = []
             for claim in result["claims"]:
                 section_key = normalize_claim_section(claim["section"], current_section_id, paper_content)
+                original_sentence = sentence["text"].strip()
                 normalized_claim = {
                     "section": section_key,
                     "type": claim["type"],
                     "target": claim["target"],
+                    "original_contribution_sentence": original_sentence,
                 }
                 sentence_claims.append(normalized_claim)
                 all_claims.setdefault(section_key, []).append({
                     "type": claim["type"],
                     "target": claim["target"],
+                    "original_contribution_sentence": original_sentence,
                 })
             sentence["claims"] = sentence_claims
         return paper_content, all_claims

@@ -19,3 +19,5 @@ pdf
 __pycache__
 s2orc_info
 langchain_study
+train_letor/downloaded
+agent/test*

@@ -61,6 +61,8 @@ def process_input_commands(latex_content, base_path, current_path=None):
         if all(x not in filename for x in ['.tex', '.bbl']):
             filename += '.tex'
 
+        if filename.startswith("./"): filename = filename[2:]
+
         if "/" in filename:
             filename = filename.split("/")
         elif "\\" in filename:
@@ -526,14 +528,22 @@ class LatexPaperParser:
             if not paper.sections:
                 return
         
-        paper.bibliography = self.bibliography_entries
         paper.all_citation_keys = self._extract_all_citation_keys()
+        paper.bibliography = self._filter_bibliography_entries(paper.all_citation_keys)
         self.unresolved_citation_keys = [
             key for key in paper.all_citation_keys if key not in self.bibliography_entries
         ]
         paper.unresolved_citation_keys = self.unresolved_citation_keys
         return paper
     
+    def _filter_bibliography_entries(self, citation_keys: list[str]) -> dict:
+        cited_keys = set(citation_keys)
+        return {
+            key: value
+            for key, value in self.bibliography_entries.items()
+            if key in cited_keys
+        }
+
     def get_bibliography_entry(self, citation_key: str) -> Optional[str]:
         """
         Retrieve the bibliography content for a given citation key
@@ -1528,6 +1538,8 @@ class LatexPaperParser:
                         citations.update(self._extract_citation_keys(node))
                 
                 if isinstance(node, LatexEnvironmentNode):
+                    if node.environmentname == 'thebibliography':
+                        continue
                     find_citations(node.nodelist)
                 elif isinstance(node, LatexMacroNode) and node.nodeargd:
                     if node.nodeargd.argnlist:

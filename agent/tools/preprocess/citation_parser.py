@@ -1,6 +1,18 @@
+"""
+citation_parser.py
+闁兼儳鍢茶ぐ鍥礂閵娿倗绉肩€殿喗娲橀弸鍍瞖tadata闁告粌鑻崣蹇涘棘閸ワ缚绻嗛柟?
+濞达綀娉曢弫銈夋晬?
+闁?闁挎稑顦遍弫顦昿enalex闁靛棔璁?闁靛棔璁rper闁兼儳鍢茶ぐ鍥棘閸モ晝褰垮ǎ鍥ｅ墲娴?
+闁?闁挎稑顦伴悧鎾箲椤旇姤鐎紒鏃傚С娣囧﹪骞侀娆戠憮閺夌偠妫勯崣蹇涘棘?
+闁?闁挎稑顦遍弫顥痭foLLMClient闁告帒妫欓悗浠嬪嫉椤掍焦鐎柟缁樺姇閸ゎ厽绂嶉崱鏇犵焼濞?
+闁告瑯鍨堕埀顒€顦伴弫濂稿礉椤帞绐?
+闁?闁挎稑顦·鍐礉閻曠磧xiv api
+闁?闁挎稑顢爀bSearch闁瑰瓨鐗為鎴﹀棘閸ワ妇鐟撻弶鐐存灮缁辨繄绱掑鏄縠nreview闁告娲滅€氼厾鎷嬮幑鎰靛悁濞戞挴鍋撳┑鍌涱殔椤︹晠鎮堕崱妯荤厵婵℃鐗勯埀?
+"""
 import re
 import tqdm
 import asyncio
+import logging
 from typing import Dict, Any
 
 from .websearch import WebSearchFallback
@@ -9,7 +21,20 @@ from ..utility.paper_download import PaperDownload, S2PaperDownload, yield_locat
 from ..utility.request_utils import RateLimit
 from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
-from .utils import valid_check
+from ..utility.llmclient import AsyncChat
+from .utils import valid_check, extract_json
+from ..prompts import EXTRACT_TITLE
+
+
+class InfoLLMClient(AsyncChat):
+    def _availability(self, response, context):
+        response = extract_json(response)
+        assert response['title'] in context['info']
+        return response['title']
+    
+    def _organize_inputs(self, inputs):
+        return [{"role": 'user', 'content': EXTRACT_TITLE.format(**inputs)}], inputs
+
 
 
 class CitationParser:
@@ -21,6 +46,7 @@ class CitationParser:
         self.semantic_scholar_downloader = S2PaperDownload(config) if self.use_semantic_scholar else None
         self.websearch = WebSearchFallback(config)
         self.openalex = get_openalex_client(config)
+        self.info_llm = InfoLLMClient(config.llm_server_info)
         self.semantic_scholar = get_semantic_scholar_client(config) if self.use_semantic_scholar else None
 
     def _clean_title(self, title: str) -> str:
@@ -38,9 +64,7 @@ class CitationParser:
         }
 
     def _normalize_title(self, title: str) -> str:
-        title = self._clean_title(title)
-        return re.sub(r"\s+", " ", re.sub(r"[:,.!?&]", " ", title)).strip()
-
+        return self._clean_title(title)
     def _finalize_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
         full_content = info.get("full_content")
         if isinstance(full_content, dict) and (full_content.get("paragraphs") or full_content.get("sections")):
@@ -111,6 +135,9 @@ class CitationParser:
         return None
 
     async def _search_paper_from_api(self, citation_info: str | Dict[str, Any]) -> Dict[str, Any]:
+        if "title" not in citation_info:
+            citation_info['title'] = await self.info_llm.call(inputs={"info": citation_info['info']})
+        
         title = self._clean_title(citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or ""))
         info = self._empty_info(title)
         openalex_task = asyncio.create_task(
@@ -164,13 +191,39 @@ class CitationParser:
             info = await self._fallback_websearch(title, info)
         return citation_key, info
 
+    async def refresh_status3(self, citations: Dict[str, Any], cached_data: Dict[str, Any]) -> Dict[str, Any]:
+        paper_content_map = dict((cached_data or {}).get("paper_content_map", {}) or {})
+        unresolved_keys = [
+            citation_key
+            for citation_key, info in paper_content_map.items()
+            if isinstance(info, dict) and info.get("status") == 3 and citation_key in citations
+        ]
+        if not unresolved_keys:
+            return cached_data
+
+        logging.info("Retrying %d unresolved status=3 citations", len(unresolved_keys))
+        tasks = [
+            asyncio.create_task(self._parse_single(citation_key, citations[citation_key]))
+            for citation_key in unresolved_keys
+        ]
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Citation Reparse"):
+            try:
+                citation_key, info = await task
+                paper_content_map[citation_key] = info
+            except Exception as e:
+                print(f"CitationParser retry {e}")
+        refreshed = dict(cached_data or {})
+        refreshed["paper_content_map"] = paper_content_map
+        return refreshed
+    
     async def __call__(self, citations: Dict[str, Any]) -> Dict[str, Any]:
+        logging.info(f"This paper has {len(citations)} citations")
         tasks = [
             asyncio.create_task(self._parse_single(citation_key, citation_info))
             for citation_key, citation_info in citations.items()
         ]
         paper_content_map = {}
-        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks)):
+        for task in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Citation Parse"):
             try:
                 citation_key, info = await task
                 paper_content_map[citation_key] = info

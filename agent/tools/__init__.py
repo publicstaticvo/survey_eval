@@ -18,7 +18,6 @@ _EXPORTS = {
     "minimum_completion": ".preprocess.minimum_completion",
     "MissingPaperCheck": ".scope.missing_papers",
     "TopicCoverage": ".scope.topic_coverage",
-    "TopicCoverageCritic": ".scope.topic_coverage",
     "QueryExpand": ".scope.topic_papers",
     "TopicSpecificPapers": ".scope.topic_papers",
     "FindAllEntities": ".preprocess.find_all_entities",

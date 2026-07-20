@@ -1,3 +1,7 @@
+"""
+claim_segmentation.py
+从一个自然段中抽取所有atomic facts。
+"""
 import asyncio
 import jsonschema
 from typing import Any, List, Dict

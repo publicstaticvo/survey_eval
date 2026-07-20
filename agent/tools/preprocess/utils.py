@@ -13,7 +13,6 @@ def normalize_text(text: str) -> str:
 
 
 def extract_json(text: str) -> Dict:
-    """浠庢枃鏈腑鎻愬彇 JSON 瀵硅薄"""
     if not text:
         return {}
     

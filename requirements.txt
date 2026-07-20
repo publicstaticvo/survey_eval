@@ -1,22 +1,32 @@
+﻿# Core agent runtime
 aiohttp
-bibtexparser
-bertopic
-brotli
-chardet
-hdbscan
-jsonschema
-lightgbm
-networkx
-numpy
-pydantic
-pylatexenc
-python-dateutil
-python-Levenshtein
-PyYAML
-requests
-scikit-learn
 tenacity
+pyyaml
+requests
+
+# Numeric / retrieval / graph utilities
+numpy
+scikit-learn
+networkx
+python-Levenshtein
+unidecode
 tqdm
+
+# Validation and parsing
+jsonschema
+bibtexparser
+pylatexenc
+chardet
 trafilatura
-umap-learn
-Unidecode
+beautifulsoup4
+
+# Paper download / browser fallback
+selenium
+webdriver-manager
+
+# Optional backup or local service dependencies:
+# lightgbm
+# fastapi
+# pydantic
+# sentence-transformers
+# uvicorn

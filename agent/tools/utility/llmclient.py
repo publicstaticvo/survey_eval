@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from tenacity import (
     retry,
@@ -44,7 +45,7 @@ class AsyncLLMClient(ABC):
                 if "</think>" in data: data = data.split("</think>")[-1]
             return self._availability(data, context)
         except Exception as e:
-            print(f"LLM call error: {type(e)} {e}")
+            logging.error(f"LLM Functino: {type(e)} {e}")
             raise
 
 

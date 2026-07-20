@@ -123,6 +123,16 @@ class TopicCoverage:
             if sentence.get("label") == "LIMITATION"
         )
 
+    def _normalize_queries(self, query: str | list[str]) -> list[str]:
+        if isinstance(query, list):
+            queries = [str(item).strip() for item in query if str(item).strip()]
+        else:
+            queries = [item.strip() for item in str(query or "").split(",") if item.strip()]
+        return queries or [""]
+
+    def _query_text(self, queries: list[str]) -> str:
+        return " ".join(item for item in queries if item)
+
     async def _excluded_by_limitation(self, query: str, tag: str, limitation_text: str) -> dict[str, Any]:
         if not limitation_text:
             return {"has_claim": False, "evidence": ""}
@@ -177,31 +187,35 @@ class TopicCoverage:
     def _paper_text(self, paper: dict[str, Any]) -> str:
         return f"{paper.get('title', '')} {paper.get('abstract', '')}".lower()
 
+    def _paper_matches_queries(self, paper: dict[str, Any], queries: list[str]) -> bool:
+        text = self._paper_text(paper)
+        return all(query.casefold() in text for query in queries if query)
+
     def _tag_count(self, tag: str, text: str) -> int:
         if tag == "ETHICS_AND_SAFETY":
             return text.count("ethics") + text.count("safety")
         return text.count(tag.lower())
 
-    def _filter_search_results(self, tag: str, papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _filter_search_results(self, tag: str, papers: list[dict[str, Any]], queries: list[str]) -> list[dict[str, Any]]:
         return [
             paper
             for paper in papers
-            if self._tag_count(tag, self._paper_text(paper)) >= 2
+            if self._paper_matches_queries(paper, queries) and self._tag_count(tag, self._paper_text(paper)) >= 2
         ]
 
-    async def _search_tag(self, query: str, tag: str) -> list[dict[str, Any]]:
+    async def _search_tag(self, queries: list[str], tag: str) -> list[dict[str, Any]]:
         keywords = CONTENT_TAG_KEYWORDS[tag]
         keyword_query = " OR ".join(keywords)
         payload = await self.engine.search_works(
-            search=f'"{query}" AND ({keyword_query})',
+            search=f'{" AND ".join(queries)} AND ({keyword_query})',
             per_page=self.search_limit,
             select=self._select_fields(),
         )
-        return self._filter_search_results(tag, payload.get("results", []) or [])
+        return self._filter_search_results(tag, payload.get("results", []) or [], queries)
 
     async def __call__(
         self,
-        query: str | dict[str, Any],
+        query: str | list[str] | dict[str, Any],
         paper: dict[str, Any],
         reference_surveys: Any = None,
     ) -> dict[str, Any]:
@@ -210,6 +224,8 @@ class TopicCoverage:
             reference_data = topic_data.get("reference_data", {}) or {}
             reference_surveys = reference_surveys or reference_data.get("reference_surveys")
             query = topic_data.get("query") or paper.get("title", "")
+        queries = self._normalize_queries(query)
+        query_text = self._query_text(queries)
         functional_types, content_tags, missing_label_rates = self._section_labels(paper)
         missing_functional_types = sorted(SECTION_LABELS - functional_types)
         missing_content_tags = sorted(CONTENT_TAGS - content_tags - {"GENERAL"})
@@ -221,7 +237,7 @@ class TopicCoverage:
             if tag == "METHOD":
                 continue
             try:
-                exclusion = await self._excluded_by_limitation(query, tag, limitation_text)
+                exclusion = await self._excluded_by_limitation(query_text, tag, limitation_text)
             except Exception as exc:
                 print(f"TopicCoverage limitation check {tag} {exc}")
                 exclusion = {"has_claim": False, "evidence": ""}
@@ -243,7 +259,7 @@ class TopicCoverage:
             if tag not in CONTENT_TAG_KEYWORDS:
                 continue
             try:
-                papers = await self._search_tag(query, tag)
+                papers = await self._search_tag(queries, tag)
             except Exception as exc:
                 print(f"TopicCoverage search {tag} {exc}")
                 papers = []
@@ -265,8 +281,4 @@ class TopicCoverage:
                 "section_label_missing_rates": missing_label_rates,
             }
         }
-
-
-MissingTopicLLMClient = MissingTopicClient
-TopicCoverageCritic = TopicCoverage
 

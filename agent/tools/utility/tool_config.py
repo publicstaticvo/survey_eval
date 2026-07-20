@@ -18,7 +18,7 @@ GREEDY_PARAMS = {
 class LLMServerInfo:
     base_url: str = "https://uni-api.cstcloud.cn"
     api_key: str = "7868485c0ca1d66880fdb72e06b77ebfc6daf07faf61638e81e7a79adf7e309d"
-    model: str = "deepseek-v4-flash"
+    model: str = "minimax-m27"
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,7 @@ class ToolConfig:
     topic_weak_sim_threshold: float = 0.45
     topic_sim_threshold: float = 0.55
     topic_papers_search_limit: int = 10
+    missing_topic_min_community_size: int = 3
     topic_coverage_search_limit: int = 10
     new_paper_topic_similarity_threshold: float = 0.55
     new_paper_reference_overlap_threshold: float = 0.6
@@ -68,9 +69,10 @@ class ToolConfig:
     websearch_apikey: str = "6a58924ede5e53c3e3d72ef428236db7654b88ec"
     # openalex
     openalex_rate_limit_enabled: bool = True
-    openalex_requests_per_second: float = 100.0
+    openalex_requests_per_second: float = 30
     openalex_api_keys: list[str] = field(default_factory=list)
     default_academic_search_engine: str = "semantic scholar"
+    topn: int = 100
     semantic_scholar_api_key: str = ""
     semantic_scholar_retry_count: int = 5
 
@@ -120,6 +122,7 @@ class ToolConfig:
             ),
             rerank_n_documents=config['rerank']['num_documents'],
             topic_papers_search_limit=config.get('topic_papers', {}).get('search_limit', 10),
+            missing_topic_min_community_size=config.get('topic_papers', {}).get('missing_topic_min_community_size', 3),
             topic_coverage_search_limit=config.get('topic_coverage', {}).get('search_limit', 10),
             new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
             background_reference_similarity_threshold=config.get('fact_check', {}).get(
@@ -132,8 +135,9 @@ class ToolConfig:
             websearch_url=config['websearch']['url'],
             websearch_apikey=config['websearch']['api_key'],
             openalex_rate_limit_enabled=config.get('openalex', {}).get('rate_limit_enabled', True),
-            openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 100.0),
+            openalex_requests_per_second=config.get('openalex', {}).get('requests_per_second', 30.0),
             openalex_api_keys=config.get('openalex', {}).get('api_keys', []),
+            topn=config.get('source_selection', {}).get('topn', 100),
             default_academic_search_engine=config.get('academic_search', {}).get(
                 'default_engine',
                 config.get('default_academic_search_engine', 'openalex'),

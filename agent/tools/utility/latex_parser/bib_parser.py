@@ -53,28 +53,49 @@ def parse_bib_file(filepath: str) -> Dict[str, Any]:
     Returns:
         List of dictionaries containing citation information
     """
-    def _safe_load(handle):
+    def _safe_parse(path: str, encoding: str):
         sink = io.StringIO()
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            return bibtexparser.load(handle)
+            if hasattr(bibtexparser, "parse_file"):
+                return bibtexparser.parse_file(path, encoding=encoding)
+            with open(path, "r", encoding=encoding) as handle:
+                return bibtexparser.load(handle)
 
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            bib_database = _safe_load(f)
+        bib_database = _safe_parse(filepath, "utf-8")
     except:
         _, encoding = detect_encoding(filepath)
-        with open(filepath, 'r', encoding=encoding) as f:
-            bib_database = _safe_load(f)
+        bib_database = _safe_parse(filepath, encoding or "utf-8")
     
     citations = {}
-    for entry in bib_database.entries:
-        citation_key = entry.get('ID', '')
+    for entry in getattr(bib_database, "entries", []):
+        entry_dict = _bib_entry_to_dict(entry)
+        citation_key = entry_dict.get("ID", "")
         if citation_key and citation_key not in citations:
-            citations[citation_key] = entry
+            citations[citation_key] = entry_dict
 
     add_ref_strings(citations)
     return citations
 
+
+def _bib_entry_to_dict(entry: Any) -> Dict[str, Any]:
+    """Convert bibtexparser v1 dicts or v2 Entry objects to the legacy dict shape."""
+    if isinstance(entry, dict):
+        return dict(entry)
+
+    fields = {}
+    for field in getattr(entry, "fields", []) or []:
+        key = getattr(field, "key", "")
+        if key:
+            fields[key] = getattr(field, "value", "")
+
+    citation_key = getattr(entry, "key", "")
+    if citation_key:
+        fields["ID"] = citation_key
+    entry_type = getattr(entry, "entry_type", "")
+    if entry_type:
+        fields["ENTRYTYPE"] = entry_type
+    return fields
 
 def clean_bibliography_title(title: str) -> str:
     title = LatexNodes2Text(math_mode="verbatim").latex_to_text(str(title or ""))
@@ -314,4 +335,3 @@ def parse_bbl_file(filepath: str) -> Dict[str, Any]:
     elif "\\entry" in content:
         return _parse_compiled_entry(content)
     return {}
-

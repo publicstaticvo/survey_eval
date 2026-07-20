@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import re
@@ -10,14 +10,14 @@ from ..utility.citation_utils import citation_keys as normalize_citation_keys
 from ..utility.tool_config import ToolConfig
 
 
-OPENALEX_LITERATURE_POOL_SELECT = "id,title,cited_by_count,counts_by_year,publication_date"
-S2_LITERATURE_POOL_SELECT = "paperId,title,year,publicationDate,citationCount,referenceCount,externalIds,venue"
+OPENALEX_LITERATURE_POOL_SELECT = "id,title,abstract_inverted_index,cited_by_count,counts_by_year,publication_date,referenced_works"
+S2_LITERATURE_POOL_SELECT = "paperId,title,abstract,year,publicationDate,citationCount,referenceCount,externalIds,venue"
 TARGET_SECTION_TYPES = {"CONTENT", "TAXONOMY", "EVALUATION", ""}
 TARGET_SENTENCE_LABELS = {"SUMMARY", "COMPARISON", "EVALUATION", "SYNTHESIS", ""}
 
 
 class BuildLiteraturePool:
-    """Build a literature pool from cited papers, neighbor expansion, and topic-keyword search papers."""
+    """Build a literature pool from cited papers, neighbor expansion, and a local citation graph."""
 
     def __init__(self, config: ToolConfig):
         self.config = config
@@ -34,9 +34,7 @@ class BuildLiteraturePool:
         return self._source_name() == "semantic scholar"
 
     def _select_fields(self) -> str:
-        if self._uses_semantic_scholar():
-            return S2_LITERATURE_POOL_SELECT
-        return OPENALEX_LITERATURE_POOL_SELECT
+        return S2_LITERATURE_POOL_SELECT if self._uses_semantic_scholar() else OPENALEX_LITERATURE_POOL_SELECT
 
     def _paper_ids(self, paper: dict[str, Any]) -> set[str]:
         ids = set()
@@ -65,7 +63,8 @@ class BuildLiteraturePool:
             doi = str(value).strip().lower()
             doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi)
             doi = re.sub(r"^doi:", "", doi)
-            if doi: return doi
+            if doi:
+                return doi
         return ""
 
     def _paper_key(self, paper: dict[str, Any]) -> str:
@@ -102,18 +101,22 @@ class BuildLiteraturePool:
 
     def _metadata_sources(self, info: dict[str, Any]) -> dict[str, dict[str, Any]]:
         metadata = info.get("metadata") or {}
-        if not isinstance(metadata, dict): return {}
+        if not isinstance(metadata, dict):
+            return {}
         if "openalex" in metadata or "semantic scholar" in metadata:
             return {source: paper for source, paper in metadata.items() if isinstance(paper, dict)}
         return {self._source_name(): metadata} if metadata else {}
 
     def _default_engine_paper(self, info: dict[str, Any]) -> dict[str, Any] | None:
         sources = self._metadata_sources(info)
-        if not sources: return
+        if not sources:
+            return None
         preferred = sources.get(self._source_name())
-        if preferred: return preferred
+        if preferred:
+            return preferred
         for source in ("openalex", "semantic scholar"):
-            if sources.get(source): return sources[source]
+            if sources.get(source):
+                return sources[source]
         return next(iter(sources.values()))
 
     def _add_to_pool(
@@ -122,15 +125,29 @@ class BuildLiteraturePool:
         pool_index: dict[str, str],
         paper: dict[str, Any],
         label: str,
-    ):
-        if not paper or not paper.get("title"): return
+        citation_key: str = "",
+    ) -> str:
+        if not paper or not paper.get("title"):
+            return ""
         key = self._paper_key(paper)
-        if not key: return
+        if not key:
+            return ""
         aliases = self._paper_aliases(paper)
-        if any(alias in pool_index for alias in aliases): return
+        existing = next((pool_index[alias] for alias in aliases if alias in pool_index), "")
+        if existing:
+            if citation_key:
+                pool[existing].setdefault("citation_keys", [])
+                if citation_key not in pool[existing]["citation_keys"]:
+                    pool[existing]["citation_keys"].append(citation_key)
+                pool_index[f"citation:{citation_key}"] = existing
+            return existing
         pool[key] = {"paper": paper, "label": label}
+        if citation_key:
+            pool[key]["citation_keys"] = [citation_key]
+            aliases.add(f"citation:{citation_key}")
         for alias in aliases:
             pool_index[alias] = key
+        return key
 
     def _target_sections(self, paper: dict[str, Any]) -> list[dict[str, Any]]:
         sections = []
@@ -164,9 +181,7 @@ class BuildLiteraturePool:
                     walk(child)
             elif isinstance(node, list):
                 for sentence in node:
-                    if not isinstance(sentence, dict):
-                        continue
-                    if sentence.get("label", "") in TARGET_SENTENCE_LABELS:
+                    if isinstance(sentence, dict) and sentence.get("label", "") in TARGET_SENTENCE_LABELS:
                         keys.extend(self._normalize_citations(sentence.get("citations", [])))
 
         for section in sections:
@@ -182,22 +197,15 @@ class BuildLiteraturePool:
         return list(dict.fromkeys(item for item in ids if item))
 
     async def _expand_one(self, paper: dict[str, Any], direction: str, filter: dict) -> list[dict[str, Any]]:
-        method = self.engine.get_references if direction == "cited_by" else self.engine.get_citations
+        method = self.engine.get_citations if direction == "cited_by" else self.engine.get_references
         for paper_id in self._query_ids(paper):
             try:
-                result = await method(
-                    paper_id,
-                    limit=9999,
-                    select=self._select_fields(),
-                    filter=filter
-                )
+                if self._uses_semantic_scholar() and direction == "cited_by":
+                    result = await method(paper_id, limit=9999, select=self._select_fields(), **filter)
+                else:
+                    result = await method(paper_id, limit=9999, select=self._select_fields(), filter=filter)
             except TypeError:
-                result = await method(
-                    paper_id,
-                    limit=9999,
-                    fields=self._select_fields(),
-                    filter=filter,
-                )
+                result = await method(paper_id, limit=9999, fields=self._select_fields(), filter=filter)
             except Exception:
                 continue
             papers = result.get("results", []) or []
@@ -205,16 +213,38 @@ class BuildLiteraturePool:
                 return papers
         return []
 
+    def _referenced_work_aliases(self, work_id: str) -> list[str]:
+        value = str(work_id or "").replace("https://openalex.org/", "").strip()
+        return [f"id:{value}"] if value else []
+
+    def _graph_dict(self, pool: dict[str, dict[str, Any]], edges: set[tuple[str, str]]) -> dict[str, Any]:
+        nodes = sorted(pool)
+        edges = {(source, target) for source, target in edges if source in pool and target in pool and source != target}
+        out_counts = {node: 0 for node in nodes}
+        for source, _target in edges:
+            out_counts[source] += 1
+        for key, count in out_counts.items():
+            pool[key]["local_cited_by_count"] = count
+            pool[key].setdefault("paper", {})["local_cited_by_count"] = count
+        return {
+            "nodes": nodes,
+            "edges": [
+                {"source": source, "target": target}
+                for source, target in sorted(edges)
+            ],
+        }
+
     async def __call__(self, query: str, paper: dict[str, Any], paper_content_map: dict[str, Any] | None = None):
         paper_content_map = paper_content_map or paper.get("paper_content_map") or paper.get("citations") or {}
         to_publication_date = (self.eval_date - timedelta(days=90)).strftime("%Y-%m-%d")
         pool: dict[str, dict[str, Any]] = {}
         pool_index: dict[str, str] = {}
-        
-        for info in paper_content_map.values():
+        edges: set[tuple[str, str]] = set()
+
+        for citation_key, info in paper_content_map.items():
             cited_paper = self._default_engine_paper(info if isinstance(info, dict) else {})
             if cited_paper:
-                self._add_to_pool(pool, pool_index, cited_paper, "cited_papers")
+                self._add_to_pool(pool, pool_index, cited_paper, "cited_papers", citation_key=str(citation_key))
 
         print(f"BuildLiteraturePool starts with {len(pool)} cited papers")
         sections = self._target_sections(paper)
@@ -223,42 +253,45 @@ class BuildLiteraturePool:
             info = paper_content_map.get(key)
             if isinstance(info, dict):
                 cited_paper = self._default_engine_paper(info)
-                if cited_paper: seed_papers.append(cited_paper)
+                if cited_paper:
+                    seed_papers.append(cited_paper)
         seed_papers = self._deduplicate_papers(seed_papers)
-        
-        async def _expand_labeled(seed: dict[str, Any], direction: str, label: str):
+
+        async def _expand_labeled(seed: dict[str, Any], direction: str):
             try:
                 candidates = await self._expand_one(seed, direction, {"to_publication_date": to_publication_date})
-                return direction, label, candidates, None
+                return seed, direction, candidates, None
             except Exception as exc:
-                return direction, label, [], exc
+                return seed, direction, [], exc
 
         import tqdm
-        expansion_results = {"cited_by": [], "cites": []}
         expansion_tasks = []
-        for direction, label in (("cited_by", "cited_by"), ("cites", "cites")):
+        for direction in ("cited_by", "cites"):
             for seed in seed_papers:
-                expansion_tasks.append(asyncio.create_task(_expand_labeled(seed, direction, label)))
+                expansion_tasks.append(asyncio.create_task(_expand_labeled(seed, direction)))
 
         for task in tqdm.tqdm(asyncio.as_completed(expansion_tasks), total=len(expansion_tasks)):
-            direction, label, candidates, exc = await task
+            seed, direction, candidates, exc = await task
             if exc:
                 print(f"literaturePoolExpand {direction} {exc}")
                 continue
-            expansion_results[label].extend(candidates)
+            seed_key = self._add_to_pool(pool, pool_index, seed, "cited_papers")
+            for candidate in candidates:
+                candidate_key = self._add_to_pool(pool, pool_index, candidate, direction)
+                if not seed_key or not candidate_key:
+                    continue
+                if direction == "cited_by":
+                    edges.add((seed_key, candidate_key))
+                else:
+                    edges.add((candidate_key, seed_key))
 
-        # for direction, label in (("cited_by", "cited_by"), ("cites", "cites")):
-        #     for seed in tqdm.tqdm(seed_papers):
-        #         direction, label, candidates, exc = await _expand_labeled(seed, direction, label)
-        #         if exc:
-        #             print(f"literaturePoolExpand {direction} {exc}")
-        #             continue
-        #         expansion_results[label].extend(candidates)   
-
-        for label in ("cited_by", "cites"):
-            for candidate in expansion_results[label]:
-                self._add_to_pool(pool, pool_index, candidate, label)
-        print(f"BuildLiteraturePool {len(pool)} neighbor")
-
-        return {"literature_pool": pool}
-
+        for source_key, item in list(pool.items()):
+            if item.get("label") == "cited_papers":
+                continue
+            for work_id in item.get("paper", {}).get("referenced_works", []) or []:
+                target_key = next((pool_index[alias] for alias in self._referenced_work_aliases(work_id) if alias in pool_index), "")
+                if target_key:
+                    edges.add((target_key, source_key))
+        graph = self._graph_dict(pool, edges)
+        print(f"BuildLiteraturePool {len(pool)} neighbor, {len(graph['edges'])} graph edges")
+        return {"literature_pool": pool, "citation_graph": graph}

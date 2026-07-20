@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 import Levenshtein
 
-from .request_utils import AsyncRequestRateLimiter, HEADERS, OpenAlexBudgetExceeded, SessionManager
+from .request_utils import HEADERS, OPENALEX_REQUEST_GATE, OpenAlexBudgetExceeded, SessionManager
 from .tool_config import ToolConfig
 from .utils import normalize_text, valid_check
 
@@ -24,7 +24,7 @@ URL_DOMAIN = "https://openalex.org/"
 OPENALEX_API_URL = "https://api.openalex.org"
 OPENALEX_CONTENT_URL = "https://content.openalex.org"
 FREE_CREDITS_PER_DAY = 10000
-OPENALEX_MAX_REQUESTS_PER_SECOND = 100.0
+OPENALEX_MAX_REQUESTS_PER_SECOND = 30.0
 DEFAULT_SEARCH_KEY = "default.search"
 TRANSIENT_EXCEPTION_TYPES = (
     aiohttp.ClientError,
@@ -72,6 +72,14 @@ class OpenAlex:
         self._state_lock = asyncio.Lock()
         self._initialized = False
         self.request_count = 0
+        self.request_gate = OPENALEX_REQUEST_GATE
+        self.request_gate.configure(
+            requests_per_second=min(
+                float(getattr(config, "openalex_requests_per_second", OPENALEX_MAX_REQUESTS_PER_SECOND) or 0.0),
+                OPENALEX_MAX_REQUESTS_PER_SECOND,
+            ),
+            enabled=getattr(config, "openalex_rate_limit_enabled", True),
+        )
         self.no_key_state = CredentialState("anonymous", None, FREE_CREDITS_PER_DAY, initialized=True)
         self.api_key_states = [
             CredentialState(f"api_key_{idx}", api_key, 0, initialized=False)
@@ -80,7 +88,7 @@ class OpenAlex:
         ]
 
     async def ensure_ready(self):
-        """初始化"""
+        """Initialize OpenAlex credential state."""
         if self._initialized: return
         async with self._init_lock:
             if self._initialized: return
@@ -100,29 +108,29 @@ class OpenAlex:
         last_exc = None
         for attempt in range(3):
             try:
-                self.request_count += 1
-                async with session.get(
-                    f"{OPENALEX_API_URL}/rate-limit",
-                    headers=HEADERS,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp:
-                    text = await resp.text()
-                    payload = json.loads(text)
-                    if resp.status >= 400:
-                        if payload.get("error") == "Rate limit exceeded":
-                            raise OpenAlexBudgetExceeded(payload)
-                        resp.raise_for_status()
-                    return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
+                async with self.request_gate.throttle():
+                    self.request_count += 1
+                    async with session.get(
+                        f"{OPENALEX_API_URL}/rate-limit",
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        text = await resp.text()
+                        payload = json.loads(text)
+                        if resp.status >= 400:
+                            if payload.get("error") == "Rate limit exceeded":
+                                raise OpenAlexBudgetExceeded(payload)
+                            resp.raise_for_status()
+                        return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
             except Exception as exc:
                 last_exc = exc
                 if not self._is_transient_error(exc) or attempt == 2:
                     raise
                 await asyncio.sleep(min(10, 2 ** attempt))
         raise last_exc
-
     def _next_utc_midnight(self) -> datetime:
-        """OpenAlex免费额度于每日UTC 0:00重置"""
+        """Return the next UTC midnight when OpenAlex free credits reset."""
         now = datetime.now(UTC)
         tomorrow = (now + timedelta(days=1)).date()
         return datetime.combine(tomorrow, datetime.min.time(), tzinfo=UTC)
@@ -144,8 +152,7 @@ class OpenAlex:
 
     async def _choose_credential(self, estimated_cost: int, require_api_key: bool = False) -> CredentialState:
         await self.ensure_ready()
-        # ([self.no_key_state] if not require_api_key else []) + 
-        states = self.api_key_states
+        states = ([] if require_api_key else [self.no_key_state]) + self.api_key_states
         refresh_states = []
         async with self._state_lock:
             for state in states:
@@ -169,7 +176,7 @@ class OpenAlex:
                 state.cooling_until = cooling_until
                 if state.is_available(estimated_cost): return state
         raise OpenAlexBudgetExceeded({"message": "No OpenAlex credential has remaining credits"})
-    
+
     def _estimate_search_cost(self, search: str, filter_value: list[tuple] | dict | None) -> int:
         return 10 if (search or self._filter_has_search_key(filter_value)) else 1
 
@@ -194,7 +201,7 @@ class OpenAlex:
         return isinstance(exc, TRANSIENT_EXCEPTION_TYPES)
 
     def _format_filter(self, filter_value: list[tuple] | dict | None) -> str | None:
-        """将dict/dict.items()形式的filter参数整理成输入格式。"""
+        """Format dict or dict.items style filters for OpenAlex."""
         if not filter_value: return
         if isinstance(filter_value, dict): filter_value = list(filter_value.items())
         normalized = []
@@ -205,11 +212,11 @@ class OpenAlex:
         return ",".join(f"{key}:{value}" for key, value in normalized)
 
     def _normalize_openalex_id(self, value: str) -> str:
-        """去掉各种id前面的https//openalex.org/"""
+        """Strip the OpenAlex URL prefix from an id."""
         return (value or "").replace(URL_DOMAIN, "").strip()
 
     def _normalize_work(self, paper: dict) -> dict:
-        """将openalex返回的论文信息整理成统一格式"""
+        """Normalize an OpenAlex work into the local paper shape."""
         paper = dict(paper or {})
         if not paper.get("title"): return {}
         if paper.get("id"): paper["id"] = self._normalize_openalex_id(paper["id"])
@@ -230,7 +237,7 @@ class OpenAlex:
         return paper
 
     def _normalize_authorships(self, authorships: list[dict] | list[str] | None) -> list[str]:
-        """专门处理authors"""
+        """Normalize OpenAlex authorship records into author names."""
         authors = []
         for item in authorships or []:
             if isinstance(item, str): name = item
@@ -260,7 +267,7 @@ class OpenAlex:
         return None
 
     def _same_work(self, left: dict, right: dict) -> bool:
-        """去重核心：标题编辑距离<10%、作者重合度>80%、发表年份相差<=1年，可判定为同一篇工作。"""
+        """Detect duplicate works by title, authors, and publication year."""
         left_title = normalize_text(left.get("title", ""))
         right_title = normalize_text(right.get("title", ""))
         if not left_title or not right_title: return False
@@ -370,7 +377,7 @@ class OpenAlex:
             clusters.setdefault(find(idx), []).append(papers[idx])
         merged = [self._merge_work_cluster(cluster, original_title) for cluster in clusters.values()]
         return merged
-    
+
     def _filter_has_search_key(self, filter_value: list[tuple] | dict | None) -> bool:
         if not filter_value: return False
         items = filter_value.items() if isinstance(filter_value, dict) else filter_value
@@ -380,20 +387,21 @@ class OpenAlex:
         session = SessionManager.get()
         while True:
             try:
-                self.request_count += 1
-                async with session.get(
-                    url,
-                    headers=HEADERS,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    text = await resp.text()
-                    payload = json.loads(text)
-                    if resp.status >= 400:
-                        if payload.get("error") == "Rate limit exceeded":
-                            raise OpenAlexBudgetExceeded(payload)
-                        resp.raise_for_status()
-                    return payload
+                async with self.request_gate.throttle():
+                    self.request_count += 1
+                    async with session.get(
+                        url,
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        text = await resp.text()
+                        payload = json.loads(text)
+                        if resp.status >= 400:
+                            if payload.get("error") == "Rate limit exceeded":
+                                raise OpenAlexBudgetExceeded(payload)
+                            resp.raise_for_status()
+                        return payload
             except Exception as exc:
                 print(f"Endpoint {url} Error {type(exc)} {exc}")
                 if not self._is_transient_error(exc): raise
@@ -404,30 +412,30 @@ class OpenAlex:
         last_exc = None
         for attempt in range(3):
             try:
-                self.request_count += 1
-                async with session.get(
-                    url,
-                    headers=HEADERS,
-                    params=params,
-                    timeout=aiohttp.ClientTimeout(total=120),
-                ) as resp:
-                    content = await resp.read()
-                    if resp.status >= 400:
-                        try:
-                            payload = json.loads(content.decode("utf-8"))
-                        except Exception:
-                            payload = {"raw_text": content.decode("utf-8", errors="ignore")}
-                        if payload.get("error") == "Rate limit exceeded":
-                            raise OpenAlexBudgetExceeded(payload)
-                        resp.raise_for_status()
-                    return content
+                async with self.request_gate.throttle():
+                    self.request_count += 1
+                    async with session.get(
+                        url,
+                        headers=HEADERS,
+                        params=params,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        content = await resp.read()
+                        if resp.status >= 400:
+                            try:
+                                payload = json.loads(content.decode("utf-8"))
+                            except Exception:
+                                payload = {"raw_text": content.decode("utf-8", errors="ignore")}
+                            if payload.get("error") == "Rate limit exceeded":
+                                raise OpenAlexBudgetExceeded(payload)
+                            resp.raise_for_status()
+                        return content
             except Exception as exc:
                 last_exc = exc
                 if not self._is_transient_error(exc) or attempt == 2:
                     raise
                 await asyncio.sleep(min(10, 2 ** attempt))
         raise last_exc
-
     async def _request_json(
         self,
         url: str,
@@ -586,19 +594,49 @@ class OpenAlex:
         if deduplicate: results = self.deduplicate_works(results)
         return {"count": total or len(results), "results": results[:per_page], "_raw_result_count": raw_seen}
 
-    async def autocomplete(self, entity_type: str = "works", title: str = "") -> dict:
-        payload, _ = await self._request_json(
-            f"{OPENALEX_API_URL}/autocomplete/{entity_type}",
-            {"q": title},
-            estimated_cost=1,
-            fixed_cost=1,
-            require_api_key=False,
+    def _clean_search_title(self, title: str) -> str:
+        return re.sub(r"\s+", " ", str(title or "")).strip()
+
+    def _title_search_variants(self, title: str) -> list[tuple[str, bool]]:
+        original = self._clean_search_title(title)
+        variants = [(original, False)] if original else []
+        current = original
+        punctuation = ".,;:!?"
+        while True:
+            indexes = [index for index, char in enumerate(current) if char in punctuation]
+            if not indexes:
+                break
+            current = current[:indexes[-1]].strip()
+            if current:
+                variants.append((current, True))
+            else:
+                break
+        return list(dict.fromkeys(variants))
+    def _autocomplete_title_matches(self, original_title: str, results: list[dict], require_match: bool) -> bool:
+        if not require_match:
+            return bool(results)
+        return any(
+            valid_check(original_title, item.get("display_name") or item.get("title") or item.get("name") or "")
+            for item in results
         )
-        results = payload.get("results", []) or []
-        for item in results:
-            if item.get("id"):
-                item["id"] = self._normalize_openalex_id(item["id"])
-        return {"count": len(results), "results": results}
+
+    async def autocomplete(self, entity_type: str = "works", title: str = "") -> dict:
+        original_title = self._clean_search_title(title)
+        for search_title, truncated in self._title_search_variants(original_title):
+            payload, _ = await self._request_json(
+                f"{OPENALEX_API_URL}/autocomplete/{entity_type}",
+                {"q": search_title},
+                estimated_cost=1,
+                fixed_cost=1,
+                require_api_key=False,
+            )
+            results = payload.get("results", []) or []
+            for item in results:
+                if item.get("id"):
+                    item["id"] = self._normalize_openalex_id(item["id"])
+            if self._autocomplete_title_matches(original_title, results, truncated):
+                return {"count": len(results), "results": results}
+        return {"count": 0, "results": []}
 
     async def find_work_by_title(self, title: str, select: str | None = OPENALEX_SELECT) -> dict | None:
         results = await self.autocomplete("works", title)

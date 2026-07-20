@@ -6,43 +6,10 @@ from typing import Any
 
 import jsonschema
 
-from ..prompts import FIND_ALL_ENTITIES
+from ..prompts import FIND_ALL_ENTITIES, FIND_ALL_ENTITIES_SCHEMA
 from ..utility.llmclient import AsyncChat
 from ..utility.tool_config import ToolConfig
 from .utils import extract_json, paragraph_to_text
-
-
-FIND_ALL_ENTITIES_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "entities": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "locally_cited": {"type": "boolean"},
-                },
-                "required": ["name", "locally_cited"],
-                "additionalProperties": False,
-            },
-        },
-        "alias_pairs": {
-            "type": "array",
-            "items": {
-                "type": "array",
-                "prefixItems": [
-                    {"type": "string", "minLength": 1},
-                    {"type": "string", "minLength": 1},
-                ],
-                "minItems": 2,
-                "maxItems": 2,
-            },
-        },
-    },
-    "required": ["entities", "alias_pairs"],
-    "additionalProperties": False,
-}
 
 
 class FindAllEntitiesClient(AsyncChat):
@@ -65,7 +32,7 @@ class FindAllEntitiesClient(AsyncChat):
         entities: dict[str, dict[str, Any]] = {}
         for item in result["entities"]:
             name = self._normalize_entity_name(item["name"])
-            assert self._contains_entity(paragraph, name)
+            assert self._contains_entity(paragraph, name), f"{name} isnt in paragraph"
             key = name.casefold()
             if key in entities:
                 entities[key]["locally_cited"] = entities[key]["locally_cited"] or item["locally_cited"]
@@ -78,8 +45,11 @@ class FindAllEntitiesClient(AsyncChat):
             short_name = self._normalize_entity_name(short_name)
             full_key = full_name.casefold()
             short_key = short_name.casefold()
-            assert full_key in entities and short_key in entities
-            alias_pairs.append([entities[full_key]["name"], entities[short_key]["name"]])
+            for key, name in ((full_key, full_name), (short_key, short_name)):
+                if key not in entities and self._contains_entity(paragraph, name):
+                    entities[key] = {"name": name, "locally_cited": False}
+            if full_key in entities and short_key in entities:
+                alias_pairs.append([entities[full_key]["name"], entities[short_key]["name"]])
 
         return {"entities": list(entities.values()), "alias_pairs": alias_pairs}
 
@@ -193,6 +163,7 @@ class FindAllEntities:
                 paragraph.setdefault("alias_pairs", [])
                 continue
             task_paragraphs.append((paragraph, text))
+            # 
             tasks.append(asyncio.create_task(self.find_entities.call(inputs={"paragraph": text, "query": query})))
 
         entities_dict: dict[str, dict[str, Any]] = {}

@@ -1,6 +1,7 @@
 import json
 import time
 import asyncio, aiohttp
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 HEADERS = {
@@ -47,6 +48,20 @@ class AsyncRequestRateLimiter:
             await asyncio.sleep(wait_seconds)
 
 
+class SharedRequestGate:
+    def __init__(self, requests_per_second: float = 0.0, enabled: bool = True):
+        self.rate_limiter = AsyncRequestRateLimiter(requests_per_second, enabled=enabled)
+
+    def configure(self, requests_per_second: float = 0.0, enabled: bool = True):
+        self.rate_limiter.configure(requests_per_second, enabled=enabled)
+
+    @asynccontextmanager
+    async def throttle(self):
+        await self.rate_limiter.acquire()
+        yield
+
+
+OPENALEX_REQUEST_GATE = SharedRequestGate()
 class OpenAlexBudgetExceeded(RuntimeError):
     def __init__(self, payload: dict | None = None):
         self.payload = payload or {}
@@ -64,7 +79,7 @@ class RateLimit:
     LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(20)
     CITATION_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
-    PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker镜像本地解析
+    PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker闀滃儚鏈湴瑙ｆ瀽
     WEBSEARCH_SEMAPHORE = asyncio.Semaphore(50)
     S2_SEMAPHORE = asyncio.Semaphore(2)
 
@@ -74,7 +89,7 @@ class SessionManager:
     
     @classmethod
     async def init(cls):
-        """进入上下文时调用"""
+        """Initialize the shared aiohttp session."""
         if cls._global_session is None:
             connector = aiohttp.TCPConnector(limit=200, limit_per_host=100, ttl_dns_cache=300)
             cls._global_session = aiohttp.ClientSession(
@@ -84,14 +99,14 @@ class SessionManager:
     
     @classmethod
     async def close(cls):
-        """退出上下文时调用"""
+        """Close the shared aiohttp session."""
         if cls._global_session and not cls._global_session.closed:
             await cls._global_session.close()
             cls._global_session = None
     
     @classmethod
     def get(cls) -> aiohttp.ClientSession:
-        """获取全局 session"""
+        """Return the shared aiohttp session."""
         if cls._global_session is None:
             raise RuntimeError("SessionManager not initialized")
         return cls._global_session
@@ -105,7 +120,7 @@ async def async_request_template(
     return_json: bool = True,
     timeout: int = 30
 ) -> dict:
-    """使用全局 session"""
+    """Use the shared aiohttp session."""
     session = SessionManager.get()
     
     headers = headers or {}

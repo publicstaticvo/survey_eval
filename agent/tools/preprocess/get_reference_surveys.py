@@ -7,6 +7,7 @@ from typing import Any
 
 import jsonschema
 
+from .section_classify import SectionClassification
 from ..prompts import REFERENCE_SURVEY_SCHEMA, REFERENCE_SURVEY_SELECT
 from ..utility.academic_engine import get_academic_engine
 from ..utility.llmclient import AsyncChat
@@ -75,7 +76,6 @@ class ReferenceSurveySelect(AsyncChat):
         for tier in ("strict_reference_surveys", "partial_reference_surveys"):
             selected[tier] = []
             for item in results[tier]:
-                # 鑻itle涓嶅湪title_to_paper涓紝浼氬脊鍑篕eyError缁檛enacity鎹曟崏骞堕噸璇曘€?
                 paper = dict(title_to_paper[item["title"]])
                 paper["reference_survey_tier"] = tier
                 paper["reference_survey_reason"] = item["reason"]
@@ -105,6 +105,7 @@ class GetReferenceSurveys:
         self.openalex = get_openalex_client(config)
         self.semantic_scholar = get_semantic_scholar_client(config)
         self.academic_engine = get_academic_engine(config)
+        self.sections_llm = SectionClassification(config)
         self.academic_engine_type = config.default_academic_search_engine
 
     def _uses_semantic_scholar_engine(self) -> bool:
@@ -257,7 +258,7 @@ class GetReferenceSurveys:
             item["reference_survey_tier"] = survey.get("reference_survey_tier", "")
             item["reference_survey_reason"] = survey.get("reference_survey_reason", "")
             item["covered_subtopics"] = survey.get("covered_subtopics", [])
-            item["full_content"] = full_content
+            item["full_content"] = self.sections_llm(full_content)
             return item
 
         tasks = [asyncio.create_task(_single(survey)) for survey in surveys]

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import re
@@ -6,78 +6,92 @@ from typing import Any
 
 import jsonschema
 
-from ..prompts import EXTRACT_PROPOSED
+from ..prompts import JUDGE_UNCITED_BATCH, JUDGE_UNCITED_BATCH_ITEM_SCHEMA
 from ..utility.citation_utils import citation_keys
 from ..utility.evidence_check import EvidenceCheck
 from ..utility.llmclient import AsyncChat
-from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
-from ..utility.s2 import S2_DEFAULT_FIELDS, get_semantic_scholar_client
+from ..utility.academic_engine import get_academic_engine
 from ..utility.tool_config import ToolConfig
-from .utils import extract_json, extract_literature_pool_proposed_entities
+from .utils import extract_json
 
 
-ENTITY_SEARCH_OPENALEX_SELECT = OPENALEX_SELECT
-ENTITY_SEARCH_S2_SELECT = S2_DEFAULT_FIELDS
+class JudgeUncitedBatchClient(AsyncChat):
+    PROMPT = JUDGE_UNCITED_BATCH
 
-EXTRACT_PROPOSED_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "proposed": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "minLength": 1},
-                    "evidence_sentence": {"type": "string", "minLength": 1},
-                },
-                "required": ["name", "evidence_sentence"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    "required": ["proposed"],
-    "additionalProperties": False,
-}
-
-
-class ExtractProposedClient(AsyncChat):
-    PROMPT = EXTRACT_PROPOSED
-
-    def __init__(self, llm, sampling_params: dict | None = None, evidence_check: EvidenceCheck | None = None):
-        super().__init__(llm, sampling_params)
-        self.evidence_check = evidence_check
+    def _candidate_text(self, papers: list[dict[str, Any]]) -> str:
+        blocks = []
+        for idx, paper in enumerate(papers, start=1):
+            title = str(paper.get("title") or "").strip()
+            abstract = str(paper.get("abstract") or "").strip()
+            blocks.append(f"[{idx}] Title: {title}\n    Abstract: {abstract}")
+        return "\n".join(blocks)
 
     def _availability(self, response, context):
         result = extract_json(response)
-        jsonschema.validate(result, EXTRACT_PROPOSED_SCHEMA)
-        abstract = context["abstract"]
-        proposed = []
-        for item in result["proposed"]:
-            ok, _confidence = self.evidence_check.verify([item["evidence_sentence"]], abstract) if self.evidence_check else (True, 1.0)
-            assert ok
-            proposed.append({"name": item["name"].strip(), "evidence_sentence": item["evidence_sentence"].strip()})
-        return proposed
+        candidate_count = context["candidate_count"]
+        schema = {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "minLength": 1},
+                "results": {
+                    "type": "array",
+                    "items": JUDGE_UNCITED_BATCH_ITEM_SCHEMA,
+                    "minItems": candidate_count,
+                    "maxItems": candidate_count,
+                },
+                "most_likely_source": {
+                    "anyOf": [
+                        {"type": "integer", "minimum": 1, "maximum": candidate_count},
+                        {"type": "null"},
+                    ],
+                },
+            },
+            "required": ["entity", "results", "most_likely_source"],
+            "additionalProperties": False,
+        }
+        jsonschema.validate(result, schema)
+        expected_indexes = set(range(1, candidate_count + 1))
+        actual_indexes = {item["paper_index"] for item in result["results"]}
+        assert actual_indexes == expected_indexes
+        papers = context["candidate_papers"]
+        yes_indexes = {item["paper_index"] for item in result["results"] if item["decision"] == "yes"}
+        assert (result["most_likely_source"] is None) == (not yes_indexes)
+        if result["most_likely_source"] is not None:
+            assert result["most_likely_source"] in yes_indexes, "Most_likely invalid"
+        for item in result["results"]:
+            evidence = item["evidence"]
+            if item["decision"] == "yes":
+                assert evidence
+            if evidence:
+                paper = papers[item["paper_index"] - 1]
+                source_text = f"{paper.get('title', '')}\n{paper.get('abstract', '')}"
+                assert evidence.lower() in source_text.lower(), "Evidence invalid"
+        return result
 
     def _organize_inputs(self, inputs):
-        return self.PROMPT.format(title=inputs["title"], abstract=inputs["abstract"]), {
-            "abstract": inputs["abstract"],
+        papers = inputs["candidate_papers"]
+        return self.PROMPT.format(
+            entity_name=inputs["entity_name"],
+            candidate_papers=self._candidate_text(papers),
+        ), {
+            "candidate_count": len(papers),
+            "candidate_papers": papers,
         }
-
+    
 
 class UncitedEntities:
     """Find scientific named entities whose defining papers may be missing from citations."""
 
     def __init__(self, config: ToolConfig):
         self.config = config
-        self.use_semantic_scholar = config.use_semantic_scholar()
-        self.openalex = get_openalex_client(config)
-        self.semantic_scholar = get_semantic_scholar_client(config) if self.use_semantic_scholar else None
+        self.academic_engine = get_academic_engine(config)
         self.evidence_check = EvidenceCheck(config)
-        self.extract_proposed = ExtractProposedClient(
-            config.llm_server_info,
-            config.sampling_params,
-            evidence_check=self.evidence_check,
-        )
+        # self.extract_proposed = ExtractProposedClient(
+        #     config.llm_server_info,
+        #     config.sampling_params,
+        #     evidence_check=self.evidence_check,
+        # )
+        self.judge_uncited_batch = JudgeUncitedBatchClient(config.llm_server_info, config.sampling_params)
         self._proposed_cache: dict[str, list[dict[str, str]]] = {}
 
     def _iter_paragraphs(self, paper: dict[str, Any]):
@@ -156,59 +170,26 @@ class UncitedEntities:
             return True
         return self._abbreviation_match(entity, proposed_name) or self._abbreviation_match(proposed_name, entity)
 
-    async def _paper_proposed(self, paper: dict[str, Any]) -> list[dict[str, str]]:
-        key = self._paper_key(paper)
-        if key in self._proposed_cache:
-            return self._proposed_cache[key]
-        title = str(paper.get("title") or "").strip()
-        abstract = str(paper.get("abstract") or "").strip()
-        if not title or not abstract:
-            self._proposed_cache[key] = []
-            return []
+    async def _paper_proposes_entity(self, entity_names: list[str], candidate_papers: list[dict[str, Any]] | dict[str, Any]) -> dict[str, Any]:
+        papers = candidate_papers if isinstance(candidate_papers, list) else [candidate_papers]
+        papers = [paper for paper in papers if paper.get("title") and paper.get("abstract")]
+        entity_name = " / ".join(entity_names)
+        if not papers:
+            return {"entity": entity_name, "results": [], "most_likely_source": None}
         try:
-            proposed = await self.extract_proposed.call(inputs={"title": title, "abstract": abstract})
+            return await self.judge_uncited_batch.call(
+                inputs={"entity_name": entity_name, "candidate_papers": papers}
+            )
         except Exception as exc:
-            print(f"extractProposed {title} {exc}")
-            proposed = []
-        self._proposed_cache[key] = proposed
-        return proposed
+            print(f"judgeUncitedBatch {entity_name} {exc}")
+            return {"entity": entity_name, "results": [], "most_likely_source": None}
 
-    async def _paper_proposes_entity(self, entity_names: list[str], paper: dict[str, Any]) -> bool:
-        proposed = await self._paper_proposed(paper)
-        return any(
-            self._entity_matches_name(entity, item["name"])
-            for entity in entity_names
-            for item in proposed
-        )
-
-    async def _entity_matches_paper(self, entity_names: list[str], paper: dict[str, Any]) -> bool:
-        return await self._paper_proposes_entity(entity_names, paper)
-
-    async def _search_openalex(self, entity_names: list[str]) -> list[dict[str, Any]]:
-        payload = await self.openalex.search_works(
-            search=entity_names[0],
-            per_page=5,
-            select=ENTITY_SEARCH_OPENALEX_SELECT,
-        )
-        matches = []
-        for paper in payload.get("results", []) or []:
-            if await self._entity_matches_paper(entity_names, paper):
-                matches.append(paper)
-        return matches
-
-    async def _search_semantic_scholar(self, entity_names: list[str]) -> list[dict[str, Any]]:
-        if self.semantic_scholar is None:
-            return []
-        payload = await self.semantic_scholar.search_works(
+    async def _search_academic_engine(self, entity_names: list[str]) -> list[dict[str, Any]]:
+        payload = await self.academic_engine.search_works(
             search=entity_names[0],
             per_page=3,
-            select=ENTITY_SEARCH_S2_SELECT,
         )
-        matches = []
-        for paper in payload.get("results", []) or []:
-            if await self._entity_matches_paper(entity_names, paper):
-                matches.append(paper)
-        return matches
+        return [paper for paper in payload.get("results", []) or [] if paper.get("title") and paper.get("abstract")]
 
     def _paper_ids(self, paper: dict[str, Any]) -> set[str]:
         ids = set()
@@ -316,10 +297,8 @@ class UncitedEntities:
         paper_content_map: dict[str, Any] | None,
     ) -> bool:
         papers = self._paper_sources_for_keys(self._paragraph_citation_keys(paragraph), paper_content_map)
-        for paper in papers:
-            if await self._paper_proposes_entity(group["names"], paper):
-                return True
-        return False
+        judgment = await self._paper_proposes_entity(group["names"], papers)
+        return any(item["decision"] == "yes" for item in judgment["results"])
 
     def _apply_prefix_citation_rule(self, groups: dict[str, dict[str, Any]]):
         changed = True
@@ -337,50 +316,26 @@ class UncitedEntities:
                         right["cited"] = True
                         changed = True
 
-    def _literature_pool_matches(
-        self,
-        group: dict[str, Any],
-        proposed_index: dict[str, dict[str, Any]],
-        cited_papers: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        matches = []
-        seen = set()
-        for proposed_name, paper in proposed_index.items():
-            if not any(self._entity_matches_name(entity, proposed_name) for entity in group["names"]):
-                continue
-            if self._is_cited(paper, cited_papers):
-                continue
-            key = self._paper_key(paper)
-            if key and key not in seen:
-                seen.add(key)
-                item = dict(paper)
-                item["source"] = item.get("source", "literature_pool")
-                matches.append(item)
-        return matches
-
     async def _search_entity(
         self,
         group: dict[str, Any],
         cited_papers: list[dict[str, Any]],
-        proposed_index: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        matches = self._literature_pool_matches(group, proposed_index, cited_papers)
-        if not matches:
-            searchers = [("openalex", self._search_openalex)]
-            if self.use_semantic_scholar:
-                searchers.append(("semantic_scholar", self._search_semantic_scholar))
-            for source, search in searchers:
-                try:
-                    papers = await search(group["names"])
-                except Exception as exc:
-                    print(f"uncitedEntitySearch {source} {group['names'][0]} {exc}")
-                    papers = []
-                for paper in papers:
-                    if self._is_cited(paper, cited_papers):
-                        continue
-                    item = dict(paper)
-                    item["source"] = source
-                    matches.append(item)
+        try:
+            candidates = await self._search_academic_engine(group["names"])
+        except Exception as exc:
+            print(f"uncitedEntitySearch {self.config.default_academic_search_engine} {group['names'][0]} {exc}")
+            candidates = []
+        candidates = [paper for paper in candidates if not self._is_cited(paper, cited_papers)]
+        judgment = await self._paper_proposes_entity(group["names"], candidates)
+        yes_indexes = {item["paper_index"] for item in judgment["results"] if item["decision"] == "yes"}
+        matches = []
+        for idx, paper in enumerate(candidates, start=1):
+            if idx not in yes_indexes:
+                continue
+            item = dict(paper)
+            item["source"] = self.config.default_academic_search_engine
+            matches.append(item)
         unique = {}
         for paper in matches:
             key = self._paper_key(paper)
@@ -390,6 +345,8 @@ class UncitedEntities:
             "entity": group["names"][0],
             "alternative_names": group["names"][1:],
             "matched_papers": list(unique.values()),
+            "judge_results": judgment["results"],
+            "most_likely_source": judgment["most_likely_source"],
         }
 
     async def __call__(
@@ -407,13 +364,13 @@ class UncitedEntities:
             for key in paragraph_group_keys.get(id(paragraph), []):
                 if not groups[key]["cited"] and await self._paragraph_cites_group(groups[key], paragraph, paper_content_map):
                     groups[key]["cited"] = True
-
+        # Propagate cited status across prefix-related entity variants.
         self._apply_prefix_citation_rule(groups)
-        proposed_index = extract_literature_pool_proposed_entities(literature_pool, cited_papers) if literature_pool else {}
         uncited_groups = [group for group in groups.values() if not group["cited"]]
         print(f"{len(uncited_groups)} uncited groups")
+        # Search remaining uncited groups.
         search_tasks = [
-            asyncio.create_task(self._search_entity(group, cited_papers, proposed_index))
+            asyncio.create_task(self._search_entity(group, cited_papers))
             for group in sorted(uncited_groups, key=lambda item: item["names"][0].casefold())
         ]
         results = await asyncio.gather(*search_tasks, return_exceptions=True)

@@ -26,11 +26,11 @@ class InternalConsistentClient(AsyncChat):
         return result
 
     def _organize_inputs(self, inputs):
-        sentence_list = inputs["sentence_list"] or "None"
+        tagged_content = inputs["tagged_content"] or "None"
         subsection_list = inputs["subsection_list"] or "None"
         return self.PROMPT.format(
             SECTION_TITLE=inputs["section_title"],
-            SENTENCE_LIST=sentence_list,
+            TAGGED_CONTENT=tagged_content,
             SUBSECTION_LIST=subsection_list,
         ), {
             "sentence_map": inputs["sentence_map"],
@@ -60,6 +60,27 @@ class InternalConsistency:
                     sentences.append(sentence["text"].strip())
         return sentences
 
+    def _tagged_content(self, section: dict[str, Any]) -> tuple[str, dict[str, str]]:
+        sentence_map = {}
+        paragraph_texts = []
+        sentence_index = 1
+        for paragraph in section.get("paragraphs", []) or []:
+            tagged_sentences = []
+            for sentence in self._paragraph_sentences(paragraph):
+                if (
+                    isinstance(sentence, dict)
+                    and sentence.get("environment_type", "text") == "text"
+                    and sentence.get("text", "").strip()
+                ):
+                    sentence_id = f"S{sentence_index}"
+                    text = sentence["text"].strip()
+                    sentence_map[sentence_id] = text
+                    tagged_sentences.append(f"[{sentence_id}] {text}")
+                    sentence_index += 1
+            if tagged_sentences:
+                paragraph_texts.append(" ".join(tagged_sentences))
+        return "\n\n".join(paragraph_texts), sentence_map
+
     def _section_title_path(self, title_path: list[str]) -> str:
         return " > ".join(part for part in title_path if part)
 
@@ -80,15 +101,7 @@ class InternalConsistency:
         return targets
 
     def _input_for_section(self, section: dict[str, Any], title_path: list[str]) -> dict[str, Any]:
-        sentences = self._text_sentences(section)
-        sentence_map = {
-            f"S{index}": sentence
-            for index, sentence in enumerate(sentences, 1)
-        }
-        sentence_list = "\n".join(
-            f"{sentence_id}: {sentence}"
-            for sentence_id, sentence in sentence_map.items()
-        )
+        tagged_content, sentence_map = self._tagged_content(section)
         children = [
             child for child in section.get("sections", []) or []
             if isinstance(child, dict)
@@ -105,7 +118,7 @@ class InternalConsistency:
         return {
             "section": section,
             "section_title": self._section_title_path(title_path),
-            "sentence_list": sentence_list or None,
+            "tagged_content": tagged_content or None,
             "sentence_map": sentence_map,
             "subsection_list": subsection_list or None,
             "subsection_ids": subsection_ids,

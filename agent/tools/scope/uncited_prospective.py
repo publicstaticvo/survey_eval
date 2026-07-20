@@ -1,25 +1,55 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from datetime import timedelta
 from typing import Any
 
 from ..fact.fact_check import FactualCorrectnessCritic
 from ..utility.citation_utils import has_citations
-from ..utility.llmclient import AsyncRerank
+from ..prompts import QUERY_EXPAND
+from ..utility.openalex import OPENALEX_SELECT, get_openalex_client
+from ..utility.llmclient import AsyncChat, AsyncRerank
 from ..utility.paper_download import PaperDownload, S2PaperDownload
-from ..utility.sbert_client import SentenceTransformerClient
 from ..utility.tool_config import ToolConfig
+from .utils import extract_json
 
 
 TARGET_CLAIM_LABELS = {"GAP", "SYNTHESIS", "EVALUATION"}
 
 
+class QueryExpandClient(AsyncChat):
+    PROMPT = QUERY_EXPAND
+
+    def _tokens(self, text: str) -> set[str]:
+        return {token.casefold() for token in re.findall(r"[\w-]+", text or "")}
+
+    def _availability(self, response, context):
+        result = extract_json(response)
+        assert isinstance(result["searchable"], bool)
+        assert isinstance(result["query"], str)
+        assert isinstance(result["key_entities"], list)
+        if not result["searchable"]:
+            return result
+        af_tokens = self._tokens(context["af_text"])
+        query_tokens = self._tokens(result["query"])
+        assert query_tokens and query_tokens <= af_tokens
+        query_text = result["query"].casefold()
+        for entity in result["key_entities"]:
+            assert isinstance(entity, str) and entity.strip()
+            assert entity.casefold() in query_text
+        return result
+
+    def _organize_inputs(self, inputs):
+        return self.PROMPT.format(af_text=inputs["af_text"]), {"af_text": inputs["af_text"]}
+
 class UncitedProspective:
     def __init__(self, config: ToolConfig):
         self.config = config
-        self.sbert = SentenceTransformerClient(config.sbert_server_url)
-        self.rerank = AsyncRerank(config.rerank_server_info)
         self.fact_check = FactualCorrectnessCritic(config)
+        self.query_expand = QueryExpandClient(config.llm_server_info, config.sampling_params)
+        self.rerank = AsyncRerank(config.rerank_server_info)
+        self.openalex = get_openalex_client(config)
         self.openalex_downloader = PaperDownload(config)
         self.semantic_scholar_downloader = S2PaperDownload(config)
 
@@ -77,50 +107,6 @@ class UncitedProspective:
             seen.add(key)
             merged.append(normalized)
         return merged
-
-    def _pool_items(self, literature_pool: dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
-        raw_items = literature_pool.get("literature_pool", literature_pool) if isinstance(literature_pool, dict) else literature_pool
-        if isinstance(raw_items, dict):
-            values = raw_items.values()
-        else:
-            values = raw_items or []
-        papers = []
-        for item in values:
-            paper = item.get("paper") if isinstance(item, dict) and item.get("paper") else item
-            if isinstance(paper, dict) and paper.get("title"):
-                papers.append(paper)
-        return papers
-
-    def _paper_text(self, paper: dict[str, Any]) -> str:
-        return f"Title: {paper.get('title', '')}\nAbstract: {paper.get('abstract', '')}".strip()
-
-    def _top_similar_papers(self, claim: str, papers: list[dict[str, Any]], top_n: int = 200) -> list[dict[str, Any]]:
-        if not papers: return []
-        texts = [claim, *[self._paper_text(paper) for paper in papers]]
-        embeddings = self.sbert.embed(texts)
-        claim_vec, paper_vecs = embeddings[:1], embeddings[1:]
-        left_norm = (claim_vec ** 2).sum(axis=1, keepdims=True) ** 0.5
-        right_norm = (paper_vecs ** 2).sum(axis=1, keepdims=True) ** 0.5
-        left_norm[left_norm == 0] = 1.0
-        right_norm[right_norm == 0] = 1.0
-        scores = ((claim_vec / left_norm) @ (paper_vecs / right_norm).T)[0].tolist()
-        ranked = sorted(zip(papers, scores), key=lambda item: item[1], reverse=True)
-        return [paper for paper, _ in ranked[:top_n]]
-
-    async def _rerank_papers(self, claim: str, papers: list[dict[str, Any]], top_n: int = 10) -> list[dict[str, Any]]:
-        if len(papers) <= top_n:
-            return papers
-        documents = [self._paper_text(paper) for paper in papers]
-        selected_texts = await self.rerank.call(claim, documents, top_n=top_n)
-        remaining = list(papers)
-        selected = []
-        for text in selected_texts:
-            for index, paper in enumerate(remaining):
-                if self._paper_text(paper) == text:
-                    selected.append(paper)
-                    remaining.pop(index)
-                    break
-        return selected or papers[:top_n]
 
     def _is_semantic_scholar_paper(self, paper: dict[str, Any]) -> bool:
         return bool(paper.get("paperId") or paper.get("externalIds") or paper.get("openAccessPdf"))
@@ -222,23 +208,43 @@ class UncitedProspective:
             best["evidence_sources"] = {best["judgment"]: by_judgment[best["judgment"]]}
         return best
 
-    async def _process_claim(self, claim: dict[str, Any], pool_papers: list[dict[str, Any]]) -> dict[str, Any]:
-        similar = self._top_similar_papers(claim["text"], pool_papers, top_n=200)
-        selected = await self._rerank_papers(claim["text"], similar, top_n=10)
+    def _paper_contains_entities(self, paper: dict[str, Any], key_entities: list[str]) -> bool:
+        text = f"{paper.get('title', '')} {paper.get('abstract', '')}".casefold()
+        return all(entity.casefold() in text for entity in key_entities)
+
+    async def _process_claim(self, claim: dict[str, Any]) -> dict[str, Any]:
+        query_data = {"searchable": False, "query": "", "key_entities": []}
+        try:
+            query_data = await self.query_expand.call(inputs={"af_text": claim["text"]})
+            if query_data["searchable"] and query_data["key_entities"]:
+                payload = await self.openalex.search_works(
+                    search=" AND ".join(query_data["key_entities"]),
+                    filter={
+                        "to_publication_date": (self.config.evaluation_date - timedelta(days=90)).strftime("%Y-%m-%d"),
+                    },
+                    per_page=10,
+                    select=OPENALEX_SELECT,
+                )
+                selected = [
+                    paper for paper in (payload.get("results", []) or [])
+                    if self._paper_contains_entities(paper, query_data["key_entities"])
+                ]
+            else:
+                selected = []
+        except Exception as exc:
+            print(f"uncitedProspectiveSearch {claim['text'][:80]} {exc}")
+            selected = []
         downloaded = await self._download_papers(selected)
         fact_check = await self._fact_check_claim(claim["text"], downloaded)
-        return {"claim": claim["text"], "label": claim["label"], "fact_check": fact_check}
-
+        return {"claim": claim["text"], "label": claim["label"], "query_expand": query_data, "fact_check": fact_check}
     async def __call__(
         self,
         paper: dict[str, Any],
-        literature_pool: dict[str, Any] | list[dict[str, Any]],
         extra_claims: list[dict[str, Any] | str] | None = None,
     ):
         claims = self._merge_claims(self._claims(paper), extra_claims)
-        pool_papers = self._pool_items(literature_pool)
         tasks = [
-            asyncio.create_task(self._process_claim(claim, pool_papers))
+            asyncio.create_task(self._process_claim(claim))
             for claim in claims
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -270,4 +276,3 @@ class UncitedProspective:
                 grouped[claim_text] = papers
                 details[claim_text] = result
         return {"uncited_prospective": grouped, "uncited_prospective_details": details}
-

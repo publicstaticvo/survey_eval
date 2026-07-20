@@ -336,6 +336,32 @@ class SemanticScholar:
             filtered.append(paper)
         return filtered
 
+    def _clean_search_title(self, title: str) -> str:
+        return re.sub(r"\s+", " ", str(title or "")).strip()
+
+    def _title_search_variants(self, title: str) -> list[tuple[str, bool]]:
+        original = self._clean_search_title(title)
+        variants = [(original, False)] if original else []
+        current = original
+        punctuation = ".,;:!?"
+        while True:
+            indexes = [index for index, char in enumerate(current) if char in punctuation]
+            if not indexes:
+                break
+            current = current[:indexes[-1]].strip()
+            if current:
+                variants.append((current, True))
+            else:
+                break
+        return list(dict.fromkeys(variants))
+    def _autocomplete_title_matches(self, original_title: str, results: list[dict], require_match: bool) -> bool:
+        if not require_match:
+            return bool(results)
+        return any(
+            valid_check(original_title, item.get("display_name") or item.get("title") or item.get("name") or "")
+            for item in results
+        )
+
     def _normalize_fields(self, fields: str | None) -> str | None:
         if fields is None:
             return None
@@ -358,24 +384,27 @@ class SemanticScholar:
         return fields
 
     async def autocomplete(self, entity_type: str = "paper", title: str = "", **request_kwargs) -> dict:
-        payload = await self._request_json(
-            "GET",
-            f"/{entity_type}/autocomplete",
-            {"query": title, **request_kwargs},
-        )
-        matches = payload.get("matches") or []
-        results = []
-        for item in matches:
-            item = dict(item or {})
-            if item.get("id") and not item.get("paperId"):
-                item["paperId"] = item["id"]
-            normalized = self._normalize_paper(item)
-            if normalized:
-                normalized["display_name"] = item.get("title") or item.get("name") or normalized.get("title", "")
-                results.append(normalized)
-        results = self.deduplicate_papers(results, original_title=title)
-        return {"count": len(results), "results": results}
-
+        original_title = self._clean_search_title(title)
+        for search_title, truncated in self._title_search_variants(original_title):
+            payload = await self._request_json(
+                "GET",
+                f"/{entity_type}/autocomplete",
+                {"query": search_title, **request_kwargs},
+            )
+            matches = payload.get("matches") or []
+            results = []
+            for item in matches:
+                item = dict(item or {})
+                if item.get("id") and not item.get("paperId"):
+                    item["paperId"] = item["id"]
+                normalized = self._normalize_paper(item)
+                if normalized:
+                    normalized["display_name"] = item.get("title") or item.get("name") or normalized.get("title", "")
+                    results.append(normalized)
+            results = self.deduplicate_papers(results, original_title=original_title)
+            if self._autocomplete_title_matches(original_title, results, truncated):
+                return {"count": len(results), "results": results}
+        return {"count": 0, "results": []}
     async def find_work_by_title(self, title: str, fields: str | None = S2_DEFAULT_FIELDS) -> dict | None:
         results = await self.autocomplete("paper", title)
         if not results.get("results"):
