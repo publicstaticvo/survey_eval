@@ -10,7 +10,7 @@ except ImportError:
     from paper_elements import Paper, Section, Paragraph, Sentence
 
 
-class PaperParser:
+class XMLPaperParser:
     NS = {'tei': 'http://www.tei-c.org/ns/1.0'}
     HEAD_INDEX_RE = re.compile(r"^\s*(?P<index>(?:\d+\.)*\d+)\.?\s+(?P<name>.+?)\s*$")
     
@@ -495,7 +495,7 @@ if __name__ == "__main__":
     import json
     with open("P:\\AI4S\\survey_eval\\train_letor\\paper.xml", encoding="utf-8") as f:
         xml_content = f.read()
-    parser = PaperParser()
+    parser = XMLPaperParser()
     paper = parser.parse(xml_content, mode="strict").get_skeleton()
     with open("P:\\AI4S\\survey_eval\\train_letor\\paper.json", 'w', encoding="utf-8") as f:
         json.dump(paper, f, indent=2, ensure_ascii=False)

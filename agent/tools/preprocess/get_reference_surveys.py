@@ -8,6 +8,8 @@ from typing import Any
 import jsonschema
 
 from .section_classify import SectionClassification
+from .sentences import SentenceClassification
+from .contribution_classify import ContributionClassification
 from ..prompts import REFERENCE_SURVEY_SCHEMA, REFERENCE_SURVEY_SELECT
 from ..utility.academic_engine import get_academic_engine
 from ..utility.llmclient import AsyncChat
@@ -17,52 +19,16 @@ from ..utility.paper_download import (
     S2PaperDownload,
     yield_location,
 )
+from ..utility.content_walk import iter_heading
+from ..utility.paper_elements import Paper
 from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
-from ..utility.grobidpdf import PaperParser
-from ..utility.latex_parser import LatexPaperParser
-from .utils import extract_json
+from ..utility.utils import extract_json
 
 
 ORACLE_SELECT = f"{OPENALEX_SELECT},locations,best_oa_location,relevance_score"
 SURVEY_TITLE_KEYWORDS = ("survey", "summary", "review", "overview", "comprehensive study")
 S2_ENGINE_NAMES = {"semantic scholar", "semantic_scholar", "semanticscholar", "s2"}
-
-
-class SurveyDownload(PaperDownload):
-    """Download a reference survey and attach ordered section headings."""
-
-    def _post_hook(self, xml_content: str) -> dict:
-        titles = PaperParser().get_titles(xml_content)
-        result = super()._post_hook(xml_content)
-        result["titles"] = titles
-        print(f"This survey has {len(titles)} titles")
-        return result
-
-    def _latex_post_hook(self, latex_content: str = "") -> dict:
-        titles = LatexPaperParser().get_titles(latex_content)
-        result = super()._latex_post_hook(latex_content)
-        result["titles"] = titles
-        print(f"This TeX survey has {len(titles)} titles")
-        return result
-
-
-class SurveyS2Download(S2PaperDownload):
-    """Download a Semantic Scholar reference survey and attach ordered section headings."""
-
-    def _post_hook(self, xml_content: str) -> dict:
-        titles = PaperParser().get_titles(xml_content)
-        result = super()._post_hook(xml_content)
-        result["titles"] = titles
-        print(f"This survey has {len(titles)} titles")
-        return result
-
-    def _latex_post_hook(self, latex_content: str = "") -> dict:
-        titles = LatexPaperParser().get_titles(latex_content)
-        result = super()._latex_post_hook(latex_content)
-        result["titles"] = titles
-        print(f"This TeX survey has {len(titles)} titles")
-        return result
 
 
 class ReferenceSurveySelect(AsyncChat):
@@ -72,20 +38,13 @@ class ReferenceSurveySelect(AsyncChat):
         results = extract_json(response)
         jsonschema.validate(results, REFERENCE_SURVEY_SCHEMA)
         title_to_paper = {item["title"]: item for item in context["surveys"]}
-        selected = {}
-        for tier in ("strict_reference_surveys", "partial_reference_surveys"):
-            selected[tier] = []
-            for item in results[tier]:
-                paper = dict(title_to_paper[item["title"]])
-                paper["reference_survey_tier"] = tier
-                paper["reference_survey_reason"] = item["reason"]
-                paper["covered_subtopics"] = item["covered_subtopics"]
-                selected[tier].append(paper)
+        selected = []
+        for item in results['reference_surveys']:
+            paper = dict(title_to_paper[item["title"]])
+            paper["reference_survey_reason"] = item["reason"]
+            paper["covered_subtopics"] = item["covered_subtopics"]
+            selected.append(paper)
         return selected
-    
-    def _get_abstract_part(self, abstract: str):
-        if not abstract: return ""
-        return abstract.split(".")[0] + "."
 
     def _organize_inputs(self, inputs):
         candidates = "\n".join(f"{i + 1:02d}. Title: {paper['title']}\n    Abstract: {paper['abstract']}" for i, paper in enumerate(inputs["surveys"]))
@@ -99,14 +58,17 @@ class GetReferenceSurveys:
     def __init__(self, config: ToolConfig):
         self.config = config
         self.eval_date = config.evaluation_date
-        self.openalex_downloader = SurveyDownload(config)
-        self.semantic_scholar_downloader = SurveyS2Download(config)
+        self.openalex_downloader = PaperDownload(config)
+        self.semantic_scholar_downloader = S2PaperDownload(config)
         self.survey_select = ReferenceSurveySelect(config.llm_server_info, config.sampling_params)
         self.openalex = get_openalex_client(config)
         self.semantic_scholar = get_semantic_scholar_client(config)
         self.academic_engine = get_academic_engine(config)
         self.sections_llm = SectionClassification(config)
+        self.sentence_llm = SentenceClassification(config)
+        self.contribution_llm = ContributionClassification(config)
         self.academic_engine_type = config.default_academic_search_engine
+        self.limit = config.reference_survey_search_limit
 
     def _uses_semantic_scholar_engine(self) -> bool:
         return (self.academic_engine_type or "").strip().lower() in S2_ENGINE_NAMES
@@ -201,40 +163,26 @@ class GetReferenceSurveys:
             print(f"referenceSurveyS2Download {metadata.get('title', '')} {exc}")
             return None
 
-    def _survey_title(self, item: dict) -> str:
-        return (
-            (item.get("semantic_scholar") or {}).get("title")
-            or (item.get("openalex") or {}).get("title")
-            or ""
-        )
+    def _downloaded_paper(self, downloaded: dict | None) -> Paper | None:
+        if not isinstance(downloaded, dict): return
+        content = downloaded.get("full_content")
+        return content if isinstance(content, Paper) else None
 
-    def _survey_openalex_id(self, item: dict) -> str:
-        return str((item.get("openalex") or {}).get("id") or "").strip()
-
-    def _survey_file_name(self, item: dict, index: int) -> str:
-        title = self._survey_openalex_id(item) or self._survey_title(item) or f"survey_{index}"
-        safe_title = re.sub(r"[^0-9A-Za-z._-]+", "_", title).strip("._")[:90] or f"survey_{index}"
-        digest = hashlib.sha1(title.encode("utf-8")).hexdigest()[:10]
-        return f"{index:03d}_{safe_title}_{digest}.json"
-
-    def _split_abstract_sentences(self, abstract: str) -> list[dict[str, Any]]:
-        sentences = []
-        for text in re.split(r"(?<=[.!?])\s+", abstract or ""):
-            text = text.strip()
-            if text:
-                sentences.append({"text": text, "environment_type": "text"})
-        return sentences
-
-    def _abstract_content(self, metadata: dict, abstract: str) -> dict[str, Any]:
+    def _downloaded_payload(self, downloaded: dict | None, metadata: dict) -> dict[str, Any]:
+        paper = self._downloaded_paper(downloaded)
+        if paper is None:
+            return {
+                "full_content": None,
+                "abstract": metadata.get("abstract", ""),
+                "titles": [],
+            }
         return {
-            "title": metadata.get("title", ""),
-            "abstract": {"paragraphs": [self._split_abstract_sentences(abstract)]},
-            "paragraphs": [],
-            "sections": [],
+            "full_content": paper,
+            "abstract": (downloaded or {}).get("abstract", "") or metadata.get("abstract", ""),
+            "titles": iter_heading(paper, include_appendix=True),
         }
-
-
     async def _download_selected_surveys(self, surveys: list[dict]) -> list[dict]:
+
         async def _single(survey: dict):
             openalex_meta = await self._resolve_openalex(survey)
             item = {"openalex": openalex_meta or {}, "semantic_scholar": {}}
@@ -249,16 +197,15 @@ class GetReferenceSurveys:
                 full_content = await self._download_semantic_scholar_paper(item["semantic_scholar"], attempted_urls)
             semantic_meta = item.get("semantic_scholar") or {}
             metadata = openalex_meta or semantic_meta or survey
-            if not full_content:
-                full_content = {
-                    "full_content": {},
-                    "abstract": metadata.get("abstract", ""),
-                    "titles": [],
-                }
+            full_content = self._downloaded_payload(full_content, metadata)
+            paper = full_content["full_content"]
+            if isinstance(paper, Paper):
+                full_content["full_content"] = await self.contribution_llm(await self.sections_llm(await self.sentence_llm(paper)))
+                # full_content["titles"] = iter_heading(full_content["full_content"], include_appendix=True)
             item["reference_survey_tier"] = survey.get("reference_survey_tier", "")
             item["reference_survey_reason"] = survey.get("reference_survey_reason", "")
             item["covered_subtopics"] = survey.get("covered_subtopics", [])
-            item["full_content"] = self.sections_llm(full_content)
+            item["full_content"] = full_content
             return item
 
         tasks = [asyncio.create_task(_single(survey)) for survey in surveys]
@@ -270,75 +217,30 @@ class GetReferenceSurveys:
         print(f"referenceSurveyDownload: {len(resolved)} downloaded surveys")
         return resolved
 
-    def _flatten_selected(self, selected: dict[str, list[dict]]) -> list[dict]:
-        surveys = []
-        seen = set()
-        for tier in ("strict_reference_surveys", "partial_reference_surveys"):
-            for survey in selected.get(tier, []) or []:
-                title = survey.get("title", "")
-                if title in seen:
-                    continue
-                seen.add(title)
-                surveys.append(survey)
-        return surveys
-
-    def _split_downloaded_by_tier(self, selected: list[dict]) -> dict[str, list[dict]]:
-        grouped = {"strict_reference_surveys": [], "partial_reference_surveys": []}
-        for item in selected:
-            tier = item.get("reference_survey_tier")
-            if tier in grouped:
-                grouped[tier].append(item)
-        return grouped
-
-    async def _download_surveys(self, papers: list[dict]):
-        downloaded = {}
-        for paper in papers:
-            meta = paper.get("openalex") or paper.get("semantic_scholar") or {}
-            skeleton = (paper.get("full_content") or {}).get("full_content") or {}
-            if skeleton:
-                downloaded[meta["title"]] = {
-                    "titles": (paper.get("full_content") or {}).get("titles", []),
-                    "skeleton": skeleton,
-                    "abstract": (paper.get("full_content") or {}).get("abstract", ""),
-                    "meta": meta,
-                    "metadata": {
-                        "openalex": paper.get("openalex") or {},
-                        "semantic_scholar": paper.get("semantic_scholar") or {},
-                    },
-                }
-        return downloaded
-
     async def __call__(self, query: str):
         try:
-            surveys_raw = await self._search_surveys(query)
+            surveys_raw = await self._search_surveys(query, self.limit)
         except Exception as exc:
             print(f"referenceSurveySearch {exc}")
             surveys_raw = []
-        print(f"referenceSurveySource: {len(surveys_raw)} candidate surveys")
 
         review_like = [x for x in surveys_raw if self._is_review_like(x)]
-        print(f"referenceSurveySource: {len(review_like)} rule-filtered surveys")
+        print(f"referenceSurvey: {len(review_like)} candidate surveys")
         if not review_like:
-            return {"reference_papers": {}, "reference_surveys": {}}
+            return {"reference_surveys": []}
         try:
-            selected_by_tier = await self.survey_select.call(inputs={"query": query, "surveys": review_like})
+            selected_candidates = await self.survey_select.call(inputs={"query": query, "surveys": review_like})
         except Exception as exc:
             print(f"referenceSurveySelect {exc}")
-            selected_by_tier = {"strict_reference_surveys": [], "partial_reference_surveys": []}
-        selected_candidates = self._flatten_selected(selected_by_tier)
+            selected_candidates = []
         prints = "\n".join([
             f'- [{x.get("reference_survey_tier", "")}] {x["title"]}'
             for x in selected_candidates
         ]) if selected_candidates else "0"
         print(f"Selected referenceSurvey = {prints}")
         if not selected_candidates:
-            return {"reference_papers": {}, "reference_surveys": {}}
-        selected = await self._download_selected_surveys(selected_candidates)
-        if not selected:
-            return {"reference_papers": {}, "reference_surveys": {}}
-        grouped = self._split_downloaded_by_tier(selected)
-        return {
-            "reference_surveys": selected,
-            "strict_reference_surveys": grouped["strict_reference_surveys"],
-            "partial_reference_surveys": grouped["partial_reference_surveys"],
-        }
+            return {"reference_surveys": []}
+        # selected = await self._download_selected_surveys(selected_candidates)
+        # if not selected:
+        #     return {"reference_surveys": []}
+        return {"reference_surveys": selected_candidates}

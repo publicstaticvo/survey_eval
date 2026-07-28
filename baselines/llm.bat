@@ -2,19 +2,29 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
-set "CC_SURVEYS_DIR=%SCRIPT_DIR%..\..\cc_surveys"
-
-if not exist "%CC_SURVEYS_DIR%\" (
-    echo cc_surveys directory not found: "%CC_SURVEYS_DIR%"
-    exit /b 1
-)
+set "TEST_INPUTS_DIR=%SCRIPT_DIR%..\agent\test_inputs"
 
 pushd "%SCRIPT_DIR%" >nul
 
-for /d %%S in ("%CC_SURVEYS_DIR%\*") do (
-    for %%M in (TRUSTSURVEY) do (
-        echo input-dir="%%~fS" output-file="%%~nS.json" mode=%%M
-        python llmeval.py --input-dir "%%~fS" --output-root "%SCRIPT_DIR%\cc\cc" --output-file "%%~nS.json" --mode %%M
+for %%G in (corrupted_surveys cc_surveys) do (
+    set "SURVEYS_DIR=%TEST_INPUTS_DIR%\%%G"
+    if not exist "!SURVEYS_DIR!\" (
+        echo surveys directory not found: "!SURVEYS_DIR!"
+        exit /b 1
+    )
+
+    for /d %%S in ("!SURVEYS_DIR!\*") do (
+        for %%M in (PLAIN ARISE TRUSTSURVEY) do (
+            echo group=%%G input="%%~fS" output-file="%%~nS.json" mode=%%M
+            python llmeval.py --input-dir "%%~fS" --output-root "%SCRIPT_DIR%\baselines_2\llm\%%G" --output-file "%%~nS.json" --mode %%M --backend llm --max-concurrency 10
+        )
+    )
+
+    for %%S in ("!SURVEYS_DIR!\*.json") do (
+        for %%M in (PLAIN ARISE TRUSTSURVEY) do (
+            echo group=%%G input="%%~fS" output-file="%%~nS.json" mode=%%M
+            python llmeval.py --input-dir "%%~fS" --output-root "%SCRIPT_DIR%\baselines_2\llm\%%G" --output-file "%%~nS.json" --mode %%M --backend llm --max-concurrency 10
+        )
     )
 )
 

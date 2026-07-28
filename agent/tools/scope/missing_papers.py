@@ -1,20 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from typing import Any
 
+from ..utility.paper_elements import Paper
 from ..utility.tool_config import ToolConfig
-from .topic_papers import TopicSpecificPapers
 from .uncited_entities import UncitedEntities
-from .uncited_prospective import UncitedProspective
 
 
 class MissingPaperCheck:
     def __init__(self, config: ToolConfig):
         self.config = config
-        self.topic_specific = TopicSpecificPapers(config)
         self.uncited_entities = UncitedEntities(config)
-        self.uncited_prospective = UncitedProspective(config)
 
     def _paper_ids(self, paper: dict[str, Any]) -> set[str]:
         ids = set()
@@ -97,12 +94,12 @@ class MissingPaperCheck:
 
     async def __call__(
         self,
-        paper: dict[str, Any],
+        queries: list[str],
+        paper: Paper,
         paper_content_map: dict[str, Any],
         reference_surveys: Any = None,
         literature_pool: dict[str, Any] | list[dict[str, Any]] | None = None,
         citation_graph: dict[str, Any] | None = None,
-        neutral_opinion_claims: list[dict[str, Any]] | None = None,
         entity_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         cited_papers = self._cited_papers(paper_content_map)
@@ -113,30 +110,8 @@ class MissingPaperCheck:
                 self._add_missing(missing, seen, reference_paper, "reference_surveys")
         print(f"{len(missing)} missing papers")
 
-        topic_data = await self.topic_specific(
-            paper.get("title", ""),
-            paper,
-            literature_pool=literature_pool,
-            citation_graph=citation_graph,
-            paper_content_map=paper_content_map,
-        )
-        topic_specific = topic_data.get("topic_specific_papers", {}) or {}
-        for section_item in topic_specific.get("landmarks", []) or []:
-            for candidate in section_item.get("papers", []) or []:
-                candidate_paper = candidate.get("paper") if isinstance(candidate, dict) else None
-                if isinstance(candidate_paper, dict):
-                    self._add_missing(
-                        missing,
-                        seen,
-                        candidate_paper,
-                        "topic_specific",
-                        topic=section_item.get("section", ""),
-                        landmark_type=candidate.get("landmark_type", ""),
-                        pagerank=candidate.get("pagerank", 0.0),
-                    )
-        print(f"{len(missing)} missing papers")
-
-        entity_data = entity_data or await self.uncited_entities(paper, cited_papers, paper_content_map, literature_pool)
+        # Missing-topic detection now belongs to TopicCoverage (09), not source-level paper checks.
+        entity_data = entity_data or await self.uncited_entities(paper, cited_papers, paper_content_map)
         for entity_item in entity_data.get("uncited_entities", []) or []:
             for candidate in entity_item.get("matched_papers", []) or []:
                 self._add_missing(
@@ -148,31 +123,9 @@ class MissingPaperCheck:
                 )
         print(f"{len(missing)} missing papers")
 
-        prospective_data = await self.uncited_prospective(
-            paper,
-            extra_claims=neutral_opinion_claims,
-        )
-        for claim_text, source_papers in (prospective_data.get("uncited_prospective", {}) or {}).items():
-            for source_paper in source_papers or []:
-                if isinstance(source_paper, dict) and source_paper.get("title"):
-                    self._add_missing(
-                        missing,
-                        seen,
-                        source_paper,
-                        "uncited_prospective",
-                        claim=claim_text,
-                        judgment="REFUTED",
-                    )
-        print(f"{len(missing)} missing papers")
-
         return {
             "source_evals": {
                 "missing_papers": missing,
-                "topic_specific": topic_data.get("topic_specific_papers", []),
                 "uncited_entities": entity_data.get("uncited_entities", []),
-                "uncited_prospective": prospective_data.get("uncited_prospective", []),
             }
         }
-
-
-

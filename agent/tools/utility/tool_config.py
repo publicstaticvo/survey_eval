@@ -34,11 +34,13 @@ class ToolConfig:
     llm_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     sampling_params: Mapping[str, Any] = field(default_factory=lambda: GREEDY_PARAMS)
     # citation parser
-    grobid_url: str = "http://172.18.36.90:8070"
+    grobid_url: str = "http://172.18.36.90:8071"
     grobid_num_workers: int = 10
     grobid_parse_mode: str = "casual"
     proxy_url: str = "http://localhost:7890"
     arxiv_proxy_url: str = "http://localhost:7890"
+    # reference surveys
+    reference_survey_search_limit: int = 20
     # factual correctness - reranking
     rerank_server_info: LLMServerInfo = field(default_factory=LLMServerInfo)
     rerank_n_documents: int = 5
@@ -47,6 +49,11 @@ class ToolConfig:
     topic_sim_threshold: float = 0.55
     topic_papers_search_limit: int = 10
     missing_topic_min_community_size: int = 3
+    missing_topic_min_community_size_ratio: float = 0.005
+    missing_topic_recursive_size_threshold: int = 150
+    missing_topic_recursive_size_ratio: float = 0.02
+    missing_topic_recursive_depth: int = 2
+    missing_topic_leiden_resolution: float = 2.0
     topic_coverage_search_limit: int = 10
     new_paper_topic_similarity_threshold: float = 0.55
     new_paper_reference_overlap_threshold: float = 0.6
@@ -57,7 +64,7 @@ class ToolConfig:
     background_reference_similarity_threshold: float = 0.6
     mean_cov_weight: float = 0.7
     non_compat_punishment: float = 0.6
-    confidence_threshold: float = 0.6
+    confidence_threshold: float = 0.9
     contribution_similarity_threshold: float = 0.65
     internal_consistency_sentence_ratio_threshold: float = 0.4
     # quality
@@ -123,6 +130,11 @@ class ToolConfig:
             rerank_n_documents=config['rerank']['num_documents'],
             topic_papers_search_limit=config.get('topic_papers', {}).get('search_limit', 10),
             missing_topic_min_community_size=config.get('topic_papers', {}).get('missing_topic_min_community_size', 3),
+            missing_topic_min_community_size_ratio=config.get('topic_papers', {}).get('missing_topic_min_community_size_ratio', 0.005),
+            missing_topic_recursive_size_threshold=config.get('topic_papers', {}).get('missing_topic_recursive_size_threshold', 100),
+            missing_topic_recursive_size_ratio=config.get('topic_papers', {}).get('missing_topic_recursive_size_ratio', 0.02),
+            missing_topic_recursive_depth=config.get('topic_papers', {}).get('missing_topic_recursive_depth', 2),
+            missing_topic_leiden_resolution=config.get('topic_papers', {}).get('missing_topic_leiden_resolution', 1.0),
             topic_coverage_search_limit=config.get('topic_coverage', {}).get('search_limit', 10),
             new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
             background_reference_similarity_threshold=config.get('fact_check', {}).get(
@@ -144,4 +156,5 @@ class ToolConfig:
             ),
             semantic_scholar_api_key=config.get('semantic_scholar', {}).get('api_key', ''),
             semantic_scholar_retry_count=config.get('semantic_scholar', {}).get('retry_count', 5),
+            reference_survey_search_limit=config.get('reference_survey', {}).get('search_limit', 20)
         )

@@ -5,11 +5,14 @@ import re
 from typing import Any
 
 import jsonschema
+import logging
 
 from ..prompts import FIND_ALL_ENTITIES, FIND_ALL_ENTITIES_SCHEMA
 from ..utility.llmclient import AsyncChat
+from ..utility.paper_elements import Paper, Paragraph
 from ..utility.tool_config import ToolConfig
-from .utils import extract_json, paragraph_to_text
+from ..utility.utils import extract_json
+from ..utility.content_walk import iter_paragraphs, paragraph_to_text
 
 
 class FindAllEntitiesClient(AsyncChat):
@@ -32,7 +35,7 @@ class FindAllEntitiesClient(AsyncChat):
         entities: dict[str, dict[str, Any]] = {}
         for item in result["entities"]:
             name = self._normalize_entity_name(item["name"])
-            assert self._contains_entity(paragraph, name), f"{name} isnt in paragraph"
+            assert self._contains_entity(paragraph, name), f"FindAllEntitiesClient: {name} isnt in paragraph"
             key = name.casefold()
             if key in entities:
                 entities[key]["locally_cited"] = entities[key]["locally_cited"] or item["locally_cited"]
@@ -54,56 +57,13 @@ class FindAllEntitiesClient(AsyncChat):
         return {"entities": list(entities.values()), "alias_pairs": alias_pairs}
 
     def _organize_inputs(self, inputs):
-        return self.PROMPT.format(
-            paragraph=inputs["paragraph"],
-            query=inputs.get("query", "Computer Sciences"),
-        ), {"paragraph": inputs["paragraph"]}
+        prompt = self.PROMPT.format(paragraph=inputs["paragraph"], query=inputs.get("query", "Computer Sciences"))
+        return prompt, {"paragraph": inputs["paragraph"]}
 
 
 class FindAllEntities:
     def __init__(self, config: ToolConfig):
         self.find_entities = FindAllEntitiesClient(config.llm_server_info, config.sampling_params)
-
-    def _paragraph_sentences(self, paragraph: Any) -> list[dict[str, Any]]:
-        if isinstance(paragraph, dict):
-            return paragraph.get("sentences", []) or []
-        if isinstance(paragraph, list):
-            return paragraph
-        return []
-
-    def _normalize_paragraphs(self, node: Any):
-        if not isinstance(node, dict):
-            return
-        paragraphs = node.get("paragraphs", []) or []
-        for index, paragraph in enumerate(paragraphs):
-            if isinstance(paragraph, list):
-                paragraphs[index] = {"sentences": paragraph}
-            elif isinstance(paragraph, dict):
-                paragraph.setdefault("sentences", paragraph.get("sentences", []) or [])
-        for section in node.get("sections", []) or []:
-            self._normalize_paragraphs(section)
-        abstract = node.get("abstract")
-        if isinstance(abstract, dict):
-            self._normalize_paragraphs(abstract)
-
-    def _iter_paragraphs(self, paper: dict[str, Any]):
-        def walk(node: Any):
-            if isinstance(node, dict):
-                if "sentences" in node:
-                    yield node
-                    return
-                for paragraph in node.get("paragraphs", []) or []:
-                    if isinstance(paragraph, dict):
-                        yield paragraph
-                    elif isinstance(paragraph, list):
-                        yield {"sentences": paragraph}
-                for section in node.get("sections", []) or []:
-                    yield from walk(section)
-
-        abstract = paper.get("abstract")
-        if isinstance(abstract, dict):
-            yield from walk(abstract)
-        yield from walk(paper)
 
     def _normalize_entity_name(self, name: str) -> str:
         name = name.strip()
@@ -151,33 +111,32 @@ class FindAllEntities:
                 return candidate_key
         return None
 
-    async def __call__(self, query: str, paper: dict[str, Any]) -> dict[str, Any]:
-        self._normalize_paragraphs(paper)
-        paragraphs = list(self._iter_paragraphs(paper))
+    async def __call__(self, query: str, paper: Paper) -> Paper:
+        paragraphs = list(iter_paragraphs(paper, include_abstract=True, include_appendix=True))
         tasks = []
-        task_paragraphs = []
+        task_paragraphs: list[tuple[Paragraph, str]] = []
         for paragraph in paragraphs:
             text = paragraph_to_text(paragraph, False)
             if not text:
-                paragraph.setdefault("entities", [])
-                paragraph.setdefault("alias_pairs", [])
+                paragraph.entities = []
+                paragraph.alias_pairs = []
                 continue
             task_paragraphs.append((paragraph, text))
-            # 
             tasks.append(asyncio.create_task(self.find_entities.call(inputs={"paragraph": text, "query": query})))
 
         entities_dict: dict[str, dict[str, Any]] = {}
         paragraph_entity_keys: dict[int, list[str]] = {}
+        logging.info("Find all entities...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for (paragraph, _text), result in zip(task_paragraphs, results):
             if not isinstance(result, dict):
                 print(f"FindAllEntities {result}")
-                paragraph.setdefault("entities", [])
-                paragraph.setdefault("alias_pairs", [])
+                paragraph.entities = []
+                paragraph.alias_pairs = []
                 continue
 
-            paragraph["alias_pairs"] = result["alias_pairs"]
+            paragraph.alias_pairs = result["alias_pairs"]
             keys = []
             for entry in result["entities"]:
                 name = entry["name"]
@@ -210,18 +169,15 @@ class FindAllEntities:
                 self._add_alternative_name(info, matched_info["original_name"])
 
         for paragraph in paragraphs:
-            paragraph["entities"] = []
+            paragraph.entities = []
             for key in paragraph_entity_keys.get(id(paragraph), []):
                 info = entities_dict[key]
-                paragraph["entities"].append({
+                paragraph.entities.append({
                     "name": info["original_name"],
                     "sentence_has_citation": info["sentence_has_citation"],
                     "alias_pairs": info["alias_pairs"],
                     "alternative_names": list(info["alternative_names"]),
                 })
-            paragraph.setdefault("alias_pairs", [])
+            if paragraph.alias_pairs is None:
+                paragraph.alias_pairs = []
         return paper
-
-
-
-

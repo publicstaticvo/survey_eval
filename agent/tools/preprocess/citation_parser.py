@@ -1,15 +1,4 @@
-"""
-citation_parser.py
-闁兼儳鍢茶ぐ鍥礂閵娿倗绉肩€殿喗娲橀弸鍍瞖tadata闁告粌鑻崣蹇涘棘閸ワ缚绻嗛柟?
-濞达綀娉曢弫銈夋晬?
-闁?闁挎稑顦遍弫顦昿enalex闁靛棔璁?闁靛棔璁rper闁兼儳鍢茶ぐ鍥棘閸モ晝褰垮ǎ鍥ｅ墲娴?
-闁?闁挎稑顦伴悧鎾箲椤旇姤鐎紒鏃傚С娣囧﹪骞侀娆戠憮閺夌偠妫勯崣蹇涘棘?
-闁?闁挎稑顦遍弫顥痭foLLMClient闁告帒妫欓悗浠嬪嫉椤掍焦鐎柟缁樺姇閸ゎ厽绂嶉崱鏇犵焼濞?
-闁告瑯鍨堕埀顒€顦伴弫濂稿礉椤帞绐?
-闁?闁挎稑顦·鍐礉閻曠磧xiv api
-闁?闁挎稑顢爀bSearch闁瑰瓨鐗為鎴﹀棘閸ワ妇鐟撻弶鐐存灮缁辨繄绱掑鏄縠nreview闁告娲滅€氼厾鎷嬮幑鎰靛悁濞戞挴鍋撳┑鍌涱殔椤︹晠鎮堕崱妯荤厵婵℃鐗勯埀?
-"""
-import re
+﻿import re
 import tqdm
 import asyncio
 import logging
@@ -22,18 +11,20 @@ from ..utility.request_utils import RateLimit
 from ..utility.s2 import get_semantic_scholar_client
 from ..utility.tool_config import ToolConfig
 from ..utility.llmclient import AsyncChat
-from .utils import valid_check, extract_json
+from ..utility.paper_elements import Paper
+from ..utility.utils import valid_check, extract_json
 from ..prompts import EXTRACT_TITLE
 
 
 class InfoLLMClient(AsyncChat):
     def _availability(self, response, context):
         response = extract_json(response)
-        assert response['title'] in context['info']
+        assert response['title'] in context['info'], "InfoLLMClientResult: Title not in Info"
         return response['title']
-    
+
     def _organize_inputs(self, inputs):
-        return [{"role": 'user', 'content': EXTRACT_TITLE.format(**inputs)}], inputs
+        prompt = EXTRACT_TITLE.format(**inputs)
+        return [{"role": 'user', 'content': prompt}], {**inputs}
 
 
 
@@ -58,27 +49,31 @@ class CitationParser:
             "metadata": {},
             "title": self._clean_title(title),
             "abstract": "",
-            "full_content": {},
+            "full_content": None,
             "status": 3,
             "source": "unresolved",
         }
 
     def _normalize_title(self, title: str) -> str:
         return self._clean_title(title)
+
+    def _has_full_paper(self, content: Any) -> bool:
+        return isinstance(content, Paper) and (bool(content.children) or bool(content.paragraphs))
+
     def _finalize_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
         full_content = info.get("full_content")
-        if isinstance(full_content, dict) and (full_content.get("paragraphs") or full_content.get("sections")):
+        if self._has_full_paper(full_content):
             info["status"] = 0
         elif info.get("abstract"):
             info["status"] = 1
-            if not info.get("full_content"):
-                info["full_content"] = info["abstract"]
+            info["full_content"] = None
+            # if not info.get("full_content"): info["full_content"] = info["abstract"]
         elif info.get("metadata"):
             info["status"] = 2
+            info["full_content"] = None
         else:
             info["status"] = 3
-            info["abstract"] = ""
-            info["full_content"] = {}
+            info["full_content"] = None
         return info
 
     async def _download_openalex_paper(self, info: Dict[str, Any], metadata: dict) -> Dict[str, Any]:
@@ -95,7 +90,7 @@ class CitationParser:
             print(f"CitationParser openalex download failed: {matched_metadata.get('title', '')} {exc}")
         info["_attempted_openalex_urls"] = list(attempted_urls)
         if downloaded:
-            info["full_content"] = downloaded.get("full_content", {})
+            info["full_content"] = downloaded.get("full_content")
             info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
         else:
             info["abstract"] = matched_metadata.get("abstract", "") or ""
@@ -116,7 +111,7 @@ class CitationParser:
         except Exception as exc:
             print(f"CitationParser semantic scholar download failed: {matched_metadata.get('title', '')} {exc}")
         if downloaded:
-            info["full_content"] = downloaded.get("full_content", {})
+            info["full_content"] = downloaded.get("full_content")
             info["abstract"] = downloaded.get("abstract", "") or matched_metadata.get("abstract", "") or ""
         else:
             info["abstract"] = info.get("abstract") or matched_metadata.get("abstract", "") or ""
@@ -137,7 +132,7 @@ class CitationParser:
     async def _search_paper_from_api(self, citation_info: str | Dict[str, Any]) -> Dict[str, Any]:
         if "title" not in citation_info:
             citation_info['title'] = await self.info_llm.call(inputs={"info": citation_info['info']})
-        
+
         title = self._clean_title(citation_info["title"] if isinstance(citation_info, dict) else str(citation_info or ""))
         info = self._empty_info(title)
         openalex_task = asyncio.create_task(
@@ -181,7 +176,7 @@ class CitationParser:
         updated["source"] = "websearch"
         updated["metadata"] = updated.get("metadata") or {"websearch": fallback.get("metadata")}
         updated["abstract"] = fallback.get("abstract", updated.get("abstract", "")) or ""
-        updated["full_content"] = fallback.get("full_content", updated.get("full_content", {}))
+        updated["full_content"] = fallback.get("full_content")
         return self._finalize_info(updated)
 
     async def _parse_single(self, citation_key: str, citation_info: Any):
@@ -193,12 +188,23 @@ class CitationParser:
 
     async def refresh_status3(self, citations: Dict[str, Any], cached_data: Dict[str, Any]) -> Dict[str, Any]:
         paper_content_map = dict((cached_data or {}).get("paper_content_map", {}) or {})
+        current_keys = set(citations or {})
+        stale_keys = sorted(set(paper_content_map) - current_keys)
+        if stale_keys:
+            logging.info("Drop %d cached citations absent from current paper", len(stale_keys))
+            for citation_key in stale_keys:
+                paper_content_map.pop(citation_key, None)
+
         unresolved_keys = [
             citation_key
             for citation_key, info in paper_content_map.items()
-            if isinstance(info, dict) and info.get("status") == 3 and citation_key in citations
+            if isinstance(info, dict) and info.get("status") == 3 and citation_key in current_keys
         ]
         if not unresolved_keys:
+            if stale_keys:
+                refreshed = dict(cached_data or {})
+                refreshed["paper_content_map"] = paper_content_map
+                return refreshed
             return cached_data
 
         logging.info("Retrying %d unresolved status=3 citations", len(unresolved_keys))
@@ -215,7 +221,7 @@ class CitationParser:
         refreshed = dict(cached_data or {})
         refreshed["paper_content_map"] = paper_content_map
         return refreshed
-    
+
     async def __call__(self, citations: Dict[str, Any]) -> Dict[str, Any]:
         logging.info(f"This paper has {len(citations)} citations")
         tasks = [
@@ -230,4 +236,3 @@ class CitationParser:
             except Exception as e:
                 print(f"CitationParser {e}")
         return {"paper_content_map": paper_content_map}
-

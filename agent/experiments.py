@@ -19,10 +19,10 @@ OPENALEX_TOPIC_SELECT = "id,title,concepts"
 PROMPT = """You are a professional academic researcher. Judge whether a candidate paper qualifies as a reference survey for evaluating a target survey on: "{query}".
 
 ### What is a Reference Survey?
-A reference survey is a paper that an expert would consult BEFORE reviewing another survey on this topic — not because it covers the same narrow question, but because it maps the broader field: what sub-areas exist, what the key papers are, and what a complete treatment of the topic should look like.
+A reference survey is a paper that an expert would consult BEFORE reviewing another survey on this topic 闂?not because it covers the same narrow question, but because it maps the broader field: what sub-areas exist, what the key papers are, and what a complete treatment of the topic should look like.
 
 ### Qualify (ALL must be true)
-1. The query topic is the central organizing principle of this paper — not a tool applied within medicine, law, finance, robotics, or any other domain.
+1. The query topic is the central organizing principle of this paper 闂?not a tool applied within medicine, law, finance, robotics, or any other domain.
 2. The paper covers at least THREE distinct sub-topics within the query field (e.g., different tasks, architectures, methods, or application categories that together represent the field's breadth).
 3. The paper synthesizes existing literature; it does not primarily report new experimental results.
 
@@ -65,31 +65,31 @@ A reference survey must satisfy ONE condition:
 
 A "scientific entity" is a distinct technical concept, method, or research area named in the query (e.g., "Graph Neural Networks" and "Knowledge Graphs" are two separate entities in the query "Graph Neural Networks for Knowledge Graphs").
 
-**True cases** — the primary subject matches the query entities exactly:
+**True cases** 闂?the primary subject matches the query entities exactly:
 
 Query: "Recurrent Neural Networks Sequence Modeling"
 Entities: {{Recurrent Neural Networks, Sequence Modeling}}
-- "A Survey of RNN Architectures and Their Role in Sequence Modeling" → TRUE
-  Primary subject = {{Recurrent Neural Networks, Sequence Modeling}} — exact match.
+- "A Survey of RNN Architectures and Their Role in Sequence Modeling" 闂?TRUE
+  Primary subject = {{Recurrent Neural Networks, Sequence Modeling}} 闂?exact match.
 
-**False cases — extra entity** (primary subject contains entities beyond the query):
-
-Query: "Recurrent Neural Networks Sequence Modeling"
-- "Recurrent Neural Networks for Speech Recognition: A Survey" → FALSE
-  Primary subject = {{Recurrent Neural Networks, Speech Recognition}} — "Speech Recognition" is an extra entity not in the query.
-
-**False cases — missing entity** (primary subject does not cover all query entities):
+**False cases 闂?extra entity** (primary subject contains entities beyond the query):
 
 Query: "Recurrent Neural Networks Sequence Modeling"
-- "Deep Neural Networks: A Comprehensive Survey" → FALSE
-  Primary subject = {{Deep Neural Networks}} — neither "Recurrent" nor "Sequence Modeling" is the organizing focus.
+- "Recurrent Neural Networks for Speech Recognition: A Survey" 闂?FALSE
+  Primary subject = {{Recurrent Neural Networks, Speech Recognition}} 闂?"Speech Recognition" is an extra entity not in the query.
 
-**False cases — query topic used as method only**:
+**False cases 闂?missing entity** (primary subject does not cover all query entities):
+
+Query: "Recurrent Neural Networks Sequence Modeling"
+- "Deep Neural Networks: A Comprehensive Survey" 闂?FALSE
+  Primary subject = {{Deep Neural Networks}} 闂?neither "Recurrent" nor "Sequence Modeling" is the organizing focus.
+
+**False cases 闂?query topic used as method only**:
 
 Query: "Knowledge Graph Embedding"
 Entities: {{Knowledge Graph, Embedding}}
-- "Knowledge Graph Embedding for Drug Interaction Prediction: A Survey" → FALSE
-  Primary subject = {{Drug Interaction Prediction}} — Knowledge Graph Embedding is the method, not the organizing focus.
+- "Knowledge Graph Embedding for Drug Interaction Prediction: A Survey" 闂?FALSE
+  Primary subject = {{Drug Interaction Prediction}} 闂?Knowledge Graph Embedding is the method, not the organizing focus.
 
 ---
 

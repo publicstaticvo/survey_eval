@@ -102,7 +102,7 @@ if __package__:
     from .agent import SurveyEvaluationAgent
     from .tools.fact.citation_check import CitationCorrectnessCheck
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
-    from .tools.fact.fact_check import FactualCorrectnessCritic
+    from .tools.fact.fact_check_single import FactualCorrectnessCritic
     from .tools.preprocess.minimum_completion import minimum_completion
     from .tools.scope.missing_papers import MissingPaperCheck
     from .tools.preprocess.citation_parser import CitationParser
@@ -116,7 +116,7 @@ else:
     from agent import SurveyEvaluationAgent
     from tools.fact.citation_check import CitationCorrectnessCheck
     from tools.preprocess.claim_segmentation import ClaimSegmentation
-    from tools.fact.fact_check import FactualCorrectnessCritic
+    from tools.fact.fact_check_single import FactualCorrectnessCritic
     from tools.preprocess.minimum_completion import minimum_completion
     from tools.scope.missing_papers import MissingPaperCheck
     from tools.preprocess.citation_parser import CitationParser

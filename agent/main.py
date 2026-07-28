@@ -14,11 +14,13 @@ import yaml
 try:
     from .agent import evaluate_survey, evaluate_survey_with_session
     from .tools.utility.latex_parser import LatexPaperParser
+    from .tools.utility.paper_elements import Paper
     from .tools.utility.request_utils import SessionManager
     from .tools.utility.tool_config import ToolConfig
 except ImportError:
     from agent import evaluate_survey, evaluate_survey_with_session
     from tools.utility.latex_parser import LatexPaperParser
+    from tools.utility.paper_elements import Paper
     from tools.utility.request_utils import SessionManager
     from tools.utility.tool_config import ToolConfig
 
@@ -110,18 +112,18 @@ def load_json_record(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def load_paper(path: str | Path) -> dict[str, Any]:
+def load_paper(path: str | Path) -> Paper:
     path = Path(path)
     if path.suffix.lower() == ".json":
         data = load_json_record(path)
         full_content = data.get("full_content", data.get("full_text", data.get("paper")))
         if not isinstance(full_content, dict):
             raise ValueError(f"JSON paper has an invalid full_content field: {path}")
-        return full_content
+        return Paper.from_skeleton(full_content)
     paper = LatexPaperParser().parse(path)
     if paper is None:
         raise RuntimeError(f"Failed to parse paper from {path}")
-    return paper.get_skeleton()
+    return paper
 
 
 def _split_queries(query: str | list[str]) -> list[str]:
@@ -204,7 +206,7 @@ def _looks_like_batch_dir(path: Path) -> bool:
     )
 
 
-def _query_for_batch_paper(batch_paper: BatchPaper, paper: dict[str, Any]) -> list[str]:
+def _query_for_batch_paper(batch_paper: BatchPaper, paper: Paper) -> list[str]:
     if batch_paper.kind == "json":
         return _query_from_json(batch_paper.source_path)
     return _split_queries(batch_paper.source_path.name.lower().replace("_", " "))
@@ -225,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tool-config", default="agent.yaml", help="Path to ToolConfig yaml.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for module outputs and final result. Batch mode treats this as the output root.")
     parser.add_argument("--write-default-config", action="store_true", help="Write a default ToolConfig yaml and exit.")
-    parser.add_argument("--run-modules", default="", help="Comma-separated module numbers to run, e.g. '0,1,3,5,8,12'. Empty means all modules.")
+    parser.add_argument("--run-modules", default="", help="Comma-separated module numbers to run, e.g. '0,1,3,5,8,12'. Use 2.1-2.5 for 02 substeps. Empty means all modules.")
     parser.add_argument("--force", action="store_true", help="Re-run selected modules even if cached outputs exist.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser

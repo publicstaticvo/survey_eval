@@ -1,19 +1,21 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import timedelta
 from typing import Any
 
 from ..utility.academic_engine import get_academic_engine
 from ..utility.citation_utils import citation_keys as normalize_citation_keys
+from ..utility.paper_elements import Paper, Section
 from ..utility.tool_config import ToolConfig
 
 
 OPENALEX_LITERATURE_POOL_SELECT = "id,title,abstract_inverted_index,cited_by_count,counts_by_year,publication_date,referenced_works"
 S2_LITERATURE_POOL_SELECT = "paperId,title,abstract,year,publicationDate,citationCount,referenceCount,externalIds,venue"
 TARGET_SECTION_TYPES = {"CONTENT", "TAXONOMY", "EVALUATION", ""}
-TARGET_SENTENCE_LABELS = {"SUMMARY", "COMPARISON", "EVALUATION", "SYNTHESIS", ""}
+TARGET_SENTENCE_LABELS = {"SUMMARY", "CONTRAST", "SYNTHESIS", ""}
 
 
 class BuildLiteraturePool:
@@ -24,10 +26,10 @@ class BuildLiteraturePool:
         self.eval_date = config.evaluation_date
         self.engine = get_academic_engine(config)
         self.engine_name = (config.default_academic_search_engine or "openalex").strip().lower()
+        self.neighbor_search_limit = 9999
 
     def _source_name(self) -> str:
-        if self.engine_name in {"semantic_scholar", "semanticscholar", "semantic scholar", "s2"}:
-            return "semantic scholar"
+        if self.engine_name in {"semantic_scholar", "semanticscholar", "semantic scholar", "s2"}: return "semantic scholar"
         return self.engine_name or "openalex"
 
     def _uses_semantic_scholar(self) -> bool:
@@ -35,6 +37,19 @@ class BuildLiteraturePool:
 
     def _select_fields(self) -> str:
         return S2_LITERATURE_POOL_SELECT if self._uses_semantic_scholar() else OPENALEX_LITERATURE_POOL_SELECT
+
+    def _query_keywords(self, query: list[str]) -> list[str]:
+        values = query if isinstance(query, list) else [query]
+        return [
+            re.sub(r"\s+", " ", str(item or "")).strip().casefold()
+            for item in values
+            if str(item or "").strip()
+        ]
+
+    def _text_contains_query_keywords(self, paper: dict[str, Any], query_keywords: list[str]) -> bool:
+        if not query_keywords: return True
+        text = re.sub(r"\s+", " ", f"{paper.get('title', '')}\n{paper.get('abstract', '')}").casefold()
+        return all(keyword in text for keyword in query_keywords)
 
     def _paper_ids(self, paper: dict[str, Any]) -> set[str]:
         ids = set()
@@ -55,37 +70,30 @@ class BuildLiteraturePool:
             candidates.append(raw_ids.get("doi"))
         external_ids = paper.get("external_ids") or paper.get("externalIds") or {}
         for key, value in external_ids.items():
-            if str(key).lower() == "doi":
-                candidates.append(value)
+            if str(key).lower() == "doi": candidates.append(value)
         for value in candidates:
-            if not value:
-                continue
+            if not value: continue
             doi = str(value).strip().lower()
             doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi)
             doi = re.sub(r"^doi:", "", doi)
-            if doi:
-                return doi
+            if doi: return doi
         return ""
 
     def _paper_key(self, paper: dict[str, Any]) -> str:
         doi = self._paper_doi(paper)
-        if doi:
-            return f"doi:{doi}"
+        if doi: return f"doi:{doi}"
         ids = sorted(self._paper_ids(paper))
-        if ids:
-            return f"id:{ids[0]}"
+        if ids: return f"id:{ids[0]}"
         title = re.sub(r"\s+", " ", paper.get("title", "") or "").strip().lower()
         return f"title:{title}" if title else ""
 
     def _paper_aliases(self, paper: dict[str, Any]) -> set[str]:
         aliases = set()
         doi = self._paper_doi(paper)
-        if doi:
-            aliases.add(f"doi:{doi}")
+        if doi: aliases.add(f"doi:{doi}")
         aliases.update(f"id:{paper_id}" for paper_id in self._paper_ids(paper))
         title = re.sub(r"\s+", " ", paper.get("title", "") or "").strip().lower()
-        if title:
-            aliases.add(f"title:{title}")
+        if title: aliases.add(f"title:{title}")
         return aliases
 
     def _deduplicate_papers(self, papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -100,23 +108,21 @@ class BuildLiteraturePool:
         return unique
 
     def _metadata_sources(self, info: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """获取与config的preferred搜索引擎相同的metadata"""
         metadata = info.get("metadata") or {}
-        if not isinstance(metadata, dict):
-            return {}
+        if not isinstance(metadata, dict): return {}
         if "openalex" in metadata or "semantic scholar" in metadata:
             return {source: paper for source, paper in metadata.items() if isinstance(paper, dict)}
         return {self._source_name(): metadata} if metadata else {}
 
     def _default_engine_paper(self, info: dict[str, Any]) -> dict[str, Any] | None:
+        """paper_content_map中每一个被引用论文包含了openalex信息和S2信息，无preferred时优先返回openalex信息。"""
         sources = self._metadata_sources(info)
-        if not sources:
-            return None
+        if not sources: return
         preferred = sources.get(self._source_name())
-        if preferred:
-            return preferred
+        if preferred: return preferred
         for source in ("openalex", "semantic scholar"):
-            if sources.get(source):
-                return sources[source]
+            if sources.get(source): return sources[source]
         return next(iter(sources.values()))
 
     def _add_to_pool(
@@ -127,11 +133,9 @@ class BuildLiteraturePool:
         label: str,
         citation_key: str = "",
     ) -> str:
-        if not paper or not paper.get("title"):
-            return ""
+        if not paper or not paper.get("title"): return ""
         key = self._paper_key(paper)
-        if not key:
-            return ""
+        if not key: return ""
         aliases = self._paper_aliases(paper)
         existing = next((pool_index[alias] for alias in aliases if alias in pool_index), "")
         if existing:
@@ -149,43 +153,34 @@ class BuildLiteraturePool:
             pool_index[alias] = key
         return key
 
-    def _target_sections(self, paper: dict[str, Any]) -> list[dict[str, Any]]:
+    def _pool_key_for(self, pool_index: dict[str, str], paper: dict[str, Any]) -> str:
+        return next((pool_index[alias] for alias in self._paper_aliases(paper) if alias in pool_index), "")
+
+    def _target_sections(self, paper: Paper) -> list[Section]:
         sections = []
 
-        def walk(section: dict[str, Any]):
-            if section.get("functional_type", "") in TARGET_SECTION_TYPES:
+        def walk(section: Section):
+            if section.functional_type in TARGET_SECTION_TYPES:
                 sections.append(section)
-            for child in section.get("sections", []) or []:
-                if isinstance(child, dict):
-                    walk(child)
+            for child in section.children:
+                walk(child)
 
-        for section in paper.get("sections", []) or []:
-            if isinstance(section, dict):
-                walk(section)
+        for section in paper.children:
+            walk(section)
         return sections
 
-    def _normalize_citations(self, citations: Any) -> list[str]:
-        return normalize_citation_keys(citations)
-
-    def _section_core_citation_keys(self, sections: list[dict[str, Any]]) -> list[str]:
+    def _section_core_citation_keys(self, sections: list[Section]) -> list[str]:
         keys = []
 
-        def walk(node: Any):
-            if isinstance(node, dict):
-                if "sentences" in node:
-                    walk(node.get("sentences", []) or [])
-                    return
-                for paragraph in node.get("paragraphs", []) or []:
-                    walk(paragraph)
-                for child in node.get("sections", []) or []:
-                    walk(child)
-            elif isinstance(node, list):
-                for sentence in node:
-                    if isinstance(sentence, dict) and sentence.get("label", "") in TARGET_SENTENCE_LABELS:
-                        keys.extend(self._normalize_citations(sentence.get("citations", [])))
+        def walk(section: Section):
+            for paragraph in section.paragraphs:
+                for sentence in paragraph.sentences:
+                    if sentence.label in TARGET_SENTENCE_LABELS:
+                        keys.extend(normalize_citation_keys(sentence.citations))
+            for child in section.children:
+                walk(child)
 
-        for section in sections:
-            walk(section)
+        for section in sections: walk(section)
         return list(dict.fromkeys(keys))
 
     def _query_ids(self, paper: dict[str, Any]) -> list[str]:
@@ -201,11 +196,11 @@ class BuildLiteraturePool:
         for paper_id in self._query_ids(paper):
             try:
                 if self._uses_semantic_scholar() and direction == "cited_by":
-                    result = await method(paper_id, limit=9999, select=self._select_fields(), **filter)
+                    result = await method(paper_id, limit=self.neighbor_search_limit, select=self._select_fields(), **filter)
                 else:
-                    result = await method(paper_id, limit=9999, select=self._select_fields(), filter=filter)
+                    result = await method(paper_id, limit=self.neighbor_search_limit, select=self._select_fields(), filter=filter)
             except TypeError:
-                result = await method(paper_id, limit=9999, fields=self._select_fields(), filter=filter)
+                result = await method(paper_id, limit=self.neighbor_search_limit, fields=self._select_fields(), filter=filter)
             except Exception:
                 continue
             papers = result.get("results", []) or []
@@ -234,9 +229,12 @@ class BuildLiteraturePool:
             ],
         }
 
-    async def __call__(self, query: str, paper: dict[str, Any], paper_content_map: dict[str, Any] | None = None):
-        paper_content_map = paper_content_map or paper.get("paper_content_map") or paper.get("citations") or {}
+    async def __call__(self, query: list[str], paper: Paper, paper_content_map: dict[str, Any] | None = None):
+        """获取邻居扩展和关键词搜索的交集，构建引用关系图"""
+        paper_content_map = paper_content_map or paper.references or {}
         to_publication_date = (self.eval_date - timedelta(days=90)).strftime("%Y-%m-%d")
+        query_keywords = self._query_keywords(query)
+        expansion_filter = {"to_publication_date": to_publication_date}
         pool: dict[str, dict[str, Any]] = {}
         pool_index: dict[str, str] = {}
         edges: set[tuple[str, str]] = set()
@@ -246,7 +244,6 @@ class BuildLiteraturePool:
             if cited_paper:
                 self._add_to_pool(pool, pool_index, cited_paper, "cited_papers", citation_key=str(citation_key))
 
-        print(f"BuildLiteraturePool starts with {len(pool)} cited papers")
         sections = self._target_sections(paper)
         seed_papers = []
         for key in self._section_core_citation_keys(sections):
@@ -256,42 +253,43 @@ class BuildLiteraturePool:
                 if cited_paper:
                     seed_papers.append(cited_paper)
         seed_papers = self._deduplicate_papers(seed_papers)
+        logging.info(f"BuildLiteraturePool starts with {len(seed_papers)} seed papers and {len(pool)} pools")
 
         async def _expand_labeled(seed: dict[str, Any], direction: str):
             try:
-                candidates = await self._expand_one(seed, direction, {"to_publication_date": to_publication_date})
+                candidates = await self._expand_one(seed, direction, dict(expansion_filter))
                 return seed, direction, candidates, None
             except Exception as exc:
                 return seed, direction, [], exc
 
-        import tqdm
-        expansion_tasks = []
-        for direction in ("cited_by", "cites"):
-            for seed in seed_papers:
-                expansion_tasks.append(asyncio.create_task(_expand_labeled(seed, direction)))
+        expansion_tasks = [
+            asyncio.create_task(_expand_labeled(seed, direction))
+            for seed in seed_papers for direction in ("cited_by", "cites")
+        ]
 
-        for task in tqdm.tqdm(asyncio.as_completed(expansion_tasks), total=len(expansion_tasks)):
+        for i, task in enumerate(asyncio.as_completed(expansion_tasks), 1):
             seed, direction, candidates, exc = await task
             if exc:
-                print(f"literaturePoolExpand {direction} {exc}")
+                logging.error(f"literaturePoolExpand {direction} {exc}")
                 continue
-            seed_key = self._add_to_pool(pool, pool_index, seed, "cited_papers")
+            seed_key = self._pool_key_for(pool_index, seed)
+            if not seed_key:
+                logging.warning("Paper %s not in pool, this may be a bug", seed.get("title"))
+                seed_key = self._add_to_pool(pool, pool_index, seed, "cited_papers")
             for candidate in candidates:
+                if not self._text_contains_query_keywords(candidate, query_keywords): continue
                 candidate_key = self._add_to_pool(pool, pool_index, candidate, direction)
-                if not seed_key or not candidate_key:
-                    continue
-                if direction == "cited_by":
-                    edges.add((seed_key, candidate_key))
-                else:
-                    edges.add((candidate_key, seed_key))
+                if not seed_key or not candidate_key: continue
+                if direction == "cited_by": edges.add((seed_key, candidate_key))
+                else: edges.add((candidate_key, seed_key))
+            logging.info(f"Expansion progress {i}/{len(expansion_tasks)} Pool size {len(pool)}")
 
         for source_key, item in list(pool.items()):
-            if item.get("label") == "cited_papers":
-                continue
+            if item.get("label") == "cited_papers": continue
             for work_id in item.get("paper", {}).get("referenced_works", []) or []:
                 target_key = next((pool_index[alias] for alias in self._referenced_work_aliases(work_id) if alias in pool_index), "")
                 if target_key:
                     edges.add((target_key, source_key))
         graph = self._graph_dict(pool, edges)
-        print(f"BuildLiteraturePool {len(pool)} neighbor, {len(graph['edges'])} graph edges")
+        logging.info(f"BuildLiteraturePool {len(pool)} neighbor, {len(graph['edges'])} graph edges")
         return {"literature_pool": pool, "citation_graph": graph}

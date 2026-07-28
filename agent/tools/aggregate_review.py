@@ -62,17 +62,9 @@ class FinalAggregate:
 
     def _missing_paper_comments(self, source_evals: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         comments, hallucinations = [], []
-        grouped_prospective = source_evals.get("uncited_prospective", {}) or {}
-        for claim, papers in grouped_prospective.items() if isinstance(grouped_prospective, dict) else []:
-            comments.append({
-                "module": "scope.missing_papers",
-                "type": "uncited_prospective",
-                "claim": claim,
-                "alternative_papers": papers,
-            })
+
         for item in source_evals.get("missing_papers", []) or []:
-            if item.get("reason") == "uncited_prospective":
-                continue
+
             comments.append({"module": "scope.missing_papers", "type": item.get("reason", "missing_paper"), **item})
         for entity in source_evals.get("uncited_entities", []) or []:
             if not entity.get("matched_papers"):

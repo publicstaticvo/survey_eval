@@ -1,34 +1,43 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
-import math
+import json
 import re
 from datetime import timedelta
 from typing import Any
 
 import jsonschema
 import networkx as nx
-from sklearn.feature_extraction.text import TfidfVectorizer
 
-from ..prompts import PPR_TYPE
+from ..prompts import CITATION_WARRANT
 from ..utility.academic_engine import get_academic_engine
 from ..utility.llmclient import AsyncChat
 from ..utility.openalex import OPENALEX_SELECT
 from ..utility.s2 import S2_DEFAULT_FIELDS
 from ..utility.tool_config import ToolConfig
-from .utils import extract_json
+from ..utility.utils import extract_json
 
 
 TARGET_SECTION_TYPES = {"CONTENT"}
-LANDMARK_CATEGORIES = {"method", "dataset", "benchmark", "application", "unknown"}
-PPR_TYPE_SCHEMA = {
+WARRANT_LABELS = {
+    "concept_symbol_or_landmark_warrant",
+    "attribution_warrant",
+    "taxonomy_or_scope_warrant",
+    "claim_support_or_counterevidence_warrant",
+    "benchmark_dataset_evaluation_warrant",
+    "recency_update_warrant",
+    "weak_related_work_suggestion",
+    "no_obligation",
+}
+CITATION_WARRANT_SCHEMA = {
     "type": "object",
     "properties": {
-        "category": {"type": "string", "enum": sorted(LANDMARK_CATEGORIES)},
+        "warrant_label": {"type": "string", "enum": sorted(WARRANT_LABELS)},
+        "citation_obligation": {"type": "boolean"},
         "evidence": {"type": "string"},
         "reasoning": {"type": "string"},
     },
-    "required": ["category", "evidence", "reasoning"],
+    "required": ["warrant_label", "citation_obligation", "evidence", "reasoning"],
     "additionalProperties": True,
 }
 STOPWORDS = {
@@ -37,33 +46,36 @@ STOPWORDS = {
 }
 
 
-class PPRTypeClient(AsyncChat):
-    PROMPT = PPR_TYPE
+class CitationWarrantClient(AsyncChat):
+    PROMPT = CITATION_WARRANT
 
     def _availability(self, response, context):
         result = extract_json(response)
-        jsonschema.validate(result, PPR_TYPE_SCHEMA)
-        text = context["text"]
-        category = result["category"]
-        evidence = result["evidence"].strip()
-        if category == "unknown":
-            assert result["reasoning"].strip()
-        else:
-            assert evidence and evidence in text
-        return category
+        jsonschema.validate(result, CITATION_WARRANT_SCHEMA)
+        weak_labels = {"weak_related_work_suggestion", "no_obligation"}
+        if result["warrant_label"] in weak_labels:
+            assert result["citation_obligation"] is False
+        if result["citation_obligation"]:
+            assert result["warrant_label"] not in weak_labels
+        assert result["reasoning"].strip()
+        return result
 
     def _organize_inputs(self, inputs):
-        text = f"{inputs.get('title', '')}\n{inputs.get('abstract', '')}".strip()
-        prompt = (
-            f"Survey query: {inputs.get('query', '')}\n"
-            f"Section title: {inputs.get('section_title', '')}\n\n"
-            + self.PROMPT.format(title=inputs.get("title", ""), abstract=inputs.get("abstract", ""))
+        prompt = self.PROMPT.format(
+            query=inputs.get("query", ""),
+            section_title=inputs.get("section_title", ""),
+            topics=inputs.get("topics", "[]"),
+            section_text=inputs.get("section_text", ""),
+            cited_papers=inputs.get("cited_papers", "[]"),
+            candidate_title=inputs.get("candidate_title", ""),
+            candidate_abstract=inputs.get("candidate_abstract", ""),
+            graph_evidence=inputs.get("graph_evidence", "{}"),
         )
-        return prompt, {"text": text}
+        return prompt, {}
 
 
 class TopicSpecificPapers:
-    """Detect landmark, outdated, and missing topic papers from parsed survey content."""
+    """Detect citation-warrant and outdated papers from already-covered survey content."""
 
     def __init__(self, config: ToolConfig):
         self.config = config
@@ -71,8 +83,7 @@ class TopicSpecificPapers:
         self.engine = get_academic_engine(config)
         self.engine_name = (config.default_academic_search_engine or "openalex").strip().lower()
         self.search_limit = config.topic_papers_search_limit
-        self.missing_topic_min_community_size = config.missing_topic_min_community_size
-        self.ppr_type = PPRTypeClient(config.llm_server_info, config.sampling_params)
+        self.citation_warrant = CitationWarrantClient(config.llm_server_info, config.sampling_params)
 
     def _uses_semantic_scholar(self) -> bool:
         return self.engine_name in {"semantic_scholar", "semanticscholar", "semantic scholar", "s2"}
@@ -218,20 +229,102 @@ class TopicSpecificPapers:
         print(f"TopicSpecificPapers cited_papers={cited_count}, filtered_literature_pool={len(selected)}")
         return selected, subgraph
 
-    async def _classify_landmark(self, query: str, section_title: str, key: str, paper: dict[str, Any], score: float, rank: int):
+    def _clip_text(self, value: Any, limit: int = 6000) -> str:
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        return text if len(text) <= limit else text[:limit].rstrip() + "..."
+
+    def _sentence_text(self, sentence: Any) -> str:
+        if isinstance(sentence, str):
+            return sentence
+        if isinstance(sentence, dict):
+            return str(sentence.get("text") or sentence.get("sentence") or "")
+        return ""
+
+    def _paragraph_text(self, paragraph: Any) -> str:
+        if isinstance(paragraph, str):
+            return paragraph
+        if isinstance(paragraph, list):
+            return " ".join(self._sentence_text(sentence) for sentence in paragraph)
+        if isinstance(paragraph, dict):
+            pieces = [str(paragraph.get("text") or "")]
+            for sentence in paragraph.get("sentences", []) or []:
+                pieces.append(self._sentence_text(sentence))
+            return " ".join(piece for piece in pieces if piece)
+        return ""
+
+    def _section_text(self, section: dict[str, Any], limit: int = 6000) -> str:
+        pieces = []
+        for paragraph in section.get("paragraphs", []) or []:
+            pieces.append(self._paragraph_text(paragraph))
+        for child in section.get("sections", []) or []:
+            if isinstance(child, dict):
+                pieces.append(self._section_text(child, limit))
+        return self._clip_text(" ".join(piece for piece in pieces if piece), limit)
+
+    def _paper_summary(self, item: dict[str, Any], key: str | None = None) -> dict[str, Any]:
+        paper = item.get("paper", item)
+        if not isinstance(paper, dict):
+            paper = {}
+        return {
+            "node": key,
+            "title": paper.get("title", ""),
+            "publication_date": paper.get("publication_date") or paper.get("publicationDate") or paper.get("year") or "",
+            "abstract": self._clip_text(paper.get("abstract", ""), 900),
+        }
+
+    def _cited_paper_summaries(self, pool: dict[str, dict[str, Any]], sources: list[str], limit: int = 12) -> str:
+        summaries = [self._paper_summary(pool[source], source) for source in sources[:limit] if source in pool]
+        return json.dumps(summaries, ensure_ascii=False)
+
+    def _graph_evidence(self, graph: nx.DiGraph, key: str, sources: list[str], score: float, rank: int) -> str:
+        evidence = {
+            "directed_ppr_score": score,
+            "directed_ppr_rank": rank,
+            "candidate_in_degree": graph.in_degree(key) if key in graph else 0,
+            "candidate_out_degree": graph.out_degree(key) if key in graph else 0,
+            "cited_papers_that_cite_candidate": [source for source in sources if graph.has_edge(source, key)],
+            "cited_papers_cited_by_candidate": [source for source in sources if graph.has_edge(key, source)],
+        }
+        return json.dumps(evidence, ensure_ascii=False)
+
+    async def _classify_landmark(
+        self,
+        query: str,
+        section_title: str,
+        section_text: str,
+        topics: list[str],
+        cited_papers: str,
+        graph_evidence: str,
+        key: str,
+        paper: dict[str, Any],
+        score: float,
+        rank: int,
+    ):
         try:
-            category = await self.ppr_type.call(inputs={
+            warrant = await self.citation_warrant.call(inputs={
                 "query": query,
                 "section_title": section_title,
-                "title": paper.get("title", ""),
-                "abstract": paper.get("abstract", ""),
+                "topics": json.dumps(topics, ensure_ascii=False),
+                "section_text": section_text,
+                "cited_papers": cited_papers,
+                "candidate_title": paper.get("title", ""),
+                "candidate_abstract": self._clip_text(paper.get("abstract", ""), 3000),
+                "graph_evidence": graph_evidence,
             })
         except Exception as exc:
-            print(f"PPRType {paper.get('title', '')} {exc}")
-            category = "unknown"
-        if category == "unknown":
+            print(f"CitationWarrant {paper.get('title', '')} {exc}")
             return None
-        return {"paper": paper, "landmark_type": category, "pagerank": score, "rank": rank, "node": key}
+        if not warrant.get("citation_obligation"):
+            return None
+        return {
+            "paper": paper,
+            "landmark_type": warrant.get("warrant_label"),
+            "warrant_label": warrant.get("warrant_label"),
+            "citation_warrant": warrant,
+            "pagerank": score,
+            "rank": rank,
+            "node": key,
+        }
 
     async def _detect_landmarks(
         self,
@@ -252,17 +345,17 @@ class TopicSpecificPapers:
         sources = [source for source in sources if source in subgraph]
         if not sources:
             return []
-        undirected = nx.DiGraph(subgraph)
-        undirected.add_edges_from((target, source) for source, target in subgraph.edges())
-        personalization = {node: 0.0 for node in undirected.nodes()}
+        personalization = {node: 0.0 for node in subgraph.nodes()}
         for source in sources:
             personalization[source] = 1.0 / len(sources)
         try:
-            scores = nx.pagerank(undirected, personalization=personalization)
+            scores = nx.pagerank(subgraph, personalization=personalization)
         except Exception:
             return []
         ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:10]
-        section_title = "" if section is literature_pool else str(section.get("title", "") or "")
+        section_title = str(section.get("title", "") or "")
+        section_text = self._section_text(section)
+        cited_papers = self._cited_paper_summaries(pool, sources)
         candidates = [
             (key, score, rank)
             for rank, (key, score) in enumerate(ranked, 1)
@@ -272,6 +365,10 @@ class TopicSpecificPapers:
             asyncio.create_task(self._classify_landmark(
                 query,
                 section_title,
+                section_text,
+                topics,
+                cited_papers,
+                self._graph_evidence(subgraph, key, sources, score, rank),
                 key,
                 filtered_pool[key].get("paper", filtered_pool[key]),
                 score,
@@ -364,65 +461,6 @@ class TopicSpecificPapers:
                 })
         return reports
 
-    def _communities(self, graph: nx.Graph) -> list[list[str]]:
-        if graph.number_of_nodes() == 0:
-            return []
-        try:
-            return [list(group) for group in nx.algorithms.community.greedy_modularity_communities(graph.to_undirected())]
-        except Exception:
-            return [list(component) for component in nx.connected_components(graph.to_undirected())]
-
-    def _existing_topic_rank_cutoff(self, ranked_terms: list[str], topics: list[str]) -> int:
-        normalized_topics = {re.sub(r"\s+", " ", topic.casefold()).strip() for topic in topics}
-        for index, term in enumerate(ranked_terms):
-            if term in normalized_topics:
-                return index
-        return len(ranked_terms)
-
-    def _missing_topics(
-        self,
-        literature_pool: Any,
-        query: str,
-        paper: dict[str, Any],
-        citation_graph: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        topics, _citation_keys = self._parsed_topics_and_citations(paper)
-        filtered_literature_pool, _ = self._filter_topic_papers(literature_pool, query, topics, citation_graph)
-        filtered_query_pool, _ = self._filter_topic_papers(literature_pool, query, [], citation_graph)
-        diff_keys = set(filtered_query_pool) - set(filtered_literature_pool)
-        graph = self._graph(literature_pool, citation_graph).subgraph(diff_keys).copy()
-        communities = [group for group in self._communities(graph) if len(group) > self.missing_topic_min_community_size]
-        if not communities:
-            return []
-        pool = self._pool(literature_pool)
-        corpus_keys = list(filtered_literature_pool) or list(filtered_query_pool)
-        corpus = [self._paper_text(pool[key].get("paper", pool[key])) for key in corpus_keys if key in pool]
-        if not any(corpus):
-            return []
-        vectorizer = TfidfVectorizer(ngram_range=(1, 3), stop_words="english", lowercase=True)
-        vectorizer.fit(corpus)
-        feature_names = vectorizer.get_feature_names_out()
-        existing = {re.sub(r"\s+", " ", topic.casefold()).strip() for topic in topics}
-        reports = []
-        for index, nodes in enumerate(communities, 1):
-            docs = [self._paper_text(pool[node].get("paper", pool[node])) for node in nodes if node in pool]
-            if not docs:
-                continue
-            matrix = vectorizer.transform(docs)
-            scores = matrix.mean(axis=0).A1
-            ranked_indexes = scores.argsort()[::-1]
-            ranked_terms = [feature_names[i] for i in ranked_indexes if scores[i] > 0]
-            cutoff = self._existing_topic_rank_cutoff(ranked_terms, topics)
-            keywords = [term for term in ranked_terms[:cutoff] if term not in existing][:10]
-            if not keywords:
-                continue
-            reports.append({
-                "community": index,
-                "keywords": keywords,
-                "papers": [pool[node].get("paper", pool[node]) for node in nodes if node in pool],
-            })
-        return reports
-
     async def __call__(
         self,
         query: str,
@@ -445,12 +483,10 @@ class TopicSpecificPapers:
             if isinstance(result, list) and result:
                 landmarks.append({"section": section.get("title", ""), "papers": result})
         outdated = await self._detect_outdated_topics(literature_pool, query, paper)
-        missing_topics = self._missing_topics(literature_pool, query, paper, citation_graph)
         return {
             "topic_specific_papers": {
                 "landmarks": landmarks,
                 "outdated_topics": outdated,
-                "missing_topics": missing_topics,
             }
         }
 

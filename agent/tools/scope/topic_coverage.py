@@ -1,17 +1,20 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from typing import Any
 
-from ..prompts import CONTENT_TAGS, MISSING_TOPIC_CLAIM, SECTION_LABELS
+from ..prompts import CONTENT_TAGS, MISSING_TOPIC_CLAIM, SECTION_LABELS, SENTENCE_LABELS
 from ..utility.academic_engine import get_academic_engine
+from ..utility.content_walk import iter_sentences
 from ..utility.evidence_check import EvidenceCheck
 from ..utility.llmclient import AsyncChat
 from ..utility.openalex import OPENALEX_SELECT
+from ..utility.paper_elements import Paper, Section
 from ..utility.s2 import S2_DEFAULT_FIELDS
 from ..utility.tool_config import ToolConfig
+from ..utility.utils import extract_json
 from ..preprocess.section_classify import SectionClassification
-from .utils import extract_json
+from .missing_topic_detection import MissingTopicDetector
 
 
 NON_METHOD_CONTENT_TAGS = sorted(CONTENT_TAGS - {"METHOD", "GENERAL"})
@@ -26,7 +29,7 @@ CONTENT_TAG_KEYWORDS = {
         "robustness",
         "explainability",
         "privacy",
-        "read-team",
+        "red-team",
         "jailbreak",
     ],
     "TOOLKIT": ["toolkit", "software", "implementation"],
@@ -44,16 +47,17 @@ class MissingTopicClient(AsyncChat):
     def _availability(self, response, context):
         data = extract_json(response)
         if data["has_claim"]:
-            verified, _ = self.check.verify(data["evidence"], context["text"])
-            assert verified
+            verified, _ = self.check.verify([data["evidence"]], context["text"])
+            assert verified, "MissingTopic: Evidence not valid"
         return data
 
     def _organize_inputs(self, inputs):
-        return self.PROMPT.format(topic=inputs["topic"], text=inputs["text"]), {"text": inputs["text"]}
+        prompt = self.PROMPT.format(topic=inputs["topic"], text=inputs["text"])
+        return prompt, {"text": inputs["text"]}
 
 
 class TopicCoverage:
-    """Use academic search and reference surveys to identify missing non-method content topics."""
+    """Evaluate missing survey-level content, method-family topics, and scope exclusions."""
 
     def __init__(self, config: ToolConfig):
         self.config = config
@@ -62,6 +66,7 @@ class TopicCoverage:
         self.missing_topic_client = MissingTopicClient(config)
         self.search_limit = config.topic_coverage_search_limit
         self.section_classification = SectionClassification(config)
+        self.missing_topic_detector = MissingTopicDetector(config)
 
     def _uses_semantic_scholar(self) -> bool:
         return self.engine_name in {"semantic_scholar", "semanticscholar", "semantic scholar", "s2"}
@@ -69,45 +74,102 @@ class TopicCoverage:
     def _select_fields(self) -> str:
         return S2_DEFAULT_FIELDS if self._uses_semantic_scholar() else OPENALEX_SELECT
 
-    def _iter_sections(self, paper: dict[str, Any]):
-        def walk(section: dict[str, Any], depth: int):
+    def _iter_sections(self, paper: Paper):
+        def walk(section: Section, depth: int):
             yield section, depth
-            for child in section.get("sections", []) or []:
-                if isinstance(child, dict):
-                    yield from walk(child, depth + 1)
+            for child in section.children:
+                yield from walk(child, depth + 1)
 
-        for section in paper.get("sections", []) or []:
-            if isinstance(section, dict):
-                yield from walk(section, 1)
+        for section in paper.children:
+            yield from walk(section, 1)
 
-    def _iter_sentences(self, paper: dict[str, Any]):
-        def walk(node: Any):
-            if isinstance(node, dict):
-                if "sentences" in node:
-                    yield from walk(node.get("sentences", []) or [])
-                    return
-                for paragraph in node.get("paragraphs", []) or []:
-                    yield from walk(paragraph)
-                for section in node.get("sections", []) or []:
-                    yield from walk(section)
-            elif isinstance(node, list):
-                for sentence in node:
-                    if isinstance(sentence, dict) and sentence.get("text"):
-                        yield sentence
+    def _logical_sentence_labels(self, label: str) -> set[str]:
+        if label == "CONTRIBUTION+SCOPE":
+            return {"CONTRIBUTION", "SCOPE"}
+        return {label} if label else set()
 
-        yield from walk(paper)
+    def _sentence_labels(self, paper: Paper) -> set[str]:
+        labels = set()
+        for sentence in iter_sentences(paper, include_abstract=True, include_appendix=True):
+            labels.update(self._logical_sentence_labels(sentence.label))
+        return labels
 
-    def _section_labels(self, paper: dict[str, Any]) -> tuple[set[str], set[str], dict[str, float]]:
+    def _section_sentence_labels(self, section: Section) -> set[str]:
+        labels = set()
+        for sentence in iter_sentences(section, include_abstract=False, include_appendix=False):
+            labels.update(self._logical_sentence_labels(sentence.label))
+        return labels
+
+    def _research_object_count(self, section: Section) -> int:
+        names = set()
+        for current, _ in self._iter_section_subtree(section):
+            parsed = current.parsed_contents if isinstance(current.parsed_contents, dict) else {}
+            for obj in parsed.get("objects", []) or []:
+                if isinstance(obj, dict) and str(obj.get("name", "")).strip():
+                    names.add(str(obj["name"]).strip().casefold())
+        return len(names)
+
+    def _iter_section_subtree(self, section: Section):
+        def walk(current: Section, depth: int):
+            yield current, depth
+            for child in current.children:
+                yield from walk(child, depth + 1)
+        yield from walk(section, 0)
+
+    def _content_sections(self, paper: Paper) -> list[Section]:
+        return [section for section, _ in self._iter_sections(paper) if section.functional_type == "CONTENT"]
+
+    def _top_level_content_sections(self, paper: Paper) -> list[tuple[str, Section]]:
+        return [
+            (str(index + 1), section)
+            for index, section in enumerate(paper.children)
+            if str(index + 1).isdigit() and section.functional_type == "CONTENT"
+        ]
+
+    def _missing_sentence_label_reports(self, paper: Paper) -> list[dict[str, Any]]:
+        reports = []
+        global_labels = self._sentence_labels(paper)
+        for label in sorted((set(SENTENCE_LABELS) - {"CONTRIBUTION+SCOPE", "CONTRAST", "SYNTHESIS"}) - global_labels):
+            reports.append({"sentence_label": label, "reason": "absent_sentence_label"})
+        content_sections = self._top_level_content_sections(paper)
+        if not content_sections:
+            for label in ["CONTRAST", "SYNTHESIS"]:
+                if label not in global_labels:
+                    reports.append({"sentence_label": label, "reason": "absent_sentence_label"})
+            return reports
+        missing_synthesis_sections = []
+        missing_contrast_sections = []
+        for section_id, section in content_sections:
+            labels = self._section_sentence_labels(section)
+            if "SYNTHESIS" not in labels:
+                missing_synthesis_sections.append(section_id)
+            if self._research_object_count(section) > 1 and "CONTRAST" not in labels:
+                missing_contrast_sections.append(section_id)
+        if missing_synthesis_sections:
+            reports.append({
+                "sentence_label": "SYNTHESIS",
+                "reason": "top_level_content_sections_missing_synthesis",
+                "sections": missing_synthesis_sections,
+            })
+        if missing_contrast_sections:
+            reports.append({
+                "sentence_label": "CONTRAST",
+                "reason": "top_level_content_sections_missing_contrast",
+                "sections": missing_contrast_sections,
+            })
+        return reports
+
+    def _section_labels(self, paper: Paper) -> tuple[set[str], set[str], dict[str, float]]:
         functional_types, content_tags = set(), set()
         missing_by_depth = {"section": [0, 0], "subsection": [0, 0], "subsubsection": [0, 0]}
         for section, depth in self._iter_sections(paper):
             bucket = "section" if depth == 1 else "subsection" if depth == 2 else "subsubsection"
             missing_by_depth[bucket][1] += 1
-            if not section.get("functional_type"):
+            if not section.functional_type:
                 missing_by_depth[bucket][0] += 1
             else:
-                functional_types.add(section["functional_type"])
-            for tag in section.get("content_tags", []) or []:
+                functional_types.add(section.functional_type)
+            for tag in section.content_tags:
                 if tag:
                     content_tags.add(tag)
         missing_rates = {
@@ -116,32 +178,40 @@ class TopicCoverage:
         }
         return functional_types, content_tags, missing_rates
 
-    def _limitation_text(self, paper: dict[str, Any]) -> str:
+    def _scope_text(self, paper: Paper) -> str:
         return "\n".join(
-            sentence["text"]
-            for sentence in self._iter_sentences(paper)
-            if sentence.get("label") == "LIMITATION"
+            sentence.text
+            for sentence in iter_sentences(paper, include_abstract=True, include_appendix=True)
+            if sentence.label in {"SCOPE", "CONTRIBUTION+SCOPE"}
         )
 
-    def _normalize_queries(self, query: str | list[str]) -> list[str]:
-        if isinstance(query, list):
-            queries = [str(item).strip() for item in query if str(item).strip()]
-        else:
-            queries = [item.strip() for item in str(query or "").split(",") if item.strip()]
-        return queries or [""]
-
-    def _query_text(self, queries: list[str]) -> str:
-        return " ".join(item for item in queries if item)
-
-    async def _excluded_by_limitation(self, query: str, tag: str, limitation_text: str) -> dict[str, Any]:
-        if not limitation_text:
+    async def _excluded_by_scope(self, query: str, tag: str, scope_text: str) -> dict[str, Any]:
+        if not scope_text:
             return {"has_claim": False, "evidence": ""}
-        return await self.missing_topic_client.call(inputs={
-            "topic": f"{tag} of {query}",
-            "text": limitation_text,
-        })
+        return await self.missing_topic_client.call(inputs={"topic": f"{tag} of {query}", "text": scope_text})
 
-    def _reference_survey_contents(self, reference_surveys: Any) -> list[dict[str, Any]]:
+    async def _scope_check_missing_topics(
+        self,
+        query_text: str,
+        missing_topics: list[dict[str, Any]],
+        scope_text: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        checked, excluded = [], []
+        for item in missing_topics or []:
+            topic_name = item["topic_name"]
+            try:
+                exclusion = await self._excluded_by_scope(query_text, topic_name, scope_text)
+            except Exception as exc:
+                print(f"TopicCoverage missing topic scope check {topic_name} {exc}")
+                exclusion = {"has_claim": False, "evidence": ""}
+            enriched = {**item, "scope_exclusion": exclusion}
+            if exclusion.get("has_claim"):
+                excluded.append(enriched)
+            else:
+                checked.append(enriched)
+        return checked, excluded
+
+    def _reference_survey_contents(self, reference_surveys: Any) -> list[Paper]:
         if isinstance(reference_surveys, dict):
             reference_surveys = reference_surveys.get("reference_surveys", reference_surveys)
         values = reference_surveys.values() if isinstance(reference_surveys, dict) else (reference_surveys or [])
@@ -151,37 +221,33 @@ class TopicCoverage:
                 continue
             full_content = item.get("full_content") or {}
             content = full_content.get("full_content") if isinstance(full_content, dict) else full_content
-            if isinstance(content, dict):
+            if isinstance(content, Paper):
                 contents.append(content)
+            elif isinstance(content, dict):
+                contents.append(Paper.from_skeleton(content))
         return contents
 
-    def _needs_section_classify(self, content: dict[str, Any]) -> bool:
+    def _needs_section_classify(self, content: Paper) -> bool:
         sections = list(self._iter_sections(content))
         return bool(sections) and any(
-            not section.get("functional_type") or not section.get("content_tags")
+            not section.functional_type or not section.content_tags
             for section, _ in sections
         )
 
-    async def _ensure_reference_sections_classified(self, reference_surveys: Any) -> list[dict[str, Any]]:
+    async def _ensure_reference_sections_classified(self, reference_surveys: Any) -> list[Paper]:
         contents = self._reference_survey_contents(reference_surveys)
-        targets = [x for x in contents if self._needs_section_classify(x)]
-        if not targets: return contents
-        # results = await asyncio.gather(
-        #     *(self.section_classification(content) for content in targets),
-        #     return_exceptions=True,
-        # )
-        classified = []
-        for i, content in enumerate(targets):
-            logging.info(f"Sentence {i + 1} of {len(targets)} reference survey")
-            result = await self.section_classification(content)
-            classified.append(result)
+        targets = [item for item in contents if self._needs_section_classify(item)]
+        if not targets:
+            return contents
+        for index, content in enumerate(targets):
+            logging.info("Classify reference survey sections %d of %d", index + 1, len(targets))
+            await self.section_classification(content)
         return contents
 
     async def _reference_has_tag(self, reference_surveys: Any, tag: str) -> bool:
         for content in await self._ensure_reference_sections_classified(reference_surveys):
             for section, _ in self._iter_sections(content):
-                if tag in (section.get("content_tags", []) or []):
-                    return True
+                if tag in (section.content_tags or []): return True
         return False
 
     def _paper_text(self, paper: dict[str, Any]) -> str:
@@ -213,31 +279,63 @@ class TopicCoverage:
         )
         return self._filter_search_results(tag, payload.get("results", []) or [], queries)
 
+    async def _missing_topic_reports(
+        self,
+        queries: list[str],
+        paper: Paper,
+        literature_pool: Any,
+        citation_graph: dict[str, Any] | None,
+        scope_text: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        if not literature_pool:
+            return [], [], [], []
+        detected, unresolved, discarded = await self.missing_topic_detector.detect(
+            queries,
+            paper,
+            literature_pool,
+            citation_graph,
+        )
+        query_text = " ".join(queries)
+        scoped, excluded = await self._scope_check_missing_topics(query_text, detected, scope_text)
+        ranked = sorted(
+            scoped,
+            key=lambda item: (item["content_tag_priority"], item["community"]),
+        )
+        return ranked, excluded, unresolved, discarded
+
     async def __call__(
         self,
-        query: str | list[str] | dict[str, Any],
-        paper: dict[str, Any],
+        queries: list[str],
+        paper: Paper,
         reference_surveys: Any = None,
+        literature_pool: dict[str, Any] | list[dict[str, Any]] | None = None,
+        citation_graph: dict[str, Any] | None = None,
+        missing_topics: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if isinstance(query, dict):
-            topic_data = query
-            reference_data = topic_data.get("reference_data", {}) or {}
-            reference_surveys = reference_surveys or reference_data.get("reference_surveys")
-            query = topic_data.get("query") or paper.get("title", "")
-        queries = self._normalize_queries(query)
-        query_text = self._query_text(queries)
+        query_text = " ".join(queries)
         functional_types, content_tags, missing_label_rates = self._section_labels(paper)
         missing_functional_types = sorted(SECTION_LABELS - functional_types)
+        missing_sentence_labels = self._missing_sentence_label_reports(paper)
         missing_content_tags = sorted(CONTENT_TAGS - content_tags - {"GENERAL"})
-        limitation_text = self._limitation_text(paper)
+        scope_text = self._scope_text(paper)
+        missing_topics, scope_excluded_topics, unresolved_topics, discarded_topics = await self._missing_topic_reports(
+            queries,
+            paper,
+            literature_pool,
+            citation_graph,
+            scope_text,
+        )
+        logging.info("Detected missing functional types: %s", missing_functional_types)
+        logging.info("Detected missing sentence labels: %s", missing_sentence_labels)
+        logging.info("Detected missing content tags: %s", missing_content_tags)
 
         excluded = {}
         remaining_tags = []
         for tag in missing_content_tags:
             if tag == "METHOD":
-                continue
+                logging.warning("This survey does not have a METHOD tag")
             try:
-                exclusion = await self._excluded_by_limitation(query_text, tag, limitation_text)
+                exclusion = await self._excluded_by_scope(query_text, tag, scope_text)
             except Exception as exc:
                 print(f"TopicCoverage limitation check {tag} {exc}")
                 exclusion = {"has_claim": False, "evidence": ""}
@@ -247,28 +345,27 @@ class TopicCoverage:
                 remaining_tags.append(tag)
 
         missing_tag_reports = []
-        for tag in remaining_tags:
-            if reference_surveys:
+        if reference_surveys:
+            for tag in remaining_tags:
                 if await self._reference_has_tag(reference_surveys, tag):
                     missing_tag_reports.append({
                         "content_tag": tag,
                         "evidence_source": "reference_surveys",
                         "evidence": [],
                     })
-                continue
-            if tag not in CONTENT_TAG_KEYWORDS:
-                continue
-            try:
-                papers = await self._search_tag(queries, tag)
-            except Exception as exc:
-                print(f"TopicCoverage search {tag} {exc}")
-                papers = []
-            if papers:
-                missing_tag_reports.append({
-                    "content_tag": tag,
-                    "evidence_source": "academic_search",
-                    "evidence": papers,
-                })
+            #     continue
+            # if tag not in CONTENT_TAG_KEYWORDS: continue
+            # try:
+            #     papers = await self._search_tag(queries, tag)
+            # except Exception as exc:
+            #     print(f"TopicCoverage search {tag} {exc}")
+            #     papers = []
+            # if papers:
+            #     missing_tag_reports.append({
+            #         "content_tag": tag,
+            #         "evidence_source": "academic_search",
+            #         "evidence": papers,
+            #     })
 
         return {
             "topic_evals": {
@@ -276,9 +373,13 @@ class TopicCoverage:
                     {"functional_type": functional_type, "reason": "absent_section_type"}
                     for functional_type in missing_functional_types
                 ],
+                "missing_sentence_labels": missing_sentence_labels,
                 "missing_content_tags": missing_tag_reports,
                 "excluded_content_tags": excluded,
+                "missing_topics": missing_topics,
+                "scope_excluded_missing_topics": scope_excluded_topics,
+                "unresolved_missing_topic_communities": unresolved_topics,
+                "discarded_missing_topic_communities": discarded_topics,
                 "section_label_missing_rates": missing_label_rates,
             }
         }
-

@@ -1,6 +1,8 @@
 SYSTEM = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. You will be given the full text of a survey paper. Your task is to assess its overall quality."""
 
-CC_PROMPT = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. The survey paper to be evaluated is in {input_dir}, in LaTeX format. Your task is to assess its overall quality. 
+CC_PROMPT = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. The survey paper to be evaluated is in {input_dir}, as a LaTeX source directory/file or parsed JSON file. Your task is to assess its overall quality.
+
+Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
 
 {requirements}
 
@@ -11,6 +13,10 @@ USER_PLAIN = """Below is the full text of a survey paper. Read it carefully and 
 <survey>
 {SURVEY_FULL_TEXT}
 </survey>
+
+<input_processing_note>
+Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
+</input_processing_note>
 
 Provide your evaluation in the following JSON format. Do not include any text outside the JSON object.
 
@@ -24,7 +30,6 @@ Provide your evaluation in the following JSON format. Do not include any text ou
     {{
       "issue": "<concise description of the problem>",
       "location": "<section/paragraph/sentence where this occurs, quoted or paraphrased>",
-      "severity": "major" | "minor"
     }}
   ],
   "comments": [
@@ -42,6 +47,10 @@ USER_ARISE = """Below is the full text of a survey paper, followed by a rubric y
 <survey>
 {SURVEY_FULL_TEXT}
 </survey>
+
+<input_processing_note>
+Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
+</input_processing_note>
 
 <evaluation_rubric>
 Score the survey on each of the following criteria using a 1-5 scale (1 = does not meet this criterion at all, 5 = fully meets this criterion). For each criterion, briefly justify your score with reference to specific content in the survey.
@@ -229,7 +238,6 @@ Provide your evaluation in the following JSON format. Do not include any text ou
     {{
       "issue": "<concise description of the problem>",
       "location": "<section/paragraph/sentence where this occurs, quoted or paraphrased>",
-      "severity": "major" | "minor"
     }}
   ],
   "comments": [
@@ -244,44 +252,43 @@ Provide your evaluation in the following JSON format. Do not include any text ou
   }}
 }}"""
 
-USER_TRUSTSURVEY = """Below is the full text of a survey paper, followed by an evaluation framework you must use to guide your assessment.
+USER_TRUSTSURVEY = """Below is the full text of a survey paper, followed by the TrustSurvey evaluation framework you must use to guide your assessment.
 
 <survey>
 {SURVEY_FULL_TEXT}
 </survey>
 
+<input_processing_note>
+Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
+</input_processing_note>
+
 <evaluation_framework>
-This framework defines four levels of survey quality. For each level, consider the listed concerns. These concerns are derived from an analysis of 525 real peer review comments on 170 survey papers.
+TrustSurvey evaluates survey trustworthiness through evidence-linked sub-judgments. Do not collapse the assessment into a vague holistic impression. Each reported weakness should correspond to a concrete checkable issue, with a specific location or evidence pointer in the survey whenever possible.
 
-LEVEL 1 — MINIMAL VALIDITY
-- Does the paper exhibit the structure and intent of a literature survey (as opposed to a method/research paper)?
-- Does it state a clear review methodology (search strategy, inclusion/exclusion criteria)?
-- Does every major section engage substantively with cited literature, rather than reading as a bare list?
-- Is there a discussion of future directions or open problems?
+TrustSurvey separates survey-quality concerns by verifiability level:
 
-LEVEL 2 — VERIFIABLE CONTENT INTEGRITY
-(Every judgment here must be traceable to a specific, checkable piece of evidence — the cited work's actual content, or another explicit passage in the paper. Do not rely on general impressions.)
-- Do all citations refer to papers that actually exist?
-- Are citations made to the original/canonical version of a work (e.g., published version rather than an outdated preprint), where applicable?
-- Does every factual claim attributed to a cited work actually match what that work says? Flag any claim that misrepresents, exaggerates, or contradicts its cited source.
-- Are there factual claims stated without any citation that contradict what is established in the relevant literature?
-- Are there internal contradictions between what is declared elsewhere in the paper (e.g., in the abstract, introduction, or a stated definition/scope) and what is actually presented or argued in the body?
+A-Level: internally verifiable from the survey itself, its cited papers, and codifiable norms of survey writing. A-Level issues can be checked from the document's own structure, citations, claims, and stated promises.
+- Gap and future-work discussion insufficient: the survey lacks an explicit discussion of open problems, research gaps, limitations of current work, or future research directions, or includes only a perfunctory mention.
+- Comparison insufficient: the survey summarizes works individually but does not explicitly contrast named methods, systems, datasets, or findings along meaningful dimensions.
+- Method evaluation insufficient: the survey does not provide a dedicated or systematic evaluation-oriented discussion, such as benchmark-based comparison, metric discussion, performance analysis, or empirical comparison.
+- Synthesis / original viewpoint insufficient: the survey mainly lists prior work and lacks cross-paper synthesis, taxonomy, trend analysis, organizing abstractions, or an explicit authorial perspective.
+- Scope / inclusion-criteria declaration missing: the survey does not make its coverage boundary inspectable, e.g., by stating search strategy, inclusion or exclusion criteria, time span, venue scope, language scope, or topic exclusions.
+- Contribution statement missing: the survey does not explicitly state what it contributes as a survey, such as a taxonomy, synthesis, organizing framework, coverage boundary, or practical guidance.
+- Internal inconsistency: the survey makes a scope, contribution, section-title, or organizational promise that is contradicted or not substantively fulfilled by the body content.
+- Hallucination, internal/cited-source side: the survey contains non-existent citations, misattributes a cited paper, or makes a claim about a cited source that does not match that source.
 
-LEVEL 3 — ARGUMENTATIVE COMPLETENESS
-(These are judgments about whether standard components of survey argumentation are present, based on established conventions of academic survey writing — not about their depth or quality.)
-- Does the paper explicitly state its own contribution, perspective, or organizing framework, rather than only presenting prior work?
-- Does the paper explicitly compare or contrast different works, rather than only listing/summarizing them one by one?
-- Is a discussion of future directions or open problems present, and does it engage with the specific gaps raised earlier in the paper?
-- Is the survey's own methodology (how works were searched, selected, or organized) explicitly stated anywhere in the paper?
+B-Level: externally verifiable given a suitable literature pool. B-Level issues require external evidence, but the obligation should still be determinate rather than a matter of taste.
+- Hallucination, external side: the survey makes an uncited factual claim that is contradicted by relevant literature.
+- Missing specific references: the survey omits a specific reference recoverable from external evidence, including reference surveys, uncited named research objects, or subtopic-relevant landmark papers.
+- Missing specific topics: the survey omits a content category or method family recoverable from the external literature pool and not explicitly scoped out.
 
-LEVEL 4 — LITERATURE-GROUNDED COVERAGE
-(For every judgment at this level, you must actually search the literature before making a claim. Do not rely on your own memory of "well-known" works or topics — retrieve and cite what you find.)
-- Search for recent and influential surveys or papers on this exact topic. Based on what you find, are there important, well-established works in this area that are conspicuously missing from the citation list?
-- Based on the same search, are there important subtopics of this field that are entirely absent from the paper, without any stated reason for exclusion?
-- Does the survey's own comparative or synthesizing discussion imply the existence of topics, categories, or works that are never actually cited or discussed?
-- Based on your search of existing surveys on this topic, does this paper offer a distinct organizing perspective, or does it substantially duplicate the scope and structure of an already-existing survey?
+C-Level: disagreement-prone even with complete evidence. These issues are outside TrustSurvey's automated scope and should not be treated as primary detected weaknesses unless clearly grounded in A/B evidence.
+- Suggestions on adding references without a determinate omission.
+- Taxonomy or framework preference problems.
+- Evidence depth or argument support judgments that require graded expert taste.
+- Writing clarity, presentation, visualization quality, contribution novelty, or venue-fit judgments.
 
-Evaluate the survey using minimal validity together with all checks in Levels 2–4 above. You may use your own judgment and knowledge of the field to apply these criteria. You are not restricted to a fixed order or fixed procedure — use whatever approach you find most effective to assess the survey against this framework.
+Evaluate the survey using A-Level and B-Level checks. For each weakness, prefer evidence-linked, itemized findings over broad commentary. If you mention a C-Level concern, put it in comments rather than weaknesses unless it is tied to a concrete A/B-Level violation.
 </evaluation_framework>
 
 Provide your evaluation in the following JSON format. Do not include any text outside the JSON object.
@@ -294,18 +301,19 @@ Provide your evaluation in the following JSON format. Do not include any text ou
   ],
   "weaknesses": [
     {
-      "issue": "<concise description of the problem>",
+      "issue": "<concise description of the A-Level or B-Level problem>",
+      "issue_type": "<>"
       "location": "<section/paragraph/sentence where this occurs, quoted or paraphrased>",
-      "severity": "major" | "minor"
+      "evidence": "<specific internal or external evidence supporting the finding>",
     }
   ],
   "comments": [
     {
-      "issue": "<concise description of a less critical observation>",
+      "issue": "<concise description of a less critical or C-Level observation>",
+      "level": "A" | "B" | "C",
       "location": "<section/paragraph/sentence where this occurs>"
     }
   ],
   "overall_score": <integer 0-100>,
   "score_justification": "<1-3 sentences explaining the score>"
 }"""
-

@@ -2,10 +2,10 @@ import logging
 from abc import ABC, abstractmethod
 from tenacity import (
     retry,
-    stop_after_attempt,           # 最大重试次数
-    wait_exponential,             # 指数退避
-    retry_if_exception,           # 遇到什么异常才重试
-    retry_if_result,              # 返回None的时候也要重试
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception,
+    retry_if_result,
 )
 
 from .tool_config import LLMServerInfo
@@ -24,7 +24,6 @@ class AsyncLLMClient(ABC):
         self.llm = llm
         self.timeout = 600
         self.sampling_params = sampling_params or {}
-        
     @abstractmethod
     def _availability(self, response, context):
         raise NotImplementedError

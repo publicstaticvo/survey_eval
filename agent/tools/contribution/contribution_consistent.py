@@ -1,20 +1,17 @@
-"""
-contribution_consistent.py
-闂備礁鎲＄敮鍥磹閺嶎厼钃熼柛銉墮濡﹢鏌涢妷銏℃珖鐟滄澘娼￠弻锝夊Ω閵夈儺浠鹃梺浼欒吂閸撴繄绮欐径鎰劦妞ゆ帊鑳堕埢鏃堟煟濮橆収鍔峚im闂備礁鎼€氱兘宕规导鏉戠畾濞撴埃鍋撻柡灞界墦閹稿﹥寰勫畝鈧粻鎺楁⒑閸涘﹤娴い锝忓閼洪亶鍨鹃幇浣哄弳闂傚嫬娲畷妯荤節濮橆儵?濠电偞鍨堕幐鎼佀囬鈧弻灞筋煥閸繄锛欏┑鐐叉閹告挳宕戦幘鏉戠窞閻庯綆鍓氬娲煟鎼淬垻鈯曢柛鏂炲懏顫?- section & subsection titles
-- parsed content topics
-- relative sentences
-"""
 import asyncio
+import logging
 import re
 from typing import Any
 
 import jsonschema
 
 from ..preprocess.contribution_classify import GRAPH_ENVIRONMENT_TYPES
-from ..preprocess.utils import extract_json
 from ..prompts import CONTRIBUTION_CONSISTENT, CONTRIBUTION_CONSISTENT_SCHEMA
+from ..utility.content_walk import iter_sections_with_context
 from ..utility.llmclient import AsyncChat, AsyncRerank
+from ..utility.paper_elements import Paper, Section
 from ..utility.tool_config import ToolConfig
+from ..utility.utils import extract_json
 
 
 SECTION_RANGE_RE = re.compile(r"^(?:Section\s+)?(?P<start>\d+(?:\.\d+)*)\s*-\s*(?P<end>\d+(?:\.\d+)*)$")
@@ -28,11 +25,12 @@ class ContributionConsistentClient(AsyncChat):
         jsonschema.validate(result, CONTRIBUTION_CONSISTENT_SCHEMA)
         evidence_items = context["evidence_items"]
         for item in result["supporting_evidence"]:
-            assert item["item"] in evidence_items[item["pool"]]
+            assert item["item"] in evidence_items[item["pool"]], f"Evidence {item['item']} not in pool {item['pool']}"
         return result
 
     def _organize_inputs(self, inputs):
-        return self.PROMPT.format(**inputs), {
+        prompt = self.PROMPT.format(**inputs)
+        return prompt, {
             "evidence_items": inputs["evidence_items"],
         }
 
@@ -44,31 +42,17 @@ class ContributionConsistency:
         self.rerank = AsyncRerank(config.rerank_server_info)
         self.rerank_top_k = max(1, config.rerank_n_documents)
 
-    def _walk_sections(self, paper: dict[str, Any], groups=("sections", "limitation", "appendix")):
-        def walk(section: dict[str, Any], title_path: list[str]):
-            current_path = [*title_path, section.get("title", "")]
-            yield section, current_path
-            for child in section.get("sections", []) or []:
-                if isinstance(child, dict):
-                    yield from walk(child, current_path)
+    def _walk_sections(self, paper: Paper, groups=("sections", "limitation", "appendix")):
+        yield from iter_sections_with_context(paper, groups=tuple(groups))
 
-        for group_name in groups:
-            group = paper.get(group_name, [])
-            if isinstance(group, dict):
-                group = [group]
-            for section in group or []:
-                if isinstance(section, dict):
-                    yield from walk(section, [])
-
-    def _root_sections(self, paper: dict[str, Any], groups=("sections", "limitation", "appendix")) -> list[tuple[dict[str, Any], list[str]]]:
+    def _root_sections(self, paper: Paper, groups=("sections", "limitation", "appendix")) -> list[tuple[Section, list[str], str]]:
         roots = []
-        for group_name in groups:
-            group = paper.get(group_name, [])
-            if isinstance(group, dict):
-                group = [group]
-            for section in group or []:
-                if isinstance(section, dict):
-                    roots.append((section, [section.get("title", "")]))
+        if "sections" in groups:
+            roots.extend((section, [section.name], str(index + 1)) for index, section in enumerate(paper.children))
+        if "limitation" in groups:
+            roots.extend((section, [section.name], "Limitation") for section in paper.limitation)
+        if "appendix" in groups:
+            roots.extend((section, [section.name], "Appendix") for section in paper.appendix)
         return roots
 
     def _section_id_parts(self, section_id: str) -> tuple[int, ...] | None:
@@ -97,85 +81,70 @@ class ContributionConsistency:
             return ordered_ids[end_index:start_index + 1]
         return []
 
-    def _section_range_ids(self, paper: dict[str, Any], key: str) -> list[str]:
+    def _section_range_ids(self, paper: Paper, key: str) -> list[str]:
         match = SECTION_RANGE_RE.match(key)
         if not match:
             return []
-        ordered_ids = [
-            str(section.get("section_id", "") or "").strip()
-            for section, _ in self._walk_sections(paper)
-            if str(section.get("section_id", "") or "").strip()
-        ]
+        ordered_ids = [section_id.strip() for _, _, section_id in self._walk_sections(paper) if section_id.strip()]
         return self._expand_section_range(match.group("start"), match.group("end"), ordered_ids)
 
-    def _section_matches(self, section: dict[str, Any], key: str) -> bool:
-        section_id = str(section.get("section_id", "") or "")
-        title = str(section.get("title", "") or "")
-        return key in {section_id, title, f"Section {section_id}"}
+    def _section_matches(self, section: Section, section_id: str, key: str) -> bool:
+        return key in {section_id, section.name, f"Section {section_id}"}
 
-    def _scope_sections(self, paper: dict[str, Any], key: str) -> list[tuple[dict[str, Any], list[str]]]:
+    def _scope_sections(self, paper: Paper, key: str) -> list[tuple[Section, list[str], str]]:
         if key == "document":
             return self._root_sections(paper)
         if key in {"Limitation", "Appendix"}:
-            group_name = "limitation" if key == "Limitation" else "appendix"
-            group = paper.get(group_name, [])
-            group = group if isinstance(group, list) else [group]
-            scoped = [(section, [section.get("title", "") or key]) for section in group if isinstance(section, dict)]
+            group = paper.limitation if key == "Limitation" else paper.appendix
+            scoped = [(section, [section.name or key], key) for section in group]
             if key == "Appendix":
                 scoped.extend(
                     item for item in self._walk_sections(paper, groups=("sections",))
-                    if str(item[0].get("title", "") or "").strip().casefold() == "appendix"
+                    if item[0].name.strip().casefold() == "appendix"
                 )
             deduped = []
             seen = set()
-            for section, title_path in scoped:
+            for section, title_path, section_id in scoped:
                 marker = id(section)
                 if marker not in seen:
-                    deduped.append((section, title_path))
+                    deduped.append((section, title_path, section_id))
                     seen.add(marker)
             return deduped
         range_ids = self._section_range_ids(paper, key)
         if range_ids:
-            return [item for item in self._walk_sections(paper) if str(item[0].get("section_id", "") or "").strip() in range_ids]
-        return [item for item in self._walk_sections(paper) if self._section_matches(item[0], key)]
+            return [item for item in self._walk_sections(paper) if item[2].strip() in range_ids]
+        return [item for item in self._walk_sections(paper) if self._section_matches(item[0], item[2], key)]
 
-    def _paragraph_sentences(self, paragraph):
-        if isinstance(paragraph, dict):
-            return paragraph.get("sentences", [])
-        return paragraph if isinstance(paragraph, list) else []
-
-    def _section_location(self, section: dict[str, Any], title_path: list[str]) -> str:
-        section_id = str(section.get("section_id", "") or "").strip()
+    def _section_location(self, section: Section, title_path: list[str], section_id: str) -> str:
+        section_id = section_id.strip()
         title = " > ".join(part for part in title_path if part)
         return " ".join(part for part in [section_id, title] if part).strip() or "document"
 
-    def _sentences_in_sections(self, sections: list[tuple[dict[str, Any], list[str]]]) -> list[dict[str, Any]]:
+    def _sentences_in_sections(self, sections: list[tuple[Section, list[str], str]]) -> list[dict[str, Any]]:
         sentences = []
         position = 0
 
-        def collect(section: dict[str, Any], title_path: list[str]):
+        def collect(section: Section, title_path: list[str], section_id: str):
             nonlocal position
-            location = self._section_location(section, title_path)
-            for paragraph in section.get("paragraphs", []) or []:
-                for sentence in self._paragraph_sentences(paragraph):
-                    if isinstance(sentence, dict):
-                        position += 1
-                        sentences.append({
-                            "sentence": sentence,
-                            "text": sentence.get("caption") or sentence.get("text", ""),
-                            "label": sentence.get("label"),
-                            "environment_type": sentence.get("environment_type", "text"),
-                            "section_location": location,
-                            "position": position,
-                        })
-            for child in section.get("sections", []) or []:
-                if isinstance(child, dict):
-                    collect(child, [*title_path, child.get("title", "")])
+            location = self._section_location(section, title_path, section_id)
+            for paragraph in section.paragraphs:
+                for sentence in paragraph.sentences:
+                    position += 1
+                    sentences.append({
+                        "sentence": sentence,
+                        "text": sentence.caption or sentence.text,
+                        "label": sentence.label,
+                        "environment_type": sentence.environment_type,
+                        "section_location": location,
+                        "position": position,
+                    })
+            for index, child in enumerate(section.children):
+                child_id = f"{section_id}.{index + 1}" if section_id else str(index + 1)
+                collect(child, [*title_path, child.name], child_id)
 
-        for section, title_path in sections:
-            collect(section, title_path)
+        for section, title_path, section_id in sections:
+            collect(section, title_path, section_id)
         return sentences
-
     def _all_sentence_items(self, paper: dict[str, Any]) -> list[dict[str, Any]]:
         return self._sentences_in_sections(self._root_sections(paper))
 
@@ -206,38 +175,72 @@ class ContributionConsistency:
         if not original_sentence:
             return items
         for index, item in enumerate(items):
-            if item["sentence"].get("text", "").strip() == original_sentence:
+            if item["sentence"].text.strip() == original_sentence:
                 return items[index + 1:]
         return []
 
-    def _title_items(self, paper: dict[str, Any]) -> list[str]:
-        titles = []
-        for section, _ in self._walk_sections(paper):
-            title = str(section.get("title", "") or "").strip()
-            if title:
-                titles.append(title)
-        return titles
+    def _query_strings(self, query: str | list[str] | None) -> list[str]:
+        if isinstance(query, list):
+            return [str(item or "").casefold() for item in query if str(item or "").strip()]
+        return [str(query or "").casefold()] if str(query or "").strip() else []
 
-    def _topic_items(self, paper: dict[str, Any]) -> list[str]:
-        items = []
-        for section, title_path in self._walk_sections(paper):
-            location = self._section_location(section, title_path)
-            parsed = section.get("parsed_contents") or {}
+    def _object_is_query_only(self, name: str, queries: list[str]) -> bool:
+        words = re.findall(r"[A-Za-z0-9]+", name.casefold())
+        return bool(words and queries and all(any(word in query for query in queries) for word in words))
+
+    def _section_outline_label(self, section: Section, section_id: str) -> str:
+        section_id = section_id.strip()
+        prefix = f"Section {section_id}" if re.match(r"^\d+(?:\.\d+)*$", section_id) else section_id
+        return " ".join(part for part in [prefix, section.name.strip()] if part).strip() or "document"
+
+    def _section_topic_object_outline(
+        self,
+        paper: Paper,
+        query: str | list[str] | None = None,
+    ) -> tuple[str, dict[str, set[str]]]:
+        queries = self._query_strings(query)
+        lines = []
+        evidence_items: dict[str, set[str]] = {"section": set(), "topic": set(), "object": set()}
+        for section, _title_path, section_id in self._walk_sections(paper):
+            section_label = self._section_outline_label(section, section_id)
+            lines.append(f"- {section_label}")
+            evidence_items["section"].add(section_label)
+            parsed = section.parsed_contents or {}
             if not isinstance(parsed, dict):
                 continue
-            for topic in parsed.get("topics", []) or []:
-                if topic:
-                    items.append(f"{location}: topic: {topic}")
+            topics = list(dict.fromkeys(str(topic).strip() for topic in parsed.get("topics", []) or [] if str(topic).strip()))
+            objects: list[tuple[str, list[str]]] = []
             for obj in parsed.get("objects", []) or []:
                 if not isinstance(obj, dict):
                     continue
                 name = str(obj.get("name", "") or "").strip()
-                obj_topics = [topic for topic in obj.get("topics", []) or [] if topic]
-                if name and obj_topics:
-                    items.append(f"{location}: object: {name}; topics: {', '.join(obj_topics)}")
-                elif name:
-                    items.append(f"{location}: object: {name}")
-        return list(dict.fromkeys(items))
+                if not name or self._object_is_query_only(name, queries):
+                    continue
+                obj_topics = [str(topic).strip() for topic in obj.get("topics", []) or [] if str(topic).strip()]
+                objects.append((name, obj_topics))
+            deduped_objects = []
+            seen_object_names = set()
+            for name, obj_topics in objects:
+                if name in seen_object_names:
+                    continue
+                deduped_objects.append((name, obj_topics))
+                seen_object_names.add(name)
+            objects = deduped_objects
+            assigned_objects = set()
+            for topic in topics:
+                lines.append(f"  - Topic: {topic}")
+                evidence_items["topic"].add(topic)
+                for name, obj_topics in objects:
+                    if topic in obj_topics:
+                        lines.append(f"    - Object: {name}")
+                        evidence_items["object"].add(name)
+                        assigned_objects.add(name)
+            for name, obj_topics in objects:
+                if name in assigned_objects:
+                    continue
+                lines.append(f"  - Object: {name}")
+                evidence_items["object"].add(name)
+        return "\n".join(lines) if lines else "- None", evidence_items
 
     def _format_bullets(self, items: list[str]) -> str:
         return "\n".join(f"- {item}" for item in items) if items else "- None"
@@ -258,7 +261,7 @@ class ContributionConsistency:
                 continue
             if item.get("label") in labels:
                 candidates.append(f"[{item['section_location']}] {text}")
-            elif "COMPARISON" in labels and item.get("environment_type") in GRAPH_ENVIRONMENT_TYPES:
+            elif "CONTRAST" in labels and item.get("environment_type") in GRAPH_ENVIRONMENT_TYPES:
                 candidates.append(f"[{item['section_location']}] {text}")
         return candidates
 
@@ -276,15 +279,15 @@ class ContributionConsistency:
 
     async def _check_claim(
         self,
-        paper: dict[str, Any],
+        paper: Paper,
         section_key: str,
         claim: dict[str, Any],
-        titles: list[str],
-        topics: list[str],
+        section_outline: str,
+        evidence_items: dict[str, set[str]],
     ) -> dict[str, Any]:
         claim_text = claim["target"]
         original_sentence = claim.get("original_contribution_sentence", "")
-        if str(section_key).startswith("Figure "):
+        if str(section_key).startswith("Fig") or str(section_key).startswith("Tab") :
             return {
                 "section": section_key,
                 "type": claim["type"],
@@ -306,13 +309,11 @@ class ContributionConsistency:
         inputs = {
             "claim_text": claim_text,
             "original_contribution_sentence": original_sentence,
-            "full_list_of_titles_in_order": self._format_bullets(titles),
-            "full_list_of_section_subtopics_and_research_objects": self._format_bullets(topics),
+            "full_list_of_section_subtopics_and_research_objects": section_outline,
             "list_of_reranked_candidate_sentences_with_section_location": self._format_bullets(sentence_candidates),
             "K": self.rerank_top_k,
             "evidence_items": {
-                "title": set(titles),
-                "topic": set(topics),
+                **evidence_items,
                 "sentence": set(sentence_candidates),
             },
         }
@@ -329,15 +330,44 @@ class ContributionConsistency:
             "candidate_sentences": sentence_candidates,
         }
 
-    async def __call__(self, paper: dict[str, Any]):
-        titles = self._title_items(paper)
-        topics = self._topic_items(paper)
+    async def _check_claim_or_error(
+        self,
+        paper: Paper,
+        section_key: str,
+        claim: dict[str, Any],
+        section_outline: str,
+        evidence_items: dict[str, set[str]],
+    ) -> dict[str, Any]:
+        try:
+            return await self._check_claim(paper, section_key, claim, section_outline, evidence_items)
+        except Exception as exc:
+            logging.exception("Contribution consistency check failed: section=%s target=%s", section_key, claim.get("target"))
+            return {
+                "section": section_key,
+                "type": claim.get("type", ""),
+                "target": claim.get("target", ""),
+                "original_contribution_sentence": claim.get("original_contribution_sentence", ""),
+                "consistent": True,
+                "check_failed": True,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "supporting_evidence": [],
+                "reasoning": "",
+                "candidate_sentences": [],
+            }
+
+    async def __call__(self, paper: Paper, query: str | list[str] | None = None):
+        section_outline, evidence_items = self._section_topic_object_outline(paper, query)
         tasks = []
-        for key, claims in paper["contribution_claims"].items():
+        for key, claims in paper.contribution_claims.items():
             for claim in claims:
-                tasks.append(asyncio.create_task(self._check_claim(paper, key, claim, titles, topics)))
+                tasks.append(asyncio.create_task(
+                    self._check_claim_or_error(paper, key, claim, section_outline, evidence_items)
+                ))
         checks = await asyncio.gather(*tasks)
+        error_count = sum(1 for check in checks if check.get("check_failed"))
         return {
             "checks": checks,
-            "consistent": all(check["consistent"] for check in checks),
+            "consistent": error_count == 0 and all(check["consistent"] for check in checks),
+            "error_count": error_count,
         }

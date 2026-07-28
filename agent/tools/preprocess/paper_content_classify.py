@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from ..utility.paper_elements import Paper
+
 from ..utility.tool_config import ToolConfig
 from .content_parser import ContentParser
 from .contribution_classify import ContributionClassification
@@ -20,13 +22,27 @@ class PaperContentClassification:
         self.content_parser = ContentParser(config)
         self.find_all_entities = FindAllEntities(config)
 
-    async def __call__(self, query: str, paper_content: dict[str, Any]) -> dict[str, Any]:
-        paper = await self.sentence_classification(paper_content)
-        paper = await self.section_classification(paper)
-        paper = await self.content_parser(paper)
-        paper, contribution_claims = await self.contribution_classification(paper)
-        paper["contribution_claims"] = contribution_claims
-        paper = await self.find_all_entities(query, paper)
+    async def run_steps(self, query: str, paper: Paper, steps: list[str]) -> Paper:
+        for step in steps:
+            if step == "sentence":
+                paper = await self.sentence_classification(paper)
+            elif step == "section":
+                paper = await self.section_classification(paper)
+            elif step == "content":
+                paper = await self.content_parser(paper)
+            elif step == "contribution":
+                paper, contribution_claims = await self.contribution_classification(paper)
+                paper.contribution_claims = contribution_claims
+            elif step == "entities":
+                paper = await self.find_all_entities(query, paper)
+            else:
+                raise ValueError(f"Unknown paper content classification step: {step}")
         return paper
 
+    async def __call__(self, query: str, paper_content: Paper) -> Paper:
+        return await self.run_steps(
+            query,
+            paper_content,
+            ["sentence", "section", "content", "contribution", "entities"],
+        )
 

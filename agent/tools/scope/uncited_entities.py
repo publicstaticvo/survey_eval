@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import re
@@ -10,14 +10,19 @@ from ..prompts import JUDGE_UNCITED_BATCH, JUDGE_UNCITED_BATCH_ITEM_SCHEMA
 from ..utility.citation_utils import citation_keys
 from ..utility.evidence_check import EvidenceCheck
 from ..utility.llmclient import AsyncChat
+from ..utility.paper_elements import Paper, Paragraph
 from ..utility.academic_engine import get_academic_engine
 from ..utility.tool_config import ToolConfig
-from .utils import extract_json
+from ..utility.utils import extract_json
+from ..utility.content_walk import iter_paragraphs
 
 
 class JudgeUncitedBatchClient(AsyncChat):
     PROMPT = JUDGE_UNCITED_BATCH
 
+    def __init__(self, config: ToolConfig):
+        super().__init__(config.llm_server_info, config.sampling_params)
+        self.check = EvidenceCheck(config)
     def _candidate_text(self, papers: list[dict[str, Any]]) -> str:
         blocks = []
         for idx, paper in enumerate(papers, start=1):
@@ -52,7 +57,7 @@ class JudgeUncitedBatchClient(AsyncChat):
         jsonschema.validate(result, schema)
         expected_indexes = set(range(1, candidate_count + 1))
         actual_indexes = {item["paper_index"] for item in result["results"]}
-        assert actual_indexes == expected_indexes
+        assert actual_indexes == expected_indexes, f"Indexes mismatch: {actual_indexes}, {expected_indexes}"
         papers = context["candidate_papers"]
         yes_indexes = {item["paper_index"] for item in result["results"] if item["decision"] == "yes"}
         assert (result["most_likely_source"] is None) == (not yes_indexes)
@@ -61,19 +66,21 @@ class JudgeUncitedBatchClient(AsyncChat):
         for item in result["results"]:
             evidence = item["evidence"]
             if item["decision"] == "yes":
-                assert evidence
+                assert evidence, "Yes decision with no evidence"
             if evidence:
                 paper = papers[item["paper_index"] - 1]
                 source_text = f"{paper.get('title', '')}\n{paper.get('abstract', '')}"
-                assert evidence.lower() in source_text.lower(), "Evidence invalid"
+                verified, _ = self.check.verify([evidence], source_text)
+                assert verified, f"Evidence invalid: {evidence}"
         return result
 
     def _organize_inputs(self, inputs):
         papers = inputs["candidate_papers"]
-        return self.PROMPT.format(
+        prompt = self.PROMPT.format(
             entity_name=inputs["entity_name"],
             candidate_papers=self._candidate_text(papers),
-        ), {
+        )
+        return prompt, {
             "candidate_count": len(papers),
             "candidate_papers": papers,
         }
@@ -91,31 +98,13 @@ class UncitedEntities:
         #     config.sampling_params,
         #     evidence_check=self.evidence_check,
         # )
-        self.judge_uncited_batch = JudgeUncitedBatchClient(config.llm_server_info, config.sampling_params)
+        self.judge_uncited_batch = JudgeUncitedBatchClient(config)
         self._proposed_cache: dict[str, list[dict[str, str]]] = {}
 
-    def _iter_paragraphs(self, paper: dict[str, Any]):
-        def walk(node: Any):
-            if isinstance(node, dict):
-                if "sentences" in node:
-                    yield node
-                    return
-                for paragraph in node.get("paragraphs", []) or []:
-                    if isinstance(paragraph, dict):
-                        yield paragraph
-                    elif isinstance(paragraph, list):
-                        yield {"sentences": paragraph}
-                for section in node.get("sections", []) or []:
-                    yield from walk(section)
-
-        # Intentionally skip abstract: uncited-entity checking is body-only.
-        yield from walk(paper)
-
-    def _paragraph_citation_keys(self, paragraph: dict[str, Any]) -> list[str]:
+    def _paragraph_citation_keys(self, paragraph: Paragraph) -> list[str]:
         keys = []
-        for sentence in paragraph.get("sentences", []) or []:
-            if isinstance(sentence, dict):
-                keys.extend(citation_keys(sentence.get("citations")))
+        for sentence in paragraph.sentences:
+            keys.extend(citation_keys(sentence.citations))
         return list(dict.fromkeys(keys))
 
     def _metadata_sources(self, info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -235,7 +224,7 @@ class UncitedEntities:
                 names.append(str(alternative).strip())
         return list(dict.fromkeys(self._normalize_entity_name(name) for name in names if name))
 
-    def _entity_groups(self, paragraphs: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[int, list[str]]]:
+    def _entity_groups(self, paragraphs: list[Paragraph]) -> tuple[dict[str, dict[str, Any]], dict[int, list[str]]]:
         parent: dict[str, str] = {}
         labels: dict[str, str] = {}
         paragraph_keys: dict[int, list[str]] = {}
@@ -254,7 +243,7 @@ class UncitedEntities:
         entity_records = []
         for paragraph in paragraphs:
             keys = []
-            for entity in paragraph.get("entities", []) or []:
+            for entity in paragraph.entities:
                 variants = self._variant_names(entity)
                 if not variants:
                     continue
@@ -293,7 +282,7 @@ class UncitedEntities:
     async def _paragraph_cites_group(
         self,
         group: dict[str, Any],
-        paragraph: dict[str, Any],
+        paragraph: Paragraph,
         paper_content_map: dict[str, Any] | None,
     ) -> bool:
         papers = self._paper_sources_for_keys(self._paragraph_citation_keys(paragraph), paper_content_map)
@@ -351,13 +340,12 @@ class UncitedEntities:
 
     async def __call__(
         self,
-        paper: dict[str, Any],
+        paper: Paper,
         cited_papers: list[dict[str, Any]] | None = None,
         paper_content_map: dict[str, Any] | None = None,
-        literature_pool: Any = None,
     ) -> dict[str, Any]:
         cited_papers = cited_papers or self._all_cited_papers(paper_content_map)
-        paragraphs = list(self._iter_paragraphs(paper))
+        paragraphs = list(iter_paragraphs(paper, include_appendix=True))
         groups, paragraph_group_keys = self._entity_groups(paragraphs)
 
         for paragraph in paragraphs:

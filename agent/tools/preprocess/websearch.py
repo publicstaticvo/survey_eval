@@ -3,13 +3,13 @@ from typing import List, Dict, Any
 from urllib.parse import urlparse
 from trafilatura import extract
 from ..prompts import WEBSEARCH_FILTER_PROMPT
-from ..utility.grobidpdf.paper_parser import PaperParser
+from ..utility.xml_parser import XMLPaperParser
 from ..utility.llmclient import AsyncChat
 from ..utility.paper_download import parse_with_grobid, download_paper_to_memory
 from ..utility.request_utils import RateLimit, async_request_template, HEADERS, SessionManager
 from ..utility.sbert_client import SentenceTransformerClient
 from ..utility.tool_config import ToolConfig
-from .utils import cosine_similarity_pair, extract_json
+from ..utility.utils import cosine_similarity_pair, extract_json
 
 
 def llm_should_retry(exception: BaseException) -> bool:
@@ -31,7 +31,8 @@ class WebSearchFilterLLM(AsyncChat):
             f"{i}. title={candidate.get('title', '')}\n   url={candidate.get('link', '')}\n   snippet={candidate.get('snippet', '')}"
             for i, candidate in enumerate(inputs["candidates"], 1)
         )
-        return self.PROMPT.format(title=inputs["title"], candidates=candidates_str), {"candidates": inputs["candidates"]}
+        prompt = self.PROMPT.format(title=inputs["title"], candidates=candidates_str)
+        return prompt, {"candidates": inputs["candidates"]}
 
 
 class WebSearchFallback:
@@ -55,7 +56,7 @@ class WebSearchFallback:
         self.url = config.websearch_url
         self.key = config.websearch_apikey
         self.grobid = config.grobid_url
-        self.paper_parser = PaperParser()
+        self.paper_parser = XMLPaperParser()
 
     def _title_similarity(self, query: str, result: str) -> float:
         embeddings = self.sentence_transformer.embed([query or "", result or ""])

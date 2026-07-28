@@ -10,7 +10,7 @@ import glob
 import io
 import contextlib
 import logging
-from typing import List, Any
+from typing import List, Any, Union, Optional
 from pylatexenc.latex2text import LatexNodes2Text
 from pylatexenc.latexwalker import (
     LatexWalker,
@@ -20,7 +20,13 @@ from pylatexenc.latexwalker import (
     LatexCommentNode,
     LatexSpecialsNode,
 )
-from .paper_elements import *
+try:
+    from ..paper_elements import *
+except ImportError:
+    from pathlib import Path
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from paper_elements import *
 from .constants import *
 from .bib_parser import parse_bbl_file, parse_bib_file, detect_encoding
 
@@ -421,7 +427,7 @@ class LatexPaperParser:
         walk(nodes)
         return list(dict.fromkeys(citations))
 
-    def _paragraph_name_from_macro(self, node) -> LatexParagraphName:
+    def _paragraph_name_from_macro(self, node) -> ParagraphName:
         title = self._extract_title(node)
         citations = []
         if node.nodeargd and node.nodeargd.argnlist:
@@ -431,13 +437,13 @@ class LatexPaperParser:
         citations = list(dict.fromkeys(citations))
         title = re.sub(r"<cit\.>", " ", title)
         title = re.sub(r"\s+", " ", title).strip()
-        return LatexParagraphName(text=title, citations=citations)
+        return ParagraphName(text=title, citations=citations)
 
     def _is_limitation_title(self, title: str) -> bool:
         normalized = re.sub(r"[^a-z]+", " ", title.lower()).strip()
         return normalized in {"limitation", "limitations"}
 
-    def _split_special_sections(self, sections: list[LatexSection]) -> tuple[list[LatexSection], list[LatexSection], list[LatexSection]]:
+    def _split_special_sections(self, sections: list[Section]) -> tuple[list[Section], list[Section], list[Section]]:
         body, limitation, appendix = [], [], []
         in_appendix = False
         for section in sections:
@@ -471,7 +477,7 @@ class LatexPaperParser:
             for logger, level in zip(loggers, previous_levels):
                 logger.setLevel(level)
    
-    def parse(self, source: str | os.PathLike, base_path: str | os.PathLike | None = None) -> Optional[LatexPaper]:
+    def parse(self, source: str | os.PathLike, base_path: str | os.PathLike | None = None) -> Optional[Paper]:
         """
         Single pass parse Latex content into a Paper object
         
@@ -480,7 +486,7 @@ class LatexPaperParser:
         """
         self._prepare_source(source, base_path=base_path)
         self._load_bibliography_entries()
-        paper = LatexPaper()
+        paper = Paper()
         
         has_document = False
         nodelist, _, _ = self._get_latex_nodes_quiet()
@@ -500,17 +506,17 @@ class LatexPaperParser:
             
             elif isinstance(node, LatexEnvironmentNode):
                 if node.environmentname == 'abstract':
-                    paper.abstract = LatexSubSubSection(name="Abstract")
+                    paper.abstract = Section(name="Abstract")
                     self._create_paragraphs_from_nodes(node.nodelist, paper.abstract)
 
                 elif node.environmentname == 'document':
                     has_document = True
-                    paper.sections, paper.limitation, paper.appendix, title, author, abstract = self._parse_sections(node.nodelist)
-                    if not paper.sections:
-                        paper.sections = self._parse_sections_fallback(node.nodelist)
-                    if not paper.sections:
-                        paper.sections = self._parse_sections_regex_fallback()
-                    paper.sections, extra_limitation, extra_appendix = self._split_special_sections(paper.sections)
+                    paper.children, paper.limitation, paper.appendix, title, author, abstract = self._parse_sections(node.nodelist)
+                    if not paper.children:
+                        paper.children = self._parse_sections_fallback(node.nodelist)
+                    if not paper.children:
+                        paper.children = self._parse_sections_regex_fallback()
+                    paper.children, extra_limitation, extra_appendix = self._split_special_sections(paper.children)
                     paper.limitation.extend(extra_limitation)
                     paper.appendix.extend(extra_appendix)
                     if title is not None: paper.title = title
@@ -523,13 +529,13 @@ class LatexPaperParser:
             paper.author = self._extract_preamble_macro_text("author")
 
         if not has_document:
-            paper.sections = self._parse_sections_regex_fallback()
-            paper.sections, paper.limitation, paper.appendix = self._split_special_sections(paper.sections)
-            if not paper.sections:
+            paper.children = self._parse_sections_regex_fallback()
+            paper.children, paper.limitation, paper.appendix = self._split_special_sections(paper.children)
+            if not paper.children:
                 return
         
         paper.all_citation_keys = self._extract_all_citation_keys()
-        paper.bibliography = self._filter_bibliography_entries(paper.all_citation_keys)
+        paper.references = self._filter_bibliography_entries(paper.all_citation_keys)
         self.unresolved_citation_keys = [
             key for key in paper.all_citation_keys if key not in self.bibliography_entries
         ]
@@ -556,7 +562,7 @@ class LatexPaperParser:
         """
         return self.bibliography_entries.get(citation_key)
     
-    def _parse_sections(self, nodes) -> tuple[list[LatexSection], list[LatexSection], list[LatexSection], str | None, str | None, Any]:
+    def _parse_sections(self, nodes) -> tuple[list[Section], list[Section], list[Section], str | None, str | None, Any]:
         """Parse nodes into Section objects"""
         title, author, sections, limitation, appendix = None, None, [], [], []
         abstract = None
@@ -572,7 +578,7 @@ class LatexPaperParser:
                     i += 1
                 elif self._is_macro(node, {'section'}):
                     section_name = self._extract_title(node)
-                    section = LatexSection(name=section_name)
+                    section = Section(name=section_name)
                     
                     # Collect content until next section
                     section_content, j = self._collect_nodes_until(nodes, i + 1, {'section', 'appendix'})
@@ -603,7 +609,7 @@ class LatexPaperParser:
                 i += 1
                 if isinstance(node, LatexEnvironmentNode): 
                     if node.environmentname == "abstract":
-                        abstract = LatexSubSubSection(name="Abstract")
+                        abstract = Section(name="Abstract")
                         self._create_paragraphs_from_nodes(node.nodelist, abstract)
                     elif node.environmentname == "appendices":
                         appendix_sections, _, nested_appendix, title_back, author_back, abstract_back = self._parse_sections(
@@ -626,7 +632,7 @@ class LatexPaperParser:
         
         return sections, limitation, appendix, title, author, abstract
 
-    def _parse_sections_fallback(self, nodes) -> List[LatexSection]:
+    def _parse_sections_fallback(self, nodes) -> List[Section]:
         """Fallback parser for TeX sources that expose only lower-level headings."""
         nodes = self._safe_nodes(nodes)
         heading_names = {'section'}
@@ -642,7 +648,7 @@ class LatexPaperParser:
         while i < len(nodes):
             node = nodes[i]
             if self._is_macro(node, heading_names):
-                section = LatexSection(name=self._extract_title(node))
+                section = Section(name=self._extract_title(node))
                 section_content, j = self._collect_nodes_until(nodes, i + 1, heading_names)
                 self._parse_section_content(section_content, section)
                 sections.append(section)
@@ -656,7 +662,7 @@ class LatexPaperParser:
             print(f"Latex fallback parser recovered {len(sections)} sections.")
         return sections
 
-    def _parse_sections_regex_fallback(self) -> List[LatexSection]:
+    def _parse_sections_regex_fallback(self) -> List[Section]:
         """Last-resort heading parser that keeps citations and heading hierarchy."""
         content = self.latex_content
         doc_match = re.search(r"\\begin\s*\{document\}(.+?)\\end\s*\{document\}", content, flags=re.DOTALL)
@@ -721,18 +727,18 @@ class LatexPaperParser:
 
         def build(node):
             if node["level"] == "section":
-                section = LatexSection(name=node["title"])
+                section = Section(name=node["title"])
                 self._append_raw_content_paragraphs(node["content"], section)
                 for child in node["children"]:
                     section.add_child(build(child))
                 return section
             if node["level"] == "subsection":
-                subsection = LatexSubSection(name=node["title"])
+                subsection = Section(name=node["title"])
                 self._append_raw_content_paragraphs(node["content"], subsection)
                 for child in node["children"]:
                     subsection.add_child(build(child))
                 return subsection
-            subsubsection = LatexSubSubSection(name=node["title"])
+            subsubsection = Section(name=node["title"])
             self._append_raw_content_paragraphs(node["content"], subsubsection)
             return subsubsection
 
@@ -786,7 +792,7 @@ class LatexPaperParser:
         for part in parts:
             paragraph = self._build_fallback_paragraph(part)
             if paragraph and paragraph.sentences:
-                parent.add_child(paragraph)
+                parent.add_paragraph(paragraph)
 
     def _remove_heading_commands(self, content: str) -> str:
         content = re.sub(
@@ -805,7 +811,7 @@ class LatexPaperParser:
     def _remove_reference_macros(self, content: str) -> str:
         return re.sub(r"\\(?:bibstyle|bibliographystyle|bibliography|nocite)\s*\{[^{}]*\}", " ", content)
 
-    def _build_fallback_paragraph(self, raw_content: str) -> LatexParagraph | None:
+    def _build_fallback_paragraph(self, raw_content: str) -> Paragraph | None:
         raw_content = self._remove_reference_commands(raw_content)
         raw_content = re.sub(r"\\label\s*\{[^{}]*\}", "", raw_content)
         citation_markers = []
@@ -826,7 +832,7 @@ class LatexPaperParser:
         if not text:
             return None
 
-        paragraph = LatexParagraph()
+        paragraph = Paragraph()
         for sentence_text in self._split_into_sentences(text):
             sentence_keys = []
             for marker_info in citation_markers:
@@ -838,7 +844,7 @@ class LatexPaperParser:
             sentence_text = re.sub(r"\s+([,.;:!?])", r"\1", sentence_text)
             sentence_keys = list(dict.fromkeys(sentence_keys))
             if sentence_text:
-                paragraph.add_sentence(LatexSentence(text=sentence_text, citations=sentence_keys))
+                paragraph.add_sentence(Sentence(text=sentence_text, citations=sentence_keys))
         return paragraph if paragraph.sentences else None
 
     def _clean_fallback_latex_text(self, raw_content: str) -> str:
@@ -878,7 +884,7 @@ class LatexPaperParser:
         except Exception:
             return []
     
-    def _parse_section_content(self, nodes, parent_section: LatexSection):
+    def _parse_section_content(self, nodes, parent_section: Section):
         """Parse content of a section (subsections and paragraphs)"""
         nodes = self._safe_nodes(nodes)
         i = 0
@@ -895,7 +901,7 @@ class LatexPaperParser:
                 
                 # Parse subsection
                 subsection_name = self._extract_title(node)
-                subsection = LatexSubSection(name=subsection_name)
+                subsection = Section(name=subsection_name)
                 
                 # Collect subsection content
                 subsection_content, j = self._collect_nodes_until(nodes, i + 1, {'subsection', 'section'})
@@ -922,7 +928,7 @@ class LatexPaperParser:
         if current_text_nodes:
             self._create_paragraphs_from_nodes(current_text_nodes, parent_section)
     
-    def _parse_subsection_content(self, nodes, parent_subsection: LatexSubSection):
+    def _parse_subsection_content(self, nodes, parent_subsection: Section):
         """Parse content of a subsection (subsubsections and paragraphs)"""
         nodes = self._safe_nodes(nodes)
         i = 0
@@ -945,7 +951,7 @@ class LatexPaperParser:
                 
                 # Parse subsubsection content (paragraphs)
                 # self._parse_subsubsection_content(subsubsection_content, subsubsection)
-                subsubsection = LatexSubSubSection(name=subsubsection_name)
+                subsubsection = Section(name=subsubsection_name)
                 self._create_paragraphs_from_nodes(subsubsection_content, subsubsection)
                 parent_subsection.add_child(subsubsection)
                 i = j
@@ -957,24 +963,24 @@ class LatexPaperParser:
         if current_text_nodes:
             self._create_paragraphs_from_nodes(current_text_nodes, parent_subsection)
     
-    def _create_paragraphs_from_nodes(self, nodes, parent) -> List[LatexParagraph]:
+    def _create_paragraphs_from_nodes(self, nodes, parent) -> List[Paragraph]:
         """Create paragraph objects from text nodes, splitting by \n\n"""
         nodes = self._safe_nodes(nodes)
         sentences = self._parse_content_with_environments(nodes)
         paragraphs = self._group_contents_into_paragraphs(sentences)   
         for paragraph in paragraphs:
-            parent.add_child(paragraph)     
+            parent.add_paragraph(paragraph)     
         return paragraphs
     
-    def _parse_content_with_environments(self, nodes) -> List[Union[LatexSentence, LatexEnvironment]]:
+    def _parse_content_with_environments(self, nodes) -> List[Sentence]:
         """
-        Parse nodes into a list of Sentences and LatexEnvironment objects
+        Parse nodes into a list of Sentences
         
         Args:
             nodes: List of LaTeX nodes
             
         Returns:
-            list: List of Sentence and LatexEnvironment objects
+            list: List of Sentence objects
         """
         content_items, accumulated_nodes = [], []
         nodes = self._safe_nodes(nodes)
@@ -997,10 +1003,10 @@ class LatexPaperParser:
                 env_content = self._extract_raw_environment(node)
                 env_citations = self._extract_citations_from_environment(node)
                 env_caption = self._extract_environment_caption(node)
-                latex_env = LatexEnvironment(
-                    environment_name=node.environmentname, 
+                latex_env = Sentence(
                     text=env_content,
                     citations=env_citations,
+                    environment_type=node.environmentname,
                     caption=env_caption,
                 )
                 content_items.append(latex_env)
@@ -1097,7 +1103,7 @@ class LatexPaperParser:
             return ""
         return re.sub(r"\s+", " ", self.converter.latex_to_text(body)).strip()
 
-    def _parse_text_with_citations_and_breaks(self, nodes) -> List[Union[LatexSentence, dict]]:
+    def _parse_text_with_citations_and_breaks(self, nodes) -> List[Union[Sentence, dict]]:
         r"""
         Parse text nodes into sentences with paragraph break detection
         Returns list of Sentence objects and paragraph break markers
@@ -1135,7 +1141,7 @@ class LatexPaperParser:
 
         return sentences
 
-    def _parse_sentence_segments(self, segments) -> List[LatexSentence]:
+    def _parse_sentence_segments(self, segments) -> List[Sentence]:
         """Parse one LaTeX paragraph worth of text/citation segments into sentences."""
         full_text = ""
         citation_markers = []
@@ -1179,7 +1185,7 @@ class LatexPaperParser:
             sentence_text = self._normalize_rendered_citation_punctuation(sentence_text)
             if not sentence_text and not citation_map:
                 continue
-            sentence = LatexSentence(text=sentence_text, citations=citation_map)
+            sentence = Sentence(text=sentence_text, citations=citation_map)
             sentences.append(sentence)
 
         return sentences
@@ -1285,13 +1291,13 @@ class LatexPaperParser:
         
         return segments
  
-    def _group_contents_into_paragraphs(self, content_items) -> List[LatexParagraph]:
+    def _group_contents_into_paragraphs(self, content_items) -> List[Paragraph]:
         """
         Group content items (sentences and environments) into paragraphs
         Split by paragraph break markers
         
         Args:
-            content_items: List of Sentence, LatexEnvironment objects, and break markers
+            content_items: List of Sentence objects and break markers
             
         Returns:
             list: List of Paragraph objects
@@ -1300,30 +1306,30 @@ class LatexPaperParser:
             return []
         
         paragraphs = []
-        current_paragraph = LatexParagraph()
+        current_paragraph = Paragraph()
         
         for item in content_items:
             if isinstance(item, dict) and item.get('paragraph_break'):
                 # Paragraph break marker - finish current paragraph and start new one
                 if current_paragraph.sentences:
                     paragraphs.append(current_paragraph)
-                    current_paragraph = LatexParagraph()
+                    current_paragraph = Paragraph()
                 
-            elif isinstance(item, LatexEnvironment) and item.environment_name in GRAPH_ENVIRONMENTS:
+            elif isinstance(item, Sentence) and item.environment_type in GRAPH_ENVIRONMENTS:
                 if current_paragraph.sentences:
                     paragraphs.append(current_paragraph)
-                    current_paragraph = LatexParagraph()
+                    current_paragraph = Paragraph()
                 current_paragraph.add_sentence(item)
                 paragraphs.append(current_paragraph)
-                current_paragraph = LatexParagraph()
+                current_paragraph = Paragraph()
 
-            elif isinstance(item, LatexParagraphName):
+            elif isinstance(item, ParagraphName):
                 if current_paragraph.sentences:
                     paragraphs.append(current_paragraph)
-                    current_paragraph = LatexParagraph()
+                    current_paragraph = Paragraph()
                 current_paragraph.add_sentence(item)
                 
-            elif isinstance(item, (LatexSentence, LatexEnvironment)):
+            elif isinstance(item, Sentence):
                 current_paragraph.add_sentence(item)
         
         # Add final paragraph if not empty
@@ -1389,7 +1395,7 @@ class LatexPaperParser:
             bool: True if it looks like a citation key
         """
         # Citation keys typically:
-        # - Don't start with special characters like \, 闂? etc.
+        # - Don't start with special characters like \, -, etc.
         # - Don't contain spaces (or very few)
         # - Are relatively short
         # - Contain mostly alphanumeric chars, underscores, hyphens, colons
@@ -1596,64 +1602,3 @@ class LatexPaperParser:
             record = self._head_record(section_index, name)
             if record: records.append(record)
         return records
-
-
-def construct_citation_info(paper: LatexPaper, parser: LatexPaperParser) -> List[Dict[str, Any]]:
-
-    def get_citation_info_in_paragraph(paragraph: LatexParagraph):
-        sentences = []
-        for i, sentence in enumerate(paragraph.sentences):
-            if sentence.citations:
-                citation_keys = list(sentence.citations.values()) if isinstance(sentence.citations, dict) else list(sentence.citations)
-                citation_key_value = {}
-                for citation in citation_keys:
-                    citation_value = parser.get_bibliography_entry(citation)
-                    if citation_value:
-                        citation_key_value[citation] = citation_value
-                    else:
-                        citation_key_value = {}
-                        break
-                if citation_key_value:
-                    sentences.append({
-                        "text": sentence.text,
-                        "citation_keys": citation_keys,
-                        "citation": citation_key_value,
-                        "serial": " ".join(paragraph.get_next_sentence_until_citation(i, 3))
-                    })
-        return sentences
-
-    all_citation_info = []
-    # abstract
-    if paper.abstract:
-        for i, paragraph in enumerate(paper.abstract.children):
-            citation_info = get_citation_info_in_paragraph(paragraph)
-            for x in citation_info: x['section_id'] = f"0-{i + 1}"
-            all_citation_info.extend(citation_info)
-
-    for i, section in enumerate(paper.sections):
-        subsection_start_idx = -1
-        for j, subsection in enumerate(section.children):
-            if isinstance(subsection, LatexParagraph):
-                assert subsection_start_idx == -1
-                citation_info = get_citation_info_in_paragraph(subsection)
-                for x in citation_info: x['section_id'] = f"{i + 1}-{j + 1}"
-                all_citation_info.extend(citation_info)
-            else:
-                if subsection_start_idx == -1: subsection_start_idx = j
-                subsubsection_start_idx = -1
-                for k, subsubsection in enumerate(subsection.children):
-                    if isinstance(subsubsection, LatexParagraph):
-                        assert subsubsection_start_idx == -1
-                        citation_info = get_citation_info_in_paragraph(subsubsection)
-                        chapter_str = f"{i + 1}.{j - subsection_start_idx + 1}-{k + 1}"
-                        for x in citation_info: x['section_id'] = chapter_str
-                        all_citation_info.extend(citation_info)
-                    else:
-                        if subsubsection_start_idx == -1: subsubsection_start_idx = k
-                        for l, paragraph in enumerate(subsubsection.children):
-                            citation_info = get_citation_info_in_paragraph(paragraph)
-                            chapter_str = f"{i + 1}.{j - subsection_start_idx + 1}.{k - subsubsection_start_idx + 1}-{l + 1}"
-                            for x in citation_info: x['section_id'] = chapter_str
-                            all_citation_info.extend(citation_info)
-    return all_citation_info
-

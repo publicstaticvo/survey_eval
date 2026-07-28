@@ -62,24 +62,79 @@ class SharedRequestGate:
 
 
 OPENALEX_REQUEST_GATE = SharedRequestGate()
-class OpenAlexBudgetExceeded(RuntimeError):
-    def __init__(self, payload: dict | None = None):
+
+class OpenAlexRateLimitExceeded(RuntimeError):
+    def __init__(self, payload: dict | None = None, status: int | None = None, headers: dict | None = None):
         self.payload = payload or {}
-        retry_after = self.payload.get("retryAfter")
+        self.status = status
+        self.headers = headers or {}
+        self.retry_after = (
+            self.payload.get("retryAfter")
+            or self.payload.get("retry-after")
+            or self.headers.get("Retry-After")
+            or self.headers.get("retry-after")
+        )
+        message = self.payload.get("message", "OpenAlex rate limit exceeded")
+        if self.retry_after is not None:
+            message = f"{message} (retryAfter={self.retry_after})"
+        super().__init__(message)
+class OpenAlexBudgetExceeded(RuntimeError):
+    def __init__(self, payload: dict | None = None, status: int | None = None, headers: dict | None = None):
+        self.payload = payload or {}
+        self.status = status
+        self.headers = headers or {}
+        retry_after = (
+            self.payload.get("retryAfter")
+            or self.payload.get("retry-after")
+            or self.headers.get("Retry-After")
+            or self.headers.get("retry-after")
+        )
         message = self.payload.get("message", "OpenAlex budget exceeded")
         if retry_after is not None:
             message = f"{message} (retryAfter={retry_after})"
         super().__init__(message)
 
 
+def _openalex_payload_message(payload: dict | None) -> str:
+    payload = payload or {}
+    return str(payload.get("message") or payload.get("error") or "")
+
+
+def is_openalex_rate_limit_payload(payload: dict | None) -> bool:
+    message = _openalex_payload_message(payload).lower()
+    return "requests per second" in message or "please slow down" in message
+
+
+def is_openalex_budget_payload(payload: dict | None) -> bool:
+    payload = payload or {}
+    message = _openalex_payload_message(payload).lower()
+    if "insufficient budget" in message or "resets at midnight utc" in message:
+        return True
+    credits_required = payload.get("creditsRequired")
+    credits_remaining = payload.get("creditsRemaining")
+    try:
+        return credits_required is not None and int(credits_remaining or 0) < int(credits_required)
+    except (TypeError, ValueError):
+        return False
+
+
+def raise_openalex_error(payload: dict | None, status: int | None = None, headers: dict | None = None):
+    if is_openalex_rate_limit_payload(payload):
+        raise OpenAlexRateLimitExceeded(payload, status=status, headers=headers)
+    if is_openalex_budget_payload(payload):
+        raise OpenAlexBudgetExceeded(payload, status=status, headers=headers)
+    if status == 429 or (payload or {}).get("error") == "Rate limit exceeded":
+        raise OpenAlexRateLimitExceeded(payload, status=status, headers=headers)
+
+
 # =============== Global Semaphore ===============
 class RateLimit:
-    AGENT_SEMAPHORE = asyncio.Semaphore(10)                # LLM
+    AGENT_SEMAPHORE = asyncio.Semaphore(50)                # LLM
     DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(20)
     CITATION_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
-    PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker闀滃儚鏈湴瑙ｆ瀽
+    PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker闂€婊冨剼閺堫剙婀寸憴锝嗙€?
     WEBSEARCH_SEMAPHORE = asyncio.Semaphore(50)
     S2_SEMAPHORE = asyncio.Semaphore(2)
 
@@ -132,8 +187,7 @@ async def async_request_template(
             payload = json.loads(text)
         except Exception:
             payload = {"raw_text": text}
-        if payload.get("error") == "Rate limit exceeded":
-            raise OpenAlexBudgetExceeded(payload)
+        raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
         resp.reason = text
         resp.raise_for_status()
     

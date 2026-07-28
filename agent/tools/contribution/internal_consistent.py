@@ -1,14 +1,14 @@
 import asyncio
-import re
 from typing import Any
 
-from ..preprocess.utils import extract_json
 from ..prompts import INTERNAL_CONSISTENT
 from ..utility.llmclient import AsyncChat
+from ..utility.paper_elements import Paper, Section
 from ..utility.tool_config import ToolConfig
+from ..utility.utils import extract_json
 
 
-CHECK_FUNCTIONAL_TYPES = {"TAXONOMY", "CONTENT", "EVALUATION", "LIMITATION", "FUTURE_WORK"}
+CHECK_FUNCTIONAL_TYPES = {"TAXONOMY", "CONTENT", "EVALUATION", "SCOPE", "FUTURE_WORK"}
 
 
 class InternalConsistentClient(AsyncChat):
@@ -20,19 +20,20 @@ class InternalConsistentClient(AsyncChat):
         sentence_ids = set(context["sentence_map"])
         subsection_ids = set(context["subsection_ids"])
         if "different_sentences" in result:
-            assert all(item in sentence_ids for item in result["different_sentences"])
+            assert all(item in sentence_ids for item in result["different_sentences"]), f"InternalConsistentClient: Invalid differenct sentence ids"
         if "different_subsections" in result:
-            assert all(item in subsection_ids for item in result["different_subsections"])
+            assert all(item in subsection_ids for item in result["different_subsections"]), f"InternalConsistentClient: Invalid differenct section ids"
         return result
 
     def _organize_inputs(self, inputs):
         tagged_content = inputs["tagged_content"] or "None"
         subsection_list = inputs["subsection_list"] or "None"
-        return self.PROMPT.format(
+        prompt = self.PROMPT.format(
             SECTION_TITLE=inputs["section_title"],
             TAGGED_CONTENT=tagged_content,
             SUBSECTION_LIST=subsection_list,
-        ), {
+        )
+        return prompt, {
             "sentence_map": inputs["sentence_map"],
             "subsection_ids": inputs["subsection_ids"],
         }
@@ -43,37 +44,24 @@ class InternalConsistency:
         self.llm = InternalConsistentClient(config.llm_server_info, config.sampling_params)
         self.sentence_ratio_threshold = config.internal_consistency_sentence_ratio_threshold
 
-    def _paragraph_sentences(self, paragraph):
-        if isinstance(paragraph, dict):
-            return paragraph.get("sentences", [])
-        return paragraph if isinstance(paragraph, list) else []
-
-    def _text_sentences(self, section: dict[str, Any]) -> list[str]:
+    def _text_sentences(self, section: Section) -> list[str]:
         sentences = []
-        for paragraph in section.get("paragraphs", []) or []:
-            for sentence in self._paragraph_sentences(paragraph):
-                if (
-                    isinstance(sentence, dict)
-                    and sentence.get("environment_type", "text") == "text"
-                    and sentence.get("text", "").strip()
-                ):
-                    sentences.append(sentence["text"].strip())
+        for paragraph in section.paragraphs:
+            for sentence in paragraph.sentences:
+                if sentence.environment_type == "text" and sentence.text.strip():
+                    sentences.append(sentence.text.strip())
         return sentences
 
-    def _tagged_content(self, section: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    def _tagged_content(self, section: Section) -> tuple[str, dict[str, str]]:
         sentence_map = {}
         paragraph_texts = []
         sentence_index = 1
-        for paragraph in section.get("paragraphs", []) or []:
+        for paragraph in section.paragraphs:
             tagged_sentences = []
-            for sentence in self._paragraph_sentences(paragraph):
-                if (
-                    isinstance(sentence, dict)
-                    and sentence.get("environment_type", "text") == "text"
-                    and sentence.get("text", "").strip()
-                ):
+            for sentence in paragraph.sentences:
+                if sentence.environment_type == "text" and sentence.text.strip():
                     sentence_id = f"S{sentence_index}"
-                    text = sentence["text"].strip()
+                    text = sentence.text.strip()
                     sentence_map[sentence_id] = text
                     tagged_sentences.append(f"[{sentence_id}] {text}")
                     sentence_index += 1
@@ -84,36 +72,27 @@ class InternalConsistency:
     def _section_title_path(self, title_path: list[str]) -> str:
         return " > ".join(part for part in title_path if part)
 
-    def _collect_targets(self, paper: dict[str, Any]):
+    def _collect_targets(self, paper: Paper):
         targets = []
 
-        def walk(section: dict[str, Any], title_path: list[str]):
-            current_path = [*title_path, section.get("title", "")]
-            if section.get("functional_type") in CHECK_FUNCTIONAL_TYPES:
+        def walk(section: Section, title_path: list[str]):
+            current_path = [*title_path, section.name]
+            if section.functional_type in CHECK_FUNCTIONAL_TYPES:
                 targets.append((section, current_path))
-            for child in section.get("sections", []) or []:
-                if isinstance(child, dict):
-                    walk(child, current_path)
+            for child in section.children:
+                walk(child, current_path)
 
-        for section in paper.get("sections", []) or []:
-            if isinstance(section, dict):
-                walk(section, [])
+        for section in paper.children:
+            walk(section, [])
         return targets
 
-    def _input_for_section(self, section: dict[str, Any], title_path: list[str]) -> dict[str, Any]:
+    def _input_for_section(self, section: Section, title_path: list[str]) -> dict[str, Any]:
         tagged_content, sentence_map = self._tagged_content(section)
-        children = [
-            child for child in section.get("sections", []) or []
-            if isinstance(child, dict)
-        ]
-        subsection_ids = [
-            str(child.get("section_id", "") or "").strip()
-            for child in children
-            if str(child.get("section_id", "") or "").strip()
-        ]
+        children = section.children
+        subsection_ids = [str(index + 1) for index, _ in enumerate(children)]
         subsection_list = "\n".join(
-            f"{child.get('section_id', '')} {child.get('title', '')}".strip()
-            for child in children
+            f"{index + 1} {child.name}".strip()
+            for index, child in enumerate(children)
         )
         return {
             "section": section,
@@ -139,7 +118,7 @@ class InternalConsistency:
             for sentence_id in different_sentences
         ]
         return {
-            "section_id": item["section"].get("section_id", ""),
+            "section_id": "",
             "section_title": item["section_title"],
             "internal_consistent": internal_consistent,
             "inconsistent": not internal_consistent,
@@ -153,7 +132,7 @@ class InternalConsistency:
             "different_sentence_ratio": sentence_ratio,
         }
 
-    async def __call__(self, paper: dict[str, Any]) -> dict[str, Any]:
+    async def __call__(self, paper: Paper) -> dict[str, Any]:
         inputs = [
             self._input_for_section(section, title_path)
             for section, title_path in self._collect_targets(paper)

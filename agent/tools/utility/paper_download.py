@@ -23,15 +23,17 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
+from .xml_parser import XMLPaperParser
+
 if __package__:
-    from .grobidpdf import PaperParser
+    from .content_walk import section_to_text
     from .latex_parser import LatexPaperParser
     from .openalex import OPENALEX_SELECT, get_openalex_client
     from .request_utils import RateLimit, SessionManager, get_proxy_url
     from .tool_config import ToolConfig
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
-    from survey_eval.agent.tools.utility.grobidpdf import PaperParser
+    from survey_eval.agent.tools.utility.content_walk import section_to_text
     from survey_eval.agent.tools.utility.latex_parser import LatexPaperParser
     from survey_eval.agent.tools.utility.openalex import OPENALEX_SELECT, get_openalex_client
     from survey_eval.agent.tools.utility.request_utils import RateLimit, SessionManager, get_proxy_url
@@ -206,7 +208,7 @@ class PaperDownload:
             self.grobid_parse_mode = "casual"
 
     def _post_hook(self, xml_content: str) -> dict:
-        parser = PaperParser()
+        parser = XMLPaperParser()
         try:
             paper = parser.parse(xml_content, mode=self.grobid_parse_mode)
             if not paper:
@@ -216,24 +218,19 @@ class PaperDownload:
         except Exception as e:
             print(f"No paper: {e}")
             raise
-        abstract = "\n\n".join(" ".join(s.text for s in p.sentences) for p in paper.abstract.paragraphs) if paper.abstract else None
-        return {"full_content": paper.get_skeleton(), "abstract": abstract}
+        abstract = section_to_text(paper.abstract)
+        return {"full_content": paper, "abstract": abstract}
 
     def _latex_post_hook(self, latex_content: str = "") -> dict:
-        if not latex_content:
-            return {}
+        if not latex_content: return {}
         parser = LatexPaperParser()
         paper = parser.parse(latex_content)
-        abstract = None
-        if paper.abstract:
-            abstract = "\n\n".join(
-                " ".join(getattr(sentence, "text", "") for sentence in paragraph.sentences)
-                for paragraph in paper.abstract.children
-                if hasattr(paragraph, "sentences")
-            )
-        skeleton = paper.get_skeleton()
-        print(f"Parsed TeX source. It has {len(skeleton['sections'])} sections.")
-        return {"full_content": skeleton, "abstract": abstract}
+        if not paper:
+            print("No paper.")
+            return {}
+        abstract = section_to_text(paper.abstract)
+        print(f"Parsed TeX source. It has {len(paper.children)} sections.")
+        return {"full_content": paper, "abstract": abstract}
 
     def _safe_extract_tar(self, buffer: bytes, target_dir: Path) -> None:
         with tarfile.open(fileobj=io.BytesIO(buffer), mode="r:gz") as archive:
@@ -275,8 +272,7 @@ class PaperDownload:
                     tex_path = source_dir / "source.tex"
                     tex_path.write_bytes(buffer)
                 tex_count = len([path for path in source_dir.rglob("*.tex") if path.is_file()])
-                parser = LatexPaperParser()
-                main_tex = parser._find_main_tex(source_dir)
+                main_tex = LatexPaperParser()._find_main_tex(source_dir)
                 if not main_tex:
                     print(f"{src_url} No TeX file")
                     return {"result": None, "download_error": False, "parse_error": True}

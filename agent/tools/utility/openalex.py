@@ -14,7 +14,7 @@ from typing import Any
 import aiohttp
 import Levenshtein
 
-from .request_utils import HEADERS, OPENALEX_REQUEST_GATE, OpenAlexBudgetExceeded, SessionManager
+from .request_utils import HEADERS, OPENALEX_REQUEST_GATE, OpenAlexBudgetExceeded, OpenAlexRateLimitExceeded, SessionManager, is_openalex_budget_payload, raise_openalex_error
 from .tool_config import ToolConfig
 from .utils import normalize_text, valid_check
 
@@ -114,13 +114,12 @@ class OpenAlex:
                         f"{OPENALEX_API_URL}/rate-limit",
                         headers=HEADERS,
                         params=params,
-                        timeout=aiohttp.ClientTimeout(total=60),
+                        timeout=aiohttp.ClientTimeout(total=30),
                     ) as resp:
                         text = await resp.text()
                         payload = json.loads(text)
                         if resp.status >= 400:
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
+                            raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
                             resp.raise_for_status()
                         return int((payload.get("rate_limit") or {}).get("credits_remaining", 0))
             except Exception as exc:
@@ -168,6 +167,8 @@ class OpenAlex:
             try:
                 credits_remaining = await self.get_balance(state.api_key)
                 cooling_until = None if credits_remaining > 0 else self._next_utc_midnight()
+            except OpenAlexRateLimitExceeded:
+                raise
             except Exception:
                 credits_remaining = 0
                 cooling_until = self._next_utc_midnight()
@@ -175,14 +176,59 @@ class OpenAlex:
                 state.credits_remaining = credits_remaining
                 state.cooling_until = cooling_until
                 if state.is_available(estimated_cost): return state
+
+        if self.api_key_states:
+            for state in self.api_key_states:
+                try:
+                    credits_remaining = await self.get_balance(state.api_key)
+                except OpenAlexRateLimitExceeded:
+                    raise
+                except Exception:
+                    continue
+                async with self._state_lock:
+                    self._update_balance_state(state, credits_remaining)
+                    if state.is_available(estimated_cost): return state
         raise OpenAlexBudgetExceeded({"message": "No OpenAlex credential has remaining credits"})
 
     def _estimate_search_cost(self, search: str, filter_value: list[tuple] | dict | None) -> int:
         return 10 if (search or self._filter_has_search_key(filter_value)) else 1
 
+    def _payload_int(self, payload: dict | None, key: str) -> int | None:
+        try:
+            value = (payload or {}).get(key)
+            return None if value is None else int(value)
+        except (TypeError, ValueError):
+            return None
+
     def _mark_exhausted(self, state: CredentialState, payload: dict | None = None):
         state.credits_remaining = 0
         state.cooling_until = self._next_utc_midnight()
+
+    def _update_balance_state(self, state: CredentialState, credits_remaining: int):
+        state.credits_remaining = max(0, int(credits_remaining))
+        state.cooling_until = None if state.credits_remaining > 0 else self._next_utc_midnight()
+
+    def _update_state_from_error_payload(self, state: CredentialState, payload: dict | None):
+        credits_remaining = self._payload_int(payload, "creditsRemaining")
+        if credits_remaining is not None:
+            self._update_balance_state(state, credits_remaining)
+
+    async def _confirm_budget_exhausted(
+        self,
+        state: CredentialState,
+        payload: dict | None,
+        required_credits: int = 0,
+    ) -> bool:
+        required_credits = max(1, self._payload_int(payload, "creditsRequired") or required_credits or 1)
+        if state.api_key is not None:
+            credits_remaining = await self.get_balance(state.api_key)
+            async with self._state_lock:
+                self._update_balance_state(state, credits_remaining)
+            return credits_remaining < required_credits
+
+        async with self._state_lock:
+            self._update_state_from_error_payload(state, payload)
+        return is_openalex_budget_payload(payload) and state.credits_remaining < required_credits
 
     def _deduct_credits(self, state: CredentialState, credits: int):
         if credits <= 0: return
@@ -197,9 +243,31 @@ class OpenAlex:
 
     def _is_transient_error(self, exc: BaseException) -> bool:
         if isinstance(exc, OpenAlexBudgetExceeded): return False
+        if isinstance(exc, OpenAlexRateLimitExceeded): return True
         if isinstance(exc, aiohttp.ClientResponseError): return exc.status not in {400, 401, 403, 404}
         return isinstance(exc, TRANSIENT_EXCEPTION_TYPES)
 
+    def _rate_limit_sleep_seconds(self, exc: OpenAlexRateLimitExceeded) -> float:
+        retry_after = getattr(exc, "retry_after", None)
+        try:
+            if retry_after is not None:
+                return max(0.0, min(60.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+        return random.random() + 1
+
+    def _normalize_filter_search_values(self, filter_value: list[tuple] | dict | None) -> list[tuple] | dict | None:
+        if not filter_value:
+            return filter_value
+        items = list(filter_value.items()) if isinstance(filter_value, dict) else list(filter_value)
+        normalized = []
+        for key, value in items:
+            key = str(key)
+            if key.endswith(".search") and isinstance(value, str) and re.search(r"\b(?:AND|OR)\b", value, flags=re.IGNORECASE):
+                normalized.extend((key, block) for block in to_openalex(value))
+            else:
+                normalized.append((key, value))
+        return normalized
     def _format_filter(self, filter_value: list[tuple] | dict | None) -> str | None:
         """Format dict or dict.items style filters for OpenAlex."""
         if not filter_value: return
@@ -398,10 +466,11 @@ class OpenAlex:
                         text = await resp.text()
                         payload = json.loads(text)
                         if resp.status >= 400:
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
+                            raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
                             resp.raise_for_status()
                         return payload
+            except OpenAlexRateLimitExceeded:
+                raise
             except Exception as exc:
                 print(f"Endpoint {url} Error {type(exc)} {exc}")
                 if not self._is_transient_error(exc): raise
@@ -426,8 +495,7 @@ class OpenAlex:
                                 payload = json.loads(content.decode("utf-8"))
                             except Exception:
                                 payload = {"raw_text": content.decode("utf-8", errors="ignore")}
-                            if payload.get("error") == "Rate limit exceeded":
-                                raise OpenAlexBudgetExceeded(payload)
+                            raise_openalex_error(payload, status=resp.status, headers=dict(resp.headers))
                             resp.raise_for_status()
                         return content
             except Exception as exc:
@@ -436,6 +504,7 @@ class OpenAlex:
                     raise
                 await asyncio.sleep(min(10, 2 ** attempt))
         raise last_exc
+    
     async def _request_json(
         self,
         url: str,
@@ -444,16 +513,36 @@ class OpenAlex:
         fixed_cost: int | None = None,
         require_api_key: bool = False,
     ) -> tuple[dict, CredentialState]:
+        use_api_key = require_api_key
         while True:
-            credential = await self._choose_credential(estimated_cost, require_api_key=require_api_key)
+            try:
+                credential = await self._choose_credential(estimated_cost, require_api_key=use_api_key)
+            except OpenAlexRateLimitExceeded as exc:
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
             request_params = dict(params)
             if credential.api_key is not None:
                 request_params["api_key"] = credential.api_key
             try:
                 payload = await self._single_json_request(url, request_params)
+            except OpenAlexRateLimitExceeded as exc:
+                if credential.api_key is None and self.api_key_states:
+                    use_api_key = True
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
             except OpenAlexBudgetExceeded as exc:
-                async with self._state_lock:
-                    self._mark_exhausted(credential, exc.payload)
+                try:
+                    exhausted = await self._confirm_budget_exhausted(
+                        credential,
+                        exc.payload,
+                        fixed_cost if fixed_cost is not None else estimated_cost,
+                    )
+                except OpenAlexRateLimitExceeded as rate_exc:
+                    await asyncio.sleep(self._rate_limit_sleep_seconds(rate_exc))
+                    continue
+                if exhausted:
+                    continue
+                await asyncio.sleep(self._rate_limit_sleep_seconds(OpenAlexRateLimitExceeded(exc.payload)))
                 continue
             credits = fixed_cost if fixed_cost is not None else self._extract_cost_credits(payload)
             async with self._state_lock:
@@ -468,15 +557,28 @@ class OpenAlex:
         require_api_key: bool = True,
     ) -> tuple[bytes, CredentialState]:
         while True:
-            credential = await self._choose_credential(fixed_cost, require_api_key=require_api_key)
+            try:
+                credential = await self._choose_credential(fixed_cost, require_api_key=require_api_key)
+            except OpenAlexRateLimitExceeded as exc:
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
             request_params = dict(params)
             if credential.api_key is not None:
                 request_params["api_key"] = credential.api_key
             try:
                 payload = await self._single_bytes_request(url, request_params)
+            except OpenAlexRateLimitExceeded as exc:
+                await asyncio.sleep(self._rate_limit_sleep_seconds(exc))
+                continue
             except OpenAlexBudgetExceeded as exc:
-                async with self._state_lock:
-                    self._mark_exhausted(credential, exc.payload)
+                try:
+                    exhausted = await self._confirm_budget_exhausted(credential, exc.payload, fixed_cost)
+                except OpenAlexRateLimitExceeded as rate_exc:
+                    await asyncio.sleep(self._rate_limit_sleep_seconds(rate_exc))
+                    continue
+                if exhausted:
+                    continue
+                await asyncio.sleep(self._rate_limit_sleep_seconds(OpenAlexRateLimitExceeded(exc.payload)))
                 continue
             async with self._state_lock:
                 self._deduct_credits(credential, fixed_cost)
@@ -546,6 +648,7 @@ class OpenAlex:
         explicit_page = request_kwargs.pop("page", None)
         start_page = int(explicit_page or (offset // 200 + 1) or 1)
         skip_in_first_page = 0 if explicit_page is not None else offset % 200
+        filter = self._normalize_filter_search_values(filter)
         if "AND" in search or "OR" in search:
             new_filter = [(DEFAULT_SEARCH_KEY, x) for x in to_openalex(search)]
             filter = filter or []

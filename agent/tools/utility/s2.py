@@ -336,6 +336,74 @@ class SemanticScholar:
             filtered.append(paper)
         return filtered
 
+    def _pop_search_filter(self, filter_kwargs: dict[str, Any] | None) -> str:
+        if not filter_kwargs:
+            return ""
+        search = str(filter_kwargs.pop("default.search", "") or "").strip()
+        for key in list(filter_kwargs):
+            if str(key).endswith(".search"):
+                search = search or str(filter_kwargs.pop(key, "") or "").strip()
+        return search
+
+    def _strip_outer_parentheses(self, expression: str) -> str:
+        expression = expression.strip()
+        while expression.startswith("(") and expression.endswith(")"):
+            depth = 0
+            valid = True
+            for index, char in enumerate(expression):
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                if depth == 0 and index != len(expression) - 1:
+                    valid = False
+                    break
+            if not valid:
+                break
+            expression = expression[1:-1].strip()
+        return expression
+
+    def _split_search_expression(self, expression: str, operator: str) -> list[str]:
+        parts, depth, buffer = [], 0, []
+        tokens = re.split(rf"(\b{operator}\b)", expression, flags=re.IGNORECASE)
+        for token in tokens:
+            depth += token.count("(")
+            depth -= token.count(")")
+            if token.upper() == operator and depth == 0:
+                parts.append("".join(buffer).strip())
+                buffer = []
+            else:
+                buffer.append(token)
+        if buffer:
+            parts.append("".join(buffer).strip())
+        return [part for part in parts if part]
+
+    def _search_term_matches(self, paper_text: str, term: str) -> bool:
+        term = re.sub(r"[^\w\s\-_]", " ", term.replace('"', "").replace("'", ""))
+        term = re.sub(r"\s+", " ", term).strip().casefold()
+        return not term or term in paper_text
+
+    def _search_expression_matches(self, paper_text: str, expression: str) -> bool:
+        expression = self._strip_outer_parentheses(str(expression or ""))
+        if not expression:
+            return True
+        and_parts = self._split_search_expression(expression, "AND")
+        if len(and_parts) > 1:
+            return all(self._search_expression_matches(paper_text, part) for part in and_parts)
+        or_parts = self._split_search_expression(expression, "OR")
+        if len(or_parts) > 1:
+            return any(self._search_expression_matches(paper_text, part) for part in or_parts)
+        return self._search_term_matches(paper_text, expression)
+
+    def _apply_default_search_filter(self, results: list[dict], search: str) -> list[dict]:
+        if not search:
+            return results
+        filtered = []
+        for paper in results:
+            paper_text = re.sub(r"\s+", " ", f"{paper.get('title', '')} {paper.get('abstract', '')}").casefold()
+            if self._search_expression_matches(paper_text, search):
+                filtered.append(paper)
+        return filtered
     def _clean_search_title(self, title: str) -> str:
         return re.sub(r"\s+", " ", str(title or "")).strip()
 
@@ -510,6 +578,8 @@ class SemanticScholar:
         select: str | None = S2_DEFAULT_FIELDS,
         **filter_kwargs,
     ) -> dict:        
+        filter_kwargs = dict(filter_kwargs or {})
+        search_filter = self._pop_search_filter(filter_kwargs)
         per_page = min(max(1, limit), 1000)
         current_offset = offset
         results, total, next_token = [], None, None
@@ -530,6 +600,7 @@ class SemanticScholar:
                 break
         # results = self.deduplicate_papers(results)
         results = self._apply_publication_date_filter(results, filter_kwargs)
+        results = self._apply_default_search_filter(results, search_filter)
         return {"count": len(results), "results": results[:limit], "next": next_token}
 
     async def get_references(
@@ -540,6 +611,8 @@ class SemanticScholar:
         select: str | None = S2_DEFAULT_FIELDS,
         filter: dict = None,
     ) -> dict:
+        filter = dict(filter or {})
+        search_filter = self._pop_search_filter(filter)
         per_page = min(max(1, limit), 1000)
         current_offset = offset
         results, total, next_token = [], None, None
@@ -558,6 +631,7 @@ class SemanticScholar:
             if raw_batch_count == 0 or raw_batch_count < per_page or current_offset >= total: break
         results = self.deduplicate_papers(results)
         results = self._apply_publication_date_filter(results, filter)
+        results = self._apply_default_search_filter(results, search_filter)
         return {"count": len(results), "results": results[:limit], "next": next_token}
 
     async def get_works_batch(

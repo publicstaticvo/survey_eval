@@ -15,17 +15,10 @@ PROJECT_PARENT = REPO_ROOT.parent
 if str(PROJECT_PARENT) not in sys.path:
     sys.path.insert(0, str(PROJECT_PARENT))
 
-from survey_eval.agent.tools.preprocess.utils import extract_json
+from survey_eval.agent.main import discover_batch_papers, load_paper
 from survey_eval.agent.tools.utility.latex_parser import LatexPaperParser
-from survey_eval.agent.tools.utility.latex_parser.paper_elements import (
-    LatexEnvironment,
-    LatexParagraph,
-    LatexPaper,
-    LatexSection,
-    LatexSentence,
-    LatexSubSection,
-    LatexSubSubSection,
-)
+from survey_eval.agent.tools.utility.paper_elements import Paper, Paragraph, Section, Sentence
+from survey_eval.agent.tools.utility.utils import extract_json
 from survey_eval.agent.tools.utility.llmclient import AsyncChat
 from survey_eval.agent.tools.utility.request_utils import SessionManager
 from survey_eval.agent.tools.utility.tool_config import ToolConfig
@@ -81,10 +74,10 @@ def _clean_text(text: Any) -> str:
     return text.strip()
 
 
-def _paper_title(paper: LatexPaper | dict[str, Any], fallback: str = "untitled") -> str:
+def _paper_title(paper: Paper | dict[str, Any], fallback: str = "untitled") -> str:
     if isinstance(paper, dict):
         return _clean_text(paper.get("title")) or fallback
-    return _clean_text(paper.title) or fallback
+    return _clean_text(paper.title or paper.name) or fallback
 
 
 def _slugify_title(title: str) -> str:
@@ -94,12 +87,12 @@ def _slugify_title(title: str) -> str:
     return slug or "untitled"
 
 
-def _caption_block(item: LatexEnvironment | dict[str, Any], counters: dict[str, int]) -> str:
+def _caption_block(item: Sentence | dict[str, Any], counters: dict[str, int]) -> str:
     if isinstance(item, dict):
         env_name = item.get("environment_type", "")
         caption = _clean_text(item.get("caption") or item.get("text"))
     else:
-        env_name = item.environment_name
+        env_name = item.environment_type
         caption = _clean_text(item.caption or item.text)
     if not caption:
         return ""
@@ -109,7 +102,7 @@ def _caption_block(item: LatexEnvironment | dict[str, Any], counters: dict[str, 
     return f"<{label} {counters[counter_key]}: {caption}>"
 
 
-def _render_paragraph(paragraph: LatexParagraph | list[dict[str, Any]], counters: dict[str, int]) -> list[str]:
+def _render_paragraph(paragraph: Paragraph | list[dict[str, Any]], counters: dict[str, int]) -> list[str]:
     if isinstance(paragraph, list):
         items = paragraph
     else:
@@ -129,8 +122,8 @@ def _render_paragraph(paragraph: LatexParagraph | list[dict[str, Any]], counters
                     blocks.append(caption)
                 continue
             text = _clean_text(item.get("text"))
-        elif isinstance(item, LatexEnvironment):
-            if item.environment_name in GRAPH_ENVIRONMENTS:
+        elif isinstance(item, Sentence):
+            if item.environment_type in GRAPH_ENVIRONMENTS:
                 caption = _caption_block(item, counters)
                 if caption:
                     if text_parts:
@@ -138,8 +131,6 @@ def _render_paragraph(paragraph: LatexParagraph | list[dict[str, Any]], counters
                         text_parts = []
                     blocks.append(caption)
                 continue
-            text = _clean_text(item.text)
-        elif isinstance(item, LatexSentence):
             text = _clean_text(item.text)
         else:
             text = _clean_text(getattr(item, "text", ""))
@@ -152,17 +143,12 @@ def _render_paragraph(paragraph: LatexParagraph | list[dict[str, Any]], counters
     return [block for block in blocks if block]
 
 
-def _render_object_section(
-    section: LatexSection | LatexSubSection | LatexSubSubSection,
-    depth: int,
-    counters: dict[str, int],
-) -> list[str]:
+def _render_object_section(section: Section, depth: int, counters: dict[str, int]) -> list[str]:
     lines = [f"{'#' * depth} {_clean_text(section.name)}"]
+    for paragraph in section.paragraphs:
+        lines.extend(_render_paragraph(paragraph, counters))
     for child in section.children:
-        if isinstance(child, LatexParagraph):
-            lines.extend(_render_paragraph(child, counters))
-        elif isinstance(child, (LatexSection, LatexSubSection, LatexSubSubSection)):
-            lines.extend(_render_object_section(child, min(depth + 1, 4), counters))
+        lines.extend(_render_object_section(child, min(depth + 1, 4), counters))
     return lines
 
 
@@ -205,7 +191,7 @@ def _format_reference(key: str, entry: Any) -> str:
     return f"[{key}] {authors}. {title}. {tail}.".rstrip()
 
 
-def render_paper_markdown(paper: LatexPaper | dict[str, Any]) -> str:
+def render_paper_markdown(paper: Paper | dict[str, Any]) -> str:
     counters = {"figure": 0, "table": 0}
     lines = [f"# {_paper_title(paper)}"]
 
@@ -215,10 +201,11 @@ def render_paper_markdown(paper: LatexPaper | dict[str, Any]) -> str:
         if isinstance(abstract, dict):
             for paragraph in abstract.get("paragraphs", []) or []:
                 abstract_blocks.extend(_render_paragraph(paragraph, counters))
-        elif isinstance(abstract, LatexSubSubSection):
+        elif isinstance(abstract, Section):
+            for paragraph in abstract.paragraphs:
+                abstract_blocks.extend(_render_paragraph(paragraph, counters))
             for child in abstract.children:
-                if isinstance(child, LatexParagraph):
-                    abstract_blocks.extend(_render_paragraph(child, counters))
+                abstract_blocks.extend(_render_object_section(child, 3, counters))
         if abstract_blocks:
             lines.extend(["## Abstract", *abstract_blocks])
 
@@ -233,9 +220,9 @@ def render_paper_markdown(paper: LatexPaper | dict[str, Any]) -> str:
                 lines.extend(_render_dict_section(section, 2, counters))
         bibliography = paper.get("citations", {}) or paper.get("bibliography", {})
     else:
-        for section in [*paper.sections, *paper.limitation, *paper.appendix]:
+        for section in [*paper.children, *paper.limitation, *paper.appendix]:
             lines.extend(_render_object_section(section, 2, counters))
-        bibliography = paper.bibliography
+        bibliography = paper.references
 
     if bibliography:
         lines.append("## References")
@@ -245,12 +232,6 @@ def render_paper_markdown(paper: LatexPaper | dict[str, Any]) -> str:
     return "\n\n".join(line for line in lines if _clean_text(line))
 
 
-def parse_paper(path: Path) -> LatexPaper:
-    paper = LatexPaperParser().parse(path)
-    if paper is None:
-        raise RuntimeError(f"Failed to parse paper from {path}")
-    return paper
-
 
 def iter_input_paths(input_dir: Path) -> list[Path]:
     if input_dir.is_file():
@@ -259,7 +240,7 @@ def iter_input_paths(input_dir: Path) -> list[Path]:
     tex_files = [path for path in children if path.is_file() and path.suffix.lower() == ".tex"]
     if tex_files:
         return [input_dir]
-    return [path for path in children if path.is_dir()]
+    return [batch_paper.source_path for batch_paper in discover_batch_papers(input_dir)]
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
@@ -275,7 +256,7 @@ def resolve_output_path(
     output_root: Path,
     mode: EvalMode,
     input_path: Path,
-    paper: LatexPaper | dict[str, Any] | None,
+    paper: Paper | dict[str, Any] | None,
     output_file: str | None,
 ) -> Path:
     if output_file:
@@ -286,10 +267,18 @@ def resolve_output_path(
             return requested_path.with_name(filename)
         return output_root / requested_path.parent / filename
 
-    if paper is None:
-        raise ValueError("paper is required when --output-file is not provided")
-    title_slug = _slugify_title(_paper_title(paper, input_path.stem))
+    title_slug = _slugify_title(_paper_title(paper, input_path.stem)) if paper is not None else _slugify_title(input_path.stem)
     return output_root / title_slug / f"{mode.value.lower()}.json"
+
+
+def load_llm_input(path: Path) -> tuple[str, Paper | dict[str, Any] | None]:
+    if path.suffix.lower() == ".json":
+        paper = load_paper(path)
+        return render_paper_markdown(paper), paper
+
+    parser = LatexPaperParser()
+    parser._prepare_source(path)
+    return parser.latex_content, None
 
 
 def _claude_code_requirements(mode: EvalMode) -> str:
@@ -321,12 +310,11 @@ def run_claude_code_eval(args: argparse.Namespace) -> None:
 
 
 async def evaluate_one(path: Path, client: SurveyLLMEvalClient, output_root: Path, output_file: str | None) -> Path:
-    paper = parse_paper(path)
+    survey_full_text, paper = load_llm_input(path)
     output_path = resolve_output_path(output_root, client.mode, path, paper, output_file)
     if output_path.exists():
         raise FileExistsError(f"Output file already exists: {output_path}")
     print(f"Save to: {output_path}")
-    survey_full_text = render_paper_markdown(paper)
     print("Start!")
     result = await client.call(inputs=survey_full_text)
     print("Finish!")
@@ -350,7 +338,7 @@ async def main_async(args: argparse.Namespace) -> list[Path]:
     input_paths = iter_input_paths(Path(args.input_dir))
     print(input_paths)
     if not input_paths:
-        raise SystemExit(f"No LaTeX inputs found under {args.input_dir}")
+        raise SystemExit(f"No JSON files or TeX inputs found under {args.input_dir}")
 
     output_root = Path(args.output_root)
     include_input_name = len(input_paths) > 1
@@ -365,9 +353,15 @@ async def main_async(args: argparse.Namespace) -> list[Path]:
             print(f"Failed to evaluate {path}: {type(exc).__name__}: {exc}")
             return None
 
+    semaphore = asyncio.Semaphore(max(1, args.max_concurrency))
+
     await SessionManager.init()
     try:
-        outputs = await asyncio.gather(*(evaluate_with_report(path) for path in input_paths))
+        async def limited_evaluate(path: Path) -> Path | None:
+            async with semaphore:
+                return await evaluate_with_report(path)
+
+        outputs = await asyncio.gather(*(limited_evaluate(path) for path in input_paths))
         return [path for path in outputs if path is not None]
     finally:
         await SessionManager.close()
@@ -381,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-file", default=None, help="JSON output path used by the claude-code backend.")
     parser.add_argument("--mode", choices=[mode.value for mode in EvalMode], default=EvalMode.PLAIN.value)
     parser.add_argument("--tool-config", default=None, help="Optional ToolConfig yaml path.")
+    parser.add_argument("--max-concurrency", type=int, default=2, help="Maximum concurrent LLM evaluations for --backend llm.")
     return parser
 
 
@@ -394,7 +389,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
 

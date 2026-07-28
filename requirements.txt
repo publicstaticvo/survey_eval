@@ -8,6 +8,8 @@ requests
 numpy
 scikit-learn
 networkx
+python-igraph
+leidenalg
 python-Levenshtein
 unidecode
 tqdm

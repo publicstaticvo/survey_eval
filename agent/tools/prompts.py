@@ -16,147 +16,52 @@ Output:
 Input: {info}
 Output: """
 
-# preprocess/get_reference_surveys.py
-REFERENCE_SURVEY_SELECT = """You are a professional academic researcher selecting reference surveys to evaluate a target survey titled "{query}".
+# preprocess/websearch.py
+WEBSEARCH_FILTER_PROMPT = """You are filtering academic web search results for a cited paper lookup.
 
-### Input
-You are given a list of candidate papers with their titles and abstracts.
+Target paper title:
+{title}
 
-### Definition: Reference Survey (Two Tiers)
-A **strict reference survey** is a field-level survey that:
-- Treats the query topic as its PRIMARY organizing focus, not as a tool or method applied within a different domain.
-- Organizes the literature into coherent conceptual or methodological dimensions (e.g., taxonomies, categorizations, design spaces).
-- Covers multiple distinct sub-topics within the query field.
-- Would be consulted by an expert to judge whether another survey on this topic has missed important topics or references.
-
-A **partial reference survey** is a survey that:
-- Treats the query topic as one of its main research objects, even if the organizing principle is narrower or domain-specific.
-- Covers at least TWO distinct sub-topics within the query field.
-- Synthesizes existing literature on the query topic within its scope, rather than merely using the query topic as a method.
-- Would be consulted by an expert for the sub-area it covers, but not necessarily as a comprehensive reference for the entire field.
-
-### Inclusion Criteria for Strict Reference Surveys (ALL must be satisfied)
-1. The query topic is the main research object AND the primary organizing principle of the paper.
-2. At least THREE distinct sub-topics within the query field are covered.
-3. The paper synthesizes existing literature rather than reporting original experimental results.
-
-### Inclusion Criteria for Partial Reference Surveys (ALL must be satisfied)
-1. The query topic is one of the main research objects, even if the scope is narrower or the organizing principle is domain-specific.
-2. At least TWO distinct sub-topics within the query field are covered.
-3. The paper synthesizes existing literature on the query topic within its scope.
-
-### Exclusion Criteria (ANY triggers exclusion from BOTH tiers)
-- Not a survey: excludes benchmarks, position papers, tutorials, or original research papers.
-- Primary subject is a downstream application domain, with the query topic appearing only as the method used (e.g., "Transformers for Medical Imaging" is excluded when evaluating a survey on Transformers).
-- Covers only ONE task or sub-area within the query field.
-- Mentions the query topic only as background or one method among many.
-
-### Classification Instructions
-- First apply exclusion criteria. If any exclusion criterion is met, discard the candidate entirely.
-- For remaining candidates, determine tier:
-  - If ALL strict inclusion criteria are satisfied -- strict reference survey.
-  - If strict criteria are not fully met but ALL partial inclusion criteria are satisfied -- partial reference survey.
-  - Otherwise -- discard.
-- Select at most 3 surveys in total. Prefer strict reference surveys over partial reference surveys.
-- Be conservative: fewer is better than including a marginal candidate.
-- If no candidate meets even partial reference survey criteria, return an empty list.
-
-### Candidate Surveys
+Candidates:
 {candidates}
 
-### Output Format
-Return JSON only, no extra text.
+Return a JSON object only:
+```json
 {{
-  "strict_reference_surveys": [
-    {{
-      "title": "...",
-      "covered_subtopics": ["subtopic1", "subtopic2", "subtopic3"],
-      "reason": "one sentence explaining why this qualifies as a strict reference survey"
-    }}
-  ],
-  "partial_reference_surveys": [
-    {{
-      "title": "...",
-      "covered_subtopics": ["subtopic1", "subtopic2"],
-      "reason": "one sentence explaining why this only qualifies as a partial reference survey"
-    }}
-  ]
+  "matched_indices": [1, 3],
+  "reason": "brief explanation"
 }}
+```
+
+Rules:
+- keep only candidates that are very likely to refer to the same paper,
+- prefer publisher, DOI, arXiv, OpenReview, ACL Anthology, Semantic Scholar, DBLP, or author pages,
+- it is acceptable to return an empty list if the evidence is weak.
 """
 
-REFERENCE_SURVEY_SCHEMA = {
-  "type": "object",
-  "properties": {
-    "strict_reference_surveys": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "title": {"type": "string", "minLength": 1},
-          "covered_subtopics": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 3},
-          "reason": {"type": "string", "minLength": 1}
-        },
-        "required": ["title", "covered_subtopics", "reason"],
-        "additionalProperties": False
-      },
-      "maxItems": 3,
-    },
-    "partial_reference_surveys": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "title": {"type": "string", "minLength": 1},
-          "covered_subtopics": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 2},
-          "reason": {"type": "string", "minLength": 1}
-        },
-        "required": ["title", "covered_subtopics", "reason"],
-        "additionalProperties": False
-      },
-      "maxItems": 3,
-    }
-  },
-  "required": ["strict_reference_surveys", "partial_reference_surveys"],
-  "additionalProperties": False
-}
-
 # preprocess/sentences.py
-RULES = """### Labels and definitions (apply Rule 1 first; then use the first applicable rule among 2-7)
+RULES = """### Labels (apply Rule 1 first; then the first applicable rule among 2-7; output one primary label from: "CONTRIBUTION", "CONTRIBUTION+SCOPE", "SCOPE", "GAP", "CONTRAST", "SYNTHESIS", "SUMMARY", "BACKGROUND")
 
-1. CONTRIBUTION - The current paper is the subject: an explicit first-person or self-referential subject (we, our, this survey/paper) paired with an action verb (propose, define, categorize, present, introduce, show, demonstrate, categorize). If the subject is a named prior system, model, or method, classify as SUMMARY or EVALUATION instead. Applied before all other rules regardless of content.
+1. CONTRIBUTION - Subject is the current paper itself (we/our/this survey + propose/define/categorize/present/introduce/show/demonstrate). If the subject is a named prior work, an author list or a citation mark, use SUMMARY or CONTRAST instead. Checked first, regardless of content.
+   1b. CONTRIBUTION+SCOPE - the same sentence also states a literature boundary: time range, venue, language, database, or explicit search/selection method. E.g. "We review deep learning methods for X published since 2020" -> CONTRIBUTION+SCOPE.
 
-2. LIMITATION - Declares what this survey does not cover and why: explicit scope exclusions, acknowledged gaps, or methodological constraints of the review itself. Does not summarize contributions (CONCLUSION) and does not identify field-level open problems (GAP).
+2. SCOPE - States literature inclusion/exclusion criteria, search methodology, or boundaries of coverage (time range, venue, language, database; "we exclude...", "we do not discuss...", "we focus only on..."). Not the field's open problems (-> GAP); not a bare contribution claim without a boundary (-> CONTRIBUTION).
 
-3. GAP - Identifies an unresolved problem, open challenge, or missing capability in the research field, typically signaling a direction for future work. Does not include motivational framing that merely justifies the current survey.
+3. GAP - An unresolved problem or missing capability in the field, typically pointing to future work. Excludes motivational framing that only justifies the survey's own existence. Exclude weakness statements specified on a particular method.
+   - GAP: "Prior works failed to address X" (a missing capability in the field)
+   - SCOPE: "We do not discuss X" (the survey's own existence)
+   - SUMMARY: "Model M failed to address X" (a missing capability of a particular method)
 
-4. EVALUATION - The author makes an explicit positive or negative judgment about a specific named prior work, using evaluative language (outperforms, suffers from, is limited by, fails to, effectively handles). The judgment must reflect the author's own stance, not a description of a result or consequence. The current survey must not be one of the evaluated works. Sentences that only report what a prior paper found, demonstrated, or showed - without the survey author adding an evaluative stance - are SUMMARY, not EVALUATION. Examples:
-  - EVALUATION: "X is more effective than Y for Z tasks"  (author judgment) 
-  - SUMMARY:    "X demonstrated 95% accuracy on dataset Y" (result report with numerical data)
-  - SUMMARY:    "Experiments show that X outperforms Y"    (reporting prior work's finding)
+4. CONTRAST - Explicitly compares two or more SPECIFICALLY NAMED prior works (not generic groups) via contrast markers (unlike, whereas, outperforms, compared to) or side-by-side metrics.
+   - CONTRAST: "X outperforms Y on Z"
+   - SUMMARY: "X suffers from poor generalization" (single object, no comparison target)
+   - SUMMARY: "X has three layers while Y has five" (structural fact, no comparison marker)
 
-5. COMPARISON - Explicitly contrasts two or more specific named prior works (methods, models, or systems) using explicit contrast markers (unlike, in contrast, whereas, compared to) or quantitative side-by-side metrics. The current survey must not be one of the contrasted works.
+5. SYNTHESIS - Organizes multiple prior works into categories/trends using collective subjects (studies, methods, approaches), or states the author's own interpretive stance (believe, argue, suggest) even in first person. Yields to CONTRAST when two+ named works are explicitly contrasted; yields to Rule 1 only if the first-person subject uses a Rule-1 contribution verb.
 
-6. SYNTHESIS - Organizes multiple prior works into categories, trends, or abstractions. Subject is implicit or third-person (studies, methods, approaches, researchers); if the subject is first-person, apply Rule 1 instead.
+6. SUMMARY - Describes one or more specific named prior works without organizing, judging, or contrasting them.
 
-7. SUMMARY - Describes one or more specific named prior works without organizing, judging, or contrasting them.
-
-8. BACKGROUND - General field context, definitions, or facts. May mention concept names but does not refer to specific works by author or title."""
-
-SENTENCE_CLASSIFICATION_SINGLE = """You are an expert annotator for rhetorical structure in academic literature reviews.
-
-### Task
-Classify the rhetorical function of the given sentence from the literature review. Choose exactly ONE label.
-
-### Sentence
-"{S}"
-
-{RULE}
-
-### Output format (JSON only)
-{{
-  "label": "...",
-  "confidence": 0-1
-}}"""
+7. BACKGROUND - General field context, definitions, or facts not tied to specific named works."""
 
 SENTENCE_CLASSIFICATION_PARAGRAPH = """You are an expert annotator for rhetorical structure in academic literature reviews.
 
@@ -189,7 +94,7 @@ Given a paragraph from the literature review, each line representing a sentence.
 }}
 """
 
-SENTENCE_LABELS = {"CONTRIBUTION", "LIMITATION", "GAP", "EVALUATION", "COMPARISON", "SYNTHESIS", "SUMMARY", "BACKGROUND"}
+SENTENCE_LABELS = {"CONTRIBUTION", "CONTRIBUTION+SCOPE", "GAP", "SCOPE", "CONTRAST", "SYNTHESIS", "SUMMARY", "BACKGROUND"}
 
 SINGLE_SCHEMA = {
     "type": "object",
@@ -227,66 +132,43 @@ Parent section   : "{PARENT_TITLE}"   (empty if top-level)
 Section title    : "{SECTION_TITLE}"
 Opening text     : "{PREAMBLE}"       (first 1-3 sentences; may be empty)
 
-### Functional Type Definitions (choose exactly ONE)
+### Functional Types (choose exactly ONE)
 
 - SCOPE
-  * Definition: The section states the survey's objectives, contributions, scope, or organization. Typically the first section. May contain an outline of the rest of the paper.
-  * Typical titles: Introduction, Overview, Motivation, Contribution, Scope of this survey.
+  * Definition: States literature inclusion/exclusion criteria or search/selection methodology - what time range, venues, languages, or databases were searched, or what topics/methods are explicitly excluded and why. Do NOT assign SCOPE merely because a section is titled "Introduction" or states the survey's contributions/objectives - that default is BACKGROUND.
+  * Typical titles: Scope of This Survey, Search Methodology, Inclusion/Exclusion Criteria, Survey Methodology.
 
 - BACKGROUND
-  * Definition: The section provides prerequisite knowledge required to understand the rest of the survey: formal definitions, notation, core concepts, theory, or historical development that are not the survey's primary contribution.
-  * Typical titles: Background, Preliminaries, Foundations, Notation.
-
-- TAXONOMY
-  * Definition: The section proposes, explains, or justifies a classification framework, categorization scheme, or organizing criteria that structures the rest of the survey. Look for explicit statements such as "we categorize - into", "we organize - according to", or a diagram/table that defines the taxonomy.
-  * Typical titles: Taxonomy, Categorization, Problem Formulation, A Taxonomy of X.
+  * Definition: Prerequisite knowledge for the rest of the survey - formal definitions, notation, problem formulation, core concepts, theory, or historical development that are not the survey's own contribution. Introductory/motivational content defaults here unless it meets the SCOPE definition above.
+  * Typical titles: Introduction, Background, Preliminaries, Foundations, Notation, Motivation, Problem Formulation.
 
 - CONTENT
-  * Definition: The section reviews specific methods, approaches, systems, or sub-areas following the survey's organizational scheme. This is the default type for body sections that do not match any other type.
+  * Definition: Reviews specific methods, approaches, systems, or sub-areas following the survey's organizational scheme. Default type for body sections matching no other type.
   * Typical titles: domain- or method-specific titles.
 
-- EVALUATION
-  * Definition: The section systematically compares methods or systems using benchmarks, quantitative metrics, experimental results, or performance tables. The primary purpose is comparative analysis rather than description.
-  * Typical titles: Evaluation, Experiments, Benchmark Comparison, Performance Analysis.
-
-- LIMITATION
-  * Definition: Declares what this survey does not cover and why: explicit scope exclusions, acknowledged gaps, or methodological constraints of the review itself. Does not summarize contributions (CONCLUSION) and does not identify field-level open problems (FUTURE_WORK).
-  * Typical titles: Limitations, Limitations of This Survey, Out of Scope, Exclusion Criteria, What This Survey Does Not Cover, Threats to Validity.
-
 - FUTURE_WORK
-  * Definition: Identifies open problems, unsolved challenges, or directions for the research community. Includes perspective statements ("we believe", "we envision") when they appear as section-level content rather than isolated sentences.
-  * Typical titles: Future Work, Open Problems, Challenges, Open Issues, Outlook, Key Design Issues, Research Challenges, Opportunities.
+  * Definition: Open problems, unsolved challenges, or directions for the research community. Includes perspective statements ("we believe", "we envision") when they constitute section-level content.
+  * Typical titles: Future Work, Open Problems, Challenges, Outlook, Research Challenges.
 
 - CONCLUSION
-  * Definition: The section summarizes the survey's main findings and contributions. Does not introduce new content or open questions (those belong to PROSPECTIVE).
+  * Definition: Summarizes the survey's main findings and contributions; introduces no new content or open questions.
   * Typical titles: Conclusion, Summary, Concluding Remarks.
 
 ### Content Tag Definitions (choose ALL that apply)
 
-METHOD - Covers specific algorithms, architectures, models, or technical approaches.
-DATASET - Describes datasets, corpora, or data collection/annotation procedures.
-BENCHMARK - Discusses evaluation benchmarks, leaderboards, standard test sets, or evaluation metrics/protocols.
-ETHICS_AND_SAFETY  - Addresses ethical considerations, fairness, bias, discrimination, privacy, safety, robustness, reliability, or adversarial vulnerabilities.
-TOOLKIT - Covers software libraries, open-source frameworks, toolkits, or code repositories.
-APPLICATION - Covers real-world deployment, industrial use cases, or scenario-based selection guidance for reviewed systems.
-GENERAL - FALLBACK ONLY. Assign this tag if and only if none of the tags above (METHOD, DATASET, BENCHMARK, ETHICS_AND_SAFETY, TOOLKIT, APPLICATION) clearly applies to this section. NEVER assign GENERAL together with any other tag. If you are uncertain whether a specific tag fits but it is the best available option, assign that specific tag without GENERAL.
+* METHOD - Covers specific algorithms, theories, architectures, models, or technical approaches.
+* DATASET - Describes datasets, corpora, or data collection/annotation procedures.
+* BENCHMARK - Discusses evaluation benchmarks, leaderboards, standard test sets, or evaluation metrics/protocols.
+* ETHICS_AND_SAFETY  - Addresses ethical considerations, fairness, bias, discrimination, privacy, safety, robustness, reliability, or adversarial vulnerabilities.
+* APPLICATION - Covers real-world deployment, industrial use cases, or scenario-based selection guidance for reviewed systems.
+* GENERAL - FALLBACK ONLY. Assign this tag if and only if none of the tags above (`METHOD`, `DATASET`, `BENCHMARK`, `ETHICS_AND_SAFETY`, `APPLICATION`) clearly applies to this section. NEVER combine `GENERAL` with another tag.
 
 ### Decision Notes
-- If the opening text is empty, base your decision on the section title and document title alone.
-- Assign all content tags that clearly apply. If you assign any tag other than GENERAL, do not add GENERAL. GENERAL is only valid as the sole tag when no other tag fits at all.
-- When the section title is ambiguous (e.g., "Discussion"), use the opening text to decide between FUTURE_WORK and CONCLUSION.
-- A subsection inherits no constraints from its parent section type; classify it solely on its own title and opening text.
-- "Discussion" titles: inspect opening text - field-level open problems -- FUTURE_WORK; summary of findings -- CONCLUSION; scope exclusions -- LIMITATION. 
-- LIMITATION is often a short subsection inside Introduction or Conclusion; position does not override content. Decisive signal: "we do not discuss", "out of scope", "we exclude". 
-- Perspective sentences ("we believe", "in our view") within any section do not change that section's functional type; they are sentence-level phenomena.
-
-### Conflict resolution: preamble background vs. section title 
-Many survey body sections open with 1-3 sentences of motivating background before surveying specific works. If the section title names a substantive technical area (methods, systems, tools, hardware), classify as CONTENT even when the opening sentences are background in nature. The preamble background belongs to the section but does not determine its functional type. 
-
-Apply BACKGROUND only when the entire purpose of the section is to provide prerequisite knowledge - not when it is a survey body section that happens to start with motivation.
-
-### Hard constraints on output
-- content_tags must contain either GENERAL alone, or one or more tags from {{METHOD, DATASET, BENCHMARK, ETHICS_AND_SAFETY, TOOLKIT, APPLICATION}}. Any output combining GENERAL with another tag is invalid.
+- If opening text is empty: decide from section/document title alone.
+- If the title is "Discussion" only: open problems -> FUTURE_WORK; findings summary -> CONCLUSION; scope exclusions -> SCOPE.
+- Subsections inherit no type from their parent; classify each independently.
+- Perspective sentences ("we believe") do not change a section's type; that is a sentence-level phenomenon.
+- A body section titled after a substantive technical area is CONTENT even if it opens with 1-3 motivating sentences; reserve BACKGROUND for sections whose entire purpose is prerequisite knowledge.
 
 ### Output format (JSON only)
 {{
@@ -295,9 +177,9 @@ Apply BACKGROUND only when the entire purpose of the section is to provide prere
   "confidence": 0.0
 }}"""
 
-SECTION_LABELS = {'SCOPE', 'BACKGROUND', 'TAXONOMY', 'CONTENT', 'EVALUATION', 'FUTURE_WORK', 'LIMITATION', 'CONCLUSION'}
+SECTION_LABELS = {'SCOPE', 'BACKGROUND', 'CONTENT', 'FUTURE_WORK', 'CONCLUSION'}
 
-CONTENT_TAGS = {'METHOD', 'DATASET', 'BENCHMARK', 'ETHICS_AND_SAFETY', 'TOOLKIT', 'APPLICATION', 'GENERAL'}
+CONTENT_TAGS = {'METHOD', 'DATASET', 'BENCHMARK', 'ETHICS_AND_SAFETY', 'APPLICATION', 'GENERAL'}
 
 SECTION_SCHEMA = {
     "type": "object",
@@ -322,7 +204,7 @@ Context  : "{CONTEXT}"
 
 ### Step 1 - Exclusion check
 
-- Return {{"excluded": true, "reason": "PRIOR_WORK_FALSE_POSITIVE"}} if: The grammatical subject is a named prior system, paper, model, dataset, or method - not the current survey. Example triggers: "[Named System] is proposed / introduced / presented / designed / consists of"
+- Return {{"excluded": true, "reason": "PRIOR_WORK_FALSE_POSITIVE"}} if: The grammatical subject is a named prior system, paper, model, dataset, or method - not the current survey. Example triggers: "[Named System] / This method is proposed / introduced / presented / designed / consists of"
 
 - Return {{"excluded": true, "reason": "NON_VERIFIABLE"}} if any of:
   * Pure intent or hope with no content claim: "We hope this work will inspire..."
@@ -357,8 +239,8 @@ target (string)
 
 ### Type definitions
 
-- sentence:COMPARISON
-  * Definition: The claim is verified by finding COMPARISON sentences (explicit cross-work contrasts using "unlike", "in contrast", "compared to") or multi-dimensional comparison tables in the body.
+- sentence:CONTRAST
+  * Definition: The claim is verified by finding CONTRAST sentences (explicit cross-work contrasts using "unlike", "in contrast", "compared to") or multi-dimensional comparison tables in the body.
   * Use when: "comparative study", "we compare X and Y along dimensions", "Table N contrasts systems across criteria".
 
 - sentence:SYNTHESIS
@@ -366,7 +248,7 @@ target (string)
   * Use when: "we synthesize findings across approaches", "methods are unified under a common framework", "we propose a taxonomy of X".
 
 - section:EVALUATION
-  * Definition: Verified by finding a section with functional type EVALUATION - a dedicated section for systematic comparison of systems using benchmarks, metrics, or tables.
+  * Definition: Verified by finding a section with functional type EVALUATION - a dedicated section for systematic evaluation or comparison of systems using benchmarks, metrics, or tables.
   * Use when: "a dedicated evaluation section is provided", "Section N presents a benchmark comparison of systems", "performance results are summarized in Table N".
 
 - section:FUTURE_WORK
@@ -388,10 +270,6 @@ target (string)
 - tag:ETHICS_AND_SAFETY
   * Definition: Verified by finding a section with content_tag ETHICS_AND_SAFETY.
   * Use when: "ethical considerations are discussed", "fairness and bias are addressed", "privacy implications are analyzed", "societal impacts are examined", "safety of systems is discussed", "robustness to adversarial inputs is reviewed", "security vulnerabilities are analyzed", "reliability is addressed".
-
-- tag:TOOLKIT
-  * Definition: Verified by finding a section with content_tag TOOLKIT.
-  * Use when: "open-source tools are surveyed", "software libraries are reviewed", "available frameworks are compared", "code repositories are discussed".
 
 - tag:APPLICATION
   * Definition: Verified by finding a section with content_tag APPLICATION.
@@ -434,7 +312,7 @@ Example:
   {{
     "claims": [
       {{"section": "document", "type": "tag:ETHICS", "target": "privacy-preserving methods"}},
-      {{"section": "document", "type": "sentence:COMPARISON", "target": "computational overhead comparison across privacy-preserving approaches"}}
+      {{"section": "document", "type": "sentence:CONTRAST", "target": "computational overhead comparison across privacy-preserving approaches"}}
     ]
   }}
 
@@ -456,105 +334,92 @@ If not excluded:
 }}
 """
 
-CONTRIBUTION_LABELS = {"sentence:COMPARISON", "sentence:SYNTHESIS", "section:EVALUATION", "section:FUTURE_WORK", "tag:METHOD", "tag:DATASET", "tag:BENCHMARK", "tag:ETHICS_AND_SAFETY", "tag:TOOLKIT", "tag:APPLICATION", "coverage"}
+CONTRIBUTION_LABELS = {"sentence:CONTRAST", "sentence:SYNTHESIS", "section:EVALUATION", "section:FUTURE_WORK", "tag:METHOD", "tag:DATASET", "tag:BENCHMARK", "tag:ETHICS_AND_SAFETY", "tag:APPLICATION", "coverage"}
 
 # preprocess/claim_segmentation.py
-CLAIM_SEGMENTATION = '''You are a precise claim extractor for citation verification. Extract minimal, independently verifiable claims from the paragraph below.
+CLAIM_SEGMENTATION = '''You are a precise claim extractor for citation verification. Extract minimal, independently verifiable claims from the sentences marked <E id="...">...</E> below. Unmarked sentences are context only - never extract claims from them, use them only to resolve references inside <E> sentences.
 
-INPUT
-Paragraph:
+### INPUT
 """{range}"""
 
-RULES
+### RULES
 
-1. Atomicity: Each claim must express exactly ONE checkable statement about ONE specific entity (a paper, method, model, system). Split coordinate predicates/objects sharing one citation (e.g., "does A and B") into separate claims, one per item - UNLESS the joint statement only makes sense together (e.g., "X and Y jointly demonstrated Z"), in which case keep them as one claim.
+1. Atomicity: split "and"-joined coordinate predicates/objects sharing one citation into separate claims, one per item - UNLESS the joint statement only makes sense together (e.g., "X and Y jointly demonstrated Z"). Do NOT split "or"-joined items; keep them as one claim (splitting would turn "at least one holds" into two independently-required claims).
 
 2. Citation attachment:
    - Multiple markers supporting the same statement stay in one claim.
-   - A pronoun or implicit reference to an entity introduced earlier in THIS paragraph inherits that entity's citation key(s); replace the pronoun with the resolved entity name.
-   - If no citation can be found or inherited, set citation_keys to [].
+   - A pronoun/implicit reference inherits its antecedent's citation key(s); substitute the resolved entity name for the pronoun.
+   - No citation, no valid antecedent to inherit from 閳?citation_keys = [].
 
-3. Verifiability label - mark a claim "unverifiable" if ANY apply:
-   - It is not associated to any citations.
-   - It only restates or continues a prior statement without adding a new checkable detail (e.g., "Following [10], we consider...").
-   - It is a categorical/definitional statement about a class of things, backed by multiple citations, not specific to any single cited work (e.g., "LLMs are models with massive parameter sizes [a,b,c]").
-   - It is a catch-all enumeration tail with no specific referent (e.g., "...and other restoration tasks").
-   Otherwise mark "verifiable" - this includes short claims, as long as they assert a specific, checkable property of one named entity (e.g., "X is an inductive framework for learning node embeddings").
+3. Source tracking: every claim must list the id(s) of every <E> sentence it draws content from - the sentence containing the predicate, plus (if a pronoun/implicit reference was resolved) the sentence containing the antecedent. A claim built entirely from one sentence has one id.
 
-4. Skip pure transitions/hedges that make no checkable statement at all (e.g., "this remains an active research area") - do not output these as claims.
+4. Ambiguity flag - mark "verifiable": false if ANY apply:
+   - The reference (pronoun/implicit mention) cannot be resolved to a specific antecedent within the given text.
+   - It is a categorical/definitional statement about a class of things, backed by multiple citations, not specific to any single cited work.
+   - It is a catch-all enumeration tail with no specific referent (e.g., "...and other applications").
+   - It only restates/continues a prior statement without adding a new checkable detail.
+   - Its subject is a generic technique/design pattern/paradigm rather than one identifiable named entity (paper, method, model, dataset, system).
+   Otherwise mark "verifiable": true.
 
-5. Verbatim constraint: every word must come from the paragraph, except resolved entity names substituted for pronouns.
+5. Skip pure transitions/hedges with no checkable statement at all (e.g., "this remains an active research area") - do not output these as claims.
 
-OUTPUT (JSON only)
+6. Verbatim constraint: every word must come from the text, except resolved entity names substituted for pronouns.
+
+### OUTPUT (JSON only)
 {{
   "claims": [
-    {{"claim": "...", "verifiable": true|false, "citation_keys": ["..."]}}
+    {{"claim": "...", "verifiable": true|false, "citation_keys": ["..."], "source_ids": ["..."]}}
   ]
 }}
 
-EXAMPLE 1 - coordinate splitting, all verifiable
+### EXAMPLE 1 - and/or splitting, cross-sentence coreference, generic-subject ambiguity
 
-Paragraph:
-"""[12] introduced GraphSAGE, an inductive framework for learning node embeddings on large graphs. It achieves strong results on node classification and link prediction."""
+"""<E id="1">[12] introduced GraphSAGE, an inductive framework for learning node embeddings on large graphs.</E> <E id="2">It achieves strong results on node classification and link prediction.</E> <E id="3">Sinusoidal or learned time embeddings can be used for time conditioning [8].</E>"""
 
 Output:
 {{
   "claims": [
-    {{"claim": "[12] introduced GraphSAGE, an inductive framework for learning node embeddings on large graphs.", "verifiable": true, "citation_keys": ["12"]}},
-    {{"claim": "GraphSAGE achieves strong results on node classification.", "verifiable": true, "citation_keys": ["12"]}},
-    {{"claim": "GraphSAGE achieves strong results on link prediction.", "verifiable": true, "citation_keys": ["12"]}}
+    {{"claim": "[12] introduced GraphSAGE, an inductive framework for learning node embeddings on large graphs.", "verifiable": true, "citation_keys": ["12"], "source_ids": ["1"]}},
+    {{"claim": "GraphSAGE achieves strong results on node classification.", "verifiable": true, "citation_keys": ["12"], "source_ids": ["1", "2"]}},
+    {{"claim": "GraphSAGE achieves strong results on link prediction.", "verifiable": true, "citation_keys": ["12"], "source_ids": ["1", "2"]}},
+    {{"claim": "Sinusoidal or learned time embeddings can be used for time conditioning.", "verifiable": false, "citation_keys": ["8"], "source_ids": ["3"]}}
   ]
 }}
 
-EXAMPLE 2 - categorical statement (unverifiable) vs specific claim
+### EXAMPLE 2 - unresolved reference, categorical statement, enumeration tail
 
-Paragraph:
-"""Large Language Models (LLMs) [19, 91, 255] are advanced language models with massive parameter sizes. GPT-3 [7] showed that scaling parameters enables few-shot learning without fine-tuning."""
+"""He proposed a two-stage training approach for it, achieving strong performance on the benchmark [44]. <E id="4">Large Language Models (LLMs) [19, 91, 255] are advanced language models with massive parameter sizes.</E> <E id="5">This has enabled progress on visual question answering, and other multimodal applications.</E>"""
 
 Output:
 {{
   "claims": [
-    {{"claim": "Large Language Models [19, 91, 255] are advanced language models with massive parameter sizes.", "verifiable": false, "citation_keys": ["19", "91", "255"]}},
-    {{"claim": "GPT-3 [7] showed that scaling parameters enables few-shot learning without fine-tuning.", "verifiable": true, "citation_keys": ["7"]}}
+    {{"claim": "Large Language Models are advanced language models with massive parameter sizes.", "verifiable": false, "citation_keys": ["19", "91", "255"], "source_ids": ["4"]}},
+    {{"claim": "Large Language Models have enabled progress on visual question answering.", "verifiable": true, "citation_keys": ["19", "91", "255"], "source_ids": ["5"]}},
+    {{"claim": "Large Language Models have enabled progress on other multimodal applications.", "verifiable": false, "citation_keys": ["19", "91", "255"], "source_ids": ["5"]}}
   ]
 }}
 
-EXAMPLE 3 - continuation sentence (unverifiable) + enumeration tail
-
-Paragraph:
-"""Diffusion models excel at super-resolution, inpainting, and other restoration tasks [33]."""
-
-Output:
-{{
-  "claims": [
-    {{"claim": "Diffusion models excel at super-resolution.", "verifiable": true, "citation_keys": ["33"]}},
-    {{"claim": "Diffusion models excel at inpainting.", "verifiable": true, "citation_keys": ["33"]}}
-    {{"claim": "Diffusion models excel at other restoration tasks.", "verifiable": false, "citation_keys": ["33"]}}
-  ]
-}}
-
-CHECK before output: every claim is atomic, every token is traceable to the paragraph (except resolved pronouns), unverifiable claims are still output (not silently dropped), and no pure transition/hedge sentence was extracted.
+CHECK before output: every claim has a non-empty source pointing to <E> sentence id(s) actually used, "or" was not split while "and" was, every unresolved reference is flagged verifiable:false rather than guessed, and no pure transition/hedge sentence was extracted.
 '''
 
 CLAIM_SCHEMA = {
     "type": "object",
-    "required": ["claim", "verifiable", "citation_keys"],
+    "required": ["claim", "verifiable", "citation_keys", "source_ids"],
     "properties": {
         "claim": {"type": "string", "minLength": 1},
         "verifiable": {"type": "boolean"},
-        "citation_keys": {"type": "array", "items": {"type": "string"}}
+        "citation_keys": {"type": "array", "items": {"type": "string"}},
+        "source_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
     }
 }
 
 CLAIMS_SCHEMA = {
-    "type": "object", 
+    "type": "object",
     "required": ["claims"],
     "properties": {"claims": {"type": "array", "items": CLAIM_SCHEMA}}
 }
 
-
-def CONTRIBUTION_SCHEMA(sections):
-    return {
+CONTRIBUTION_SCHEMA = {
       "type": "object",
       "oneOf": [
         {
@@ -588,167 +453,63 @@ def CONTRIBUTION_SCHEMA(sections):
       ]
     }
 
-
 # preprocess/content_parser.py
-CONTENT_PARSE = """### Task
-You will be given a paragraph from a survey in the field of Computer Sciences. Identify every research object that this paragraph is MAINLY INTRODUCING, PROPOSING, OR CREDITING AS A DISTINCT CONTRIBUTION being reviewed - a named or unnamed method, model, architecture, algorithm, dataset, benchmark, evaluation metric, software framework, or technical/methodological concept that the paragraph treats as a subject of discussion in its own right.
+CONTENT_PARSE_WITH_TOPICS = """### Task
+You will read one section of a survey paper. Extract:
+(1) research objects -- specific methods, models, datasets, benchmarks, or frameworks from the literature that this section discusses
+(2) the topic(s) this section is organized around, each anchored to verbatim textual evidence
+(3) which topic each object belongs to, anchored to verbatim textual evidence
 
-Extraction is judged by MEANING, not by capitalization or spelling. A lowercase multi-word phrase naming a specific paradigm or method family is just as valid a target as an acronym or a capitalized model name. A research object may also have NO name at all - extract it based on its citation and description alone.
+### Objects: what to extract
+Look for sentences of the form "[Author(s)] [citation] proposed/introduced/developed/found/showed/presented X" -- extract X as one object, tied to that citation.
 
-### Extract an object when:
-- It is the main subject of the sentence/clause: something being introduced, proposed, evaluated, or positioned as part of the literature - something a reader would reasonably expect to trace back to a specific source.
-- This includes general paradigm/family names when they are the main subject being surveyed as a category of prior work (e.g. "early approaches relied on X and Y", where X and Y are method families being discussed as such).
-- This includes cases where NO proper name is given at all, only a description plus a citation (e.g. "Smith et al. [12] proposed a graph-based approach for ...").
+X may have a proper name (e.g. "DDPM") or no proper name at all. If X has no proper name, output name as an empty string "" -- do not write a description in its place.
 
-### Do NOT extract an object when:
-- It is a foundational mathematical, statistical, or physical concept borrowed into the field as a generic tool.
-- It is a type of task or application scenario (e.g. text generation).
-- It names a cluster of works or a method family mentioned only in passing at the start/end of the paragraph as a transitional label, not as the actual subject being discussed.
-- It is mentioned only as a SUPPORTING DETAIL used to explain another object's internal mechanism or dependency, rather than as the object the sentence is actually about. *Test: if you removed this term, would the sentence still be making its main point? If yes, it is a supporting detail - exclude it.*
-- It is a generic engineering practice mentioned in passing (routine training/evaluation procedures) rather than a research object the survey is actually discussing.
-- It is a bare common noun with no specific referent (e.g. "the model", "this approach", used anaphorically).
+Key test when a sentence lists several items after the citation's verb:
+- If the list items ARE the specific thing the cited work did/built (its own technical content), extract the whole list as ONE object representing that contribution (name = "" if it has no proper name).
+- If the list items are pre-existing factors/dimensions that the cited work merely organizes, unifies, or analyzes together (signal words: "as a coherent/unified X", "spans/covers A, B, and C"), extract only the framework itself as ONE object with name = "". Do NOT extract the individual listed factors as separate objects.
 
-### For each extracted object, also identify: citation_keys
-- List every citation marker in this sentence or an immediately adjacent sentence that is clearly attached to THIS object's introduction, proposal, or attribution - not attached to some other claim (e.g. a result, comparison, or statistic about it) that merely happens to appear nearby.
-- If no such citation exists, citation_keys must be an empty list.
-- An object can have an empty citation_keys list. An object can also have no name (see below) - these are independent, both can be true, false, or mixed.
+Do NOT extract:
+- Anything with no citation attached (generic background/common-knowledge statements).
+- Evaluation metrics used to judge other objects, unless the metric itself is the cited contribution.
 
-### For each extracted object, also identify: name
-- Set name to the object's proper name/acronym EXACTLY as it appears in the text, if the text gives it one.
-- If the text describes the object only by what it does, with no proper name given anywhere in this paragraph, set name to empty string. Do NOT invent, paraphrase, or reconstruct a name from the description.
+### Topics
+Default: the section's own title is one topic, with is_explicit = false and definition_span = null.
+
+Only add additional topics if the text contains an explicit sentence that itself names sub-categories (e.g. "these fall into two categories: X and Y") AND the rest of the section actually follows that split. For each such topic:
+- label: copied verbatim from the text, not invented.
+- is_explicit: true.
+- definition_span: the verbatim clause from section_text that states the defining criterion of this sub-category (e.g. for "sparse retrieval methods", the clause "which rely on lexical matching such as BM25 [12]"). This span must be an exact substring of section_text -- it will be checked post-hoc.
+
+### Assigning objects to topics -- evidence-grounding rule
+For each object, only assign it to a specific sub-topic (an is_explicit=true topic) if you can quote a verbatim span from section_text that directly ties that object to that sub-topic (e.g. it appears within the defining clause, or a later sentence explicitly places it "within" / "under" / "as a type of" that sub-topic).
+
+If no such direct textual link exists for any sub-topic -- even when the section has explicit sub-topics and the object is merely discussed in that general vicinity -- do NOT guess based on proximity or ordering. Instead:
+- assign topics = [the section title] (the default topic),
+- and set evidence_span to the sentence that introduces/describes the object itself (without a topic-linking claim).
+
+For every object that IS assigned to an explicit sub-topic, evidence_span must be the verbatim span that supports that specific assignment, not just a general description of the object.
 
 ### Output format (JSON only, no other text)
 {{
+  "topics": [
+    {{"label": "...", "is_explicit": true/false, "definition_span": "..." or null}},
+    ...
+  ],
   "objects": [
-    {{"citation_keys": ["..."], "name": "..." or ""}},
+    {{
+      "citation_keys": ["..."],
+      "name": "..." or null,
+      "topics": ["..."],
+      "evidence_span": "..." or null
+    }},
     ...
   ]
 }}
 
 ### Examples
 
-Input:
-Early work framed the task with rule-based pattern matching [9], while later systems adopted sequence labeling [10, 11]. More recently, a retrieval-augmented framework called QueryNet (QN) [22] reported strong gains, though follow-up analyses [23] showed QN underperforms on low-resource languages.
-
-Output:
-{{
-  "objects": [
-    {{"citation_keys": ["9"], "name": ""}}
-    {{"citation_keys": ["10", "11"], "name": ""}}
-    {{"citation_keys": ["22"], "name": "QN"}}
-  ]
-}}
-(Note: [23] supports a finding about QN's performance, not QN's introduction - QN's own citation is [22], already captured.)
-
-Input:
-All models are trained with standard cross-entropy loss and early stopping, using a held-out validation split, consistent with common practice in the broader literature.
-
-Output:
-{{
-  "objects": []
-}}
-(Note: generic training/engineering procedures, not research objects the survey is discussing.)
-
-Input:
-Smith et al. [14] introduced a diffusion-based approach for molecular generation that models the forward process as a fixed Markov chain over atomic coordinates.
-
-Output:
-{{
-  "objects": [
-    {{"citation_keys": ["14"], "name": ""}}
-  ]
-}}
-(Note: this method is never given a proper name in the paragraph - only a citation and a description. Set `name` to empty, `citation_keys` is not empty.)
-
-Input:
-The underlying dynamics are often assumed to follow a random walk, whereas the proposed Trend-Aware Recurrent Estimator (TARE) explicitly models seasonal decomposition.
-
-Output:
-{{
-  "objects": [
-    {{"citation_keys": [], "name": "Trend-Aware Recurrent Estimator"}},
-    {{"citation_keys": [], "name": "TARE"}}
-  ]
-}}
-(Note: "random walk" is excluded as a foundational concept external to the field. TARE is given a name but no citation accompanies its introduction anywhere in this paragraph - citation_keys is empty even though name is present.)
-
-Input:
-"Several benchmarks have been used to evaluate this task, including ObjectNet-200 [31] and a smaller diagnostic split, MiniBench [32], which was later shown to contain significant label noise [33]. The proposed method builds on a standard ResNet backbone [40] for feature extraction."
-
-Output:
-{{
-  "objects": [
-    {{"citation_keys": ["31"], "name": "ObjectNet-200"}},
-    {{"citation_keys": ["32"], "name": "MiniBench"}}
-  ]
-}}
-(Note: [33] supports a separate claim about label noise, not MiniBench's introduction, but MiniBench already has its own citation [32]. ResNet is excluded - it is a supporting detail explaining the proposed method's backbone, not the subject being discussed.)
-
-Input:
-Diffusion Probabilistic Models are based on U-Net [8] structure.
-
-Output:
-{{
-  "objects": [
-    {{"citation_keys": [], "name": "Diffusion Probabilistic Models"}}
-  ]
-}}
-(Note: This sentence is about Diffusion Probabilistic Models; U-Net is a supporting detail explaining its internals. Do NOT extract U-Net, even though it is named and cited.)
-
-### Input paragraph
-Input: 
-"{paragraph}"
-Output:"""
-
-CONTENT_PARSE_WITH_TOPICS = """### Task
-You will be given the FULL TEXT of one section from a survey paper, along with the paper's title and this section's title (and sub-heading path, if any).
-
-Your task, in one pass: 
-(1) identify every research object this section discusses as a subject in its own right (same definition as below), 
-(2) identify the topic(s) this section organizes its content around, 
-(3) assign each extracted object to the topic(s) it belongs to.
-
-### What counts as a research object (extract when):
-- A named or unnamed method, model, architecture, algorithm, dataset, benchmark, evaluation metric, software framework, or technical concept that the section treats as a subject being introduced, proposed, evaluated, or positioned as part of the literature.
-- General paradigm/family names when they are the main subject being surveyed as a category of prior work.
-- Objects with NO proper name given - extract based on citation and description alone (name = null in that case).
-
-### Do NOT extract when:
-- It is a foundational concept borrowed as a generic tool, not a contribution of this field.
-- It is a task/application scenario, not a research object.
-- It is a SUPPORTING DETAIL explaining another object's internal mechanism, not the object actually being discussed. *Test: if removed, would the sentence still make its main point? If yes, exclude it as a supporting detail.*
-- It is a generic engineering practice mentioned in passing.
-- It is a bare common noun with no specific referent.
-
-### For each extracted object: citation_keys and name
-- citation_keys: citation markers clearly attached to THIS object's own introduction/attribution (may be empty list).
-- name: the object's proper name exactly as in the text, or null if no proper name is ever given in this section.
-- If both a full name and an abbreviation appear for the same object ANYWHERE in this section, use only the abbreviation as name, and treat all its mentions as one single object (do not duplicate).
-
-### STRICT RULES on topics
-1. A topic label MUST be grounded in the section's own language, from one of two sources only:
-   (a) The section title or sub-heading path itself (or a natural sub-phrase of it).
-   (b) An explicit categorization sentence in the text - a sentence that itself names categories (e.g. "these methods fall into two categories: X and Y").
-2. Do NOT invent a topic label that abstracts or summarizes beyond what rule 1 allows.
-3. If no explicit sub-categorization sentence exists (rule 1b), the section has exactly ONE topic: the section title itself.
-4. If explicit sub-categorization sentences exist, the section MAY have multiple topics - one per named category. These are IN ADDITION to, not necessarily replacing, the section title as a topic - use judgment: if the sub-categories fully partition the section's content, use only the sub-categories; if they only cover part of the section, keep the section title as a topic for the remaining objects.
-5. An object MAY belong to more than one topic if the text explicitly discusses it under more than one named category.
-6. Every topic label must be copied or minimally trimmed from exact wording in the text - not paraphrased into new vocabulary.
-
-### Output format (JSON only, no other text)
-{{
-  "topics": ["...", "..."],
-  "objects": [
-    {{
-      "citation_keys": ["..."], 
-      "name": "..." or null, 
-      "topics": ["...", "..."]
-    }},
-    ...
-  ]
-}}
-
-### Example
+Example 1
 
 Paper title: "A Survey of Retrieval-Augmented Language Models"
 Section title: "Retrieval-Augmented Generation Methods"
@@ -757,42 +518,45 @@ Section text:
 
 Output:
 {{
-  "topics": ["sparse retrieval methods", "dense retrieval methods"],
-  "entities": [
-    {{"citation_keys": ["12"], "name": "BM25", "topics": ["sparse retrieval methods"]}},
-    {{"citation_keys": ["45"], "name": "DPR", "topics": ["dense retrieval methods"]}},
-    {{"citation_keys": ["50"], "name": "RAG", "topics": ["dense retrieval methods"]}},
-    {{"citation_keys": [], "name": "FiD", "topics": ["dense retrieval methods"]}},
-    {{"citation_keys": ["71"], "name": "", "topics": ["dense retrieval methods"]}}
+  "topics": [
+    {{"label": "sparse retrieval methods", "is_explicit": true, "definition_span": "which rely on lexical matching such as BM25 [12]"}},
+    {{"label": "dense retrieval methods", "is_explicit": true, "definition_span": "which encode queries and documents into a shared embedding space, as in Dense Passage Retrieval (DPR) [45]"}}
+  ],
+  "objects": [
+    {{"citation_keys": ["12"], "name": "BM25", "topics": ["sparse retrieval methods"], "evidence_span": "which rely on lexical matching such as BM25 [12]"}},
+    {{"citation_keys": ["45"], "name": "DPR", "topics": ["dense retrieval methods"], "evidence_span": "which encode queries and documents into a shared embedding space, as in Dense Passage Retrieval (DPR) [45]"}},
+    {{"citation_keys": ["50"], "name": "RAG", "topics": ["dense retrieval methods"], "evidence_span": "Within dense retrieval, Retrieval-Augmented Generation (RAG) [50] further conditions the generator directly on retrieved passages"}},
+    {{"citation_keys": [], "name": "FiD", "topics": ["dense retrieval methods"], "evidence_span": "Within dense retrieval, Retrieval-Augmented Generation (RAG) [50] further conditions the generator directly on retrieved passages, while Fusion-in-Decoder (FiD) instead fuses each passage's representation separately before decoding"}},
+    {{"citation_keys": ["71"], "name": "", "topics": ["Retrieval-Augmented Generation Methods"], "evidence_span": "A related line of work, proposed by Chen et al. [71], explores caching retrieved passages across queries to reduce latency"}}
   ]
 }}
-(Note: Dense Passage Retrieval/DPR, Retrieval-Augmented Generation/RAG, and Fusion-in-Decoder/FiD each collapse to a single entry using only the abbreviation. Chen et al.'s caching method has no proper name (empty string) but is still assigned to "dense retrieval methods" since it is discussed within that category's scope. The explicit categorization sentence fully partitions the section's content, so the section title itself is not used as a separate topic.)
+(Note: BM25, DPR each ground directly in their defining clause. RAG and FiD are both explicitly placed "within dense retrieval" by the same sentence, so both cite that sentence as evidence. Chen et al.'s caching method is discussed after the two-way split but is never explicitly placed "within dense retrieval" or any sub-topic -- unlike the earlier version of this example, it is NOT assigned to "dense retrieval methods" on the basis of proximity. It falls back to the section title as its topic, since no direct textual link to either sub-topic exists.)
+
+Example 2
+
+Paper title: "A Survey of Diffusion Models"
+Section title: "Likelihoods, Weighting, and Training Objectives"
+Section text:
+"Diffusion models can be trained through variational lower bounds, denoising losses, or hybrid objectives. Nichol and Dhariwal [31] found that learning reverse-process variances and modifying the objective improved both sample quality and log-likelihood. Karras et al. [44] analyzed noise levels, preconditioning, loss weighting, and sampler design as a coherent design space, showing that many empirical improvements can be understood as better numerical and statistical choices rather than wholly new model families."
+
+Output:
+{{
+  "topics": [
+    {{"label": "Likelihoods, Weighting, and Training Objectives", "is_explicit": false, "definition_span": null}}
+  ],
+  "objects": [
+    {{"citation_keys": ["31"], "name": "", "topics": ["Likelihoods, Weighting, and Training Objectives"], "evidence_span": "Nichol and Dhariwal [31] found that learning reverse-process variances and modifying the objective improved both sample quality and log-likelihood"}},
+    {{"citation_keys": ["44"], "name": "", "topics": ["Likelihoods, Weighting, and Training Objectives"], "evidence_span": "Karras et al. [44] analyzed noise levels, preconditioning, loss weighting, and sampler design as a coherent design space"}}
+  ]
+}}
+(Note: The first sentence lists training-objective types with no citation attached, so nothing is extracted from it. No explicit categorization sentence partitions this section, so both objects fall under the single default topic, is_explicit = false, definition_span = null.)
 
 ### Input
 Paper title: "{paper_title}"
 Section title: "{section_title}"
-Section text: "{section_text}"
+Section text:
+"{section_text}"
 Output:"""
-
-CONTENT_PARSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "objects": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "citation_keys": {"type": "array", "items": {"type": "string"}},
-                    "name": {"type": ["string", "null"]},
-                },
-                "required": ["citation_keys", "name"],
-                "additionalProperties": True,
-            },
-        },
-    },
-    "required": ["objects"],
-    "additionalProperties": True,
-}
 
 CONTENT_PARSE_WITH_TOPICS_SCHEMA = {
     "type": "object",
@@ -816,28 +580,74 @@ CONTENT_PARSE_WITH_TOPICS_SCHEMA = {
     "additionalProperties": True,
 }
 
-# preprocess/websearch.py
-WEBSEARCH_FILTER_PROMPT = """You are filtering academic web search results for a cited paper lookup.
+# preprocess/get_reference_surveys.py
+REFERENCE_SURVEY_SELECT = """You are a professional academic researcher selecting reference surveys to evaluate a target survey titled "{query}".
 
-Target paper title:
-{title}
+### Input
+You are given a list of candidate papers with their titles and abstracts.
 
-Candidates:
+### Definition: Reference Survey
+A **reference survey** is a field-level survey that:
+- Treats the query topic as its PRIMARY organizing focus, not as a tool or method applied within a different domain.
+- Organizes the literature into coherent conceptual or methodological dimensions (e.g., taxonomies, categorizations, design spaces).
+- Covers multiple distinct sub-topics within the query field.
+- Would be consulted by an expert to judge whether another survey on this topic has missed important topics or references.
+
+### Inclusion Criteria for Reference Surveys (ALL must be satisfied)
+1. The query topic is the main research object AND the primary organizing principle of the paper.
+2. At least THREE distinct sub-topics within the query field are covered.
+3. The paper synthesizes existing literature rather than reporting original experimental results.
+
+### Exclusion Criteria (ANY triggers exclusion from BOTH tiers)
+- Not a survey: excludes benchmarks, position papers, tutorials, or original research papers.
+- Primary subject is a downstream application domain, with the query topic appearing only as the method used (e.g., "Transformers for Medical Imaging" is excluded when evaluating a survey on Transformers).
+- Covers only ONE task or sub-area within the query field.
+- Mentions the query topic only as background or one method among many.
+
+### Classification Instructions
+- First apply exclusion criteria. If any exclusion criterion is met, discard the candidate entirely.
+- For remaining candidates, apply inclusion criteria. If ALL inclusion criteria are satisfied -- reference survey. Otherwise -- discard.
+- Select at most 3 surveys in total.
+- Be conservative: fewer is better than including a marginal candidate.
+- If no candidate meets reference survey criteria, return an empty list.
+
+### Candidate Surveys
 {candidates}
 
-Return a JSON object only:
-```json
+### Output Format
+Return JSON only, no extra text.
 {{
-  "matched_indices": [1, 3],
-  "reason": "brief explanation"
+  "reference_surveys": [
+    {{
+      "title": "...",
+      "covered_subtopics": ["subtopic1", "subtopic2", "subtopic3"],
+      "reason": "one sentence explaining why this qualifies as a reference survey"
+    }}
+  ]
 }}
-```
-
-Rules:
-- keep only candidates that are very likely to refer to the same paper,
-- prefer publisher, DOI, arXiv, OpenReview, ACL Anthology, Semantic Scholar, DBLP, or author pages,
-- it is acceptable to return an empty list if the evidence is weak.
 """
+
+REFERENCE_SURVEY_SCHEMA = {
+  "type": "object",
+  "properties": {
+    "reference_surveys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "covered_subtopics": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 3},
+          "reason": {"type": "string", "minLength": 1}
+        },
+        "required": ["title", "covered_subtopics", "reason"],
+        "additionalProperties": False
+      },
+      "maxItems": 3,
+    }
+  },
+  "required": ["reference_surveys"],
+  "additionalProperties": False
+}
 
 # preprocess/find_entities.py
 FIND_ALL_ENTITIES = """### Task
@@ -920,7 +730,7 @@ Output:
 (Note: [33] supports a separate claim about label noise, not the introduction of MiniBench, but MiniBench already has its own citation [32] - so it is still locally_cited: true overall.)
 
 ### Input paragraph
-Input: 
+Input:
 "{paragraph}"
 Output:"""
 
@@ -970,12 +780,20 @@ Determine whether the claim is supported by the cited paper. Your judgment shoul
 
 **Important:** If your judgment is "SUPPORTED" or "REFUTED", you MUST provide verbatim evidence from the content of the cited paper to support that.
 
+Use a strict contradiction standard:
+- Mark REFUTED only when the evidence explicitly contradicts the core factual content of the claim.
+- Do not mark REFUTED merely because the evidence uses different terminology, a broader/narrower formulation, or an implementation-level description that is compatible with the claim.
+- For method descriptions, treat high-level descriptions and implementation descriptions as compatible unless they cannot both be true.
+- If the evidence is related but does not clearly support or clearly contradict the claim, choose NEUTRAL.
+- If you mark REFUTED, include a concise contradiction_reason explaining why the claim and evidence cannot both be true.
+
 Your output should be a single JSON object only:
 
 ```json
 {{
   "judgment": "SUPPORTED" | "REFUTED" | "NEUTRAL",
-  "evidence": "verbatim evidence from the cited paper, if judgment == SUPPORTED or REFUTED" | "" (if judgment == NEUTRAL)
+  "evidence": "verbatim evidence from the cited paper, if judgment == SUPPORTED or REFUTED" | "" (if judgment == NEUTRAL),
+  "contradiction_reason": "why the claim and evidence cannot both be true, if judgment == REFUTED" | ""
 }}
 ```
 
@@ -1008,7 +826,7 @@ Format: X.1 Subsection one / X.2 Subsection two / ...
 
 In one sentence, state the specific topic this section promises to discuss, based on the title and opening text. Be concrete: "privacy protection mechanisms in edge computing", not "privacy".
 
-Note: a section's topic can legitimately be the previous section's topic extended along a new dimension (e.g. image generation 闂?video generation, by adding the temporal dimension). If this section's title plausibly extends the previous section's topic this way, include that connection in your statement of the promised topic 闂?sentences continuing that thread should not be flagged just because they lack an explicit keyword (e.g. a sentence about temporal modeling under "Video Generation" need not say "video").
+Note: a section's topic can legitimately be the previous section's topic extended along a new dimension (e.g. image generation -- video generation, by adding the temporal dimension). If this section's title plausibly extends the previous section's topic this way, include that connection in your statement of the promised topic -- sentences continuing that thread should not be flagged just because they lack an explicit keyword (e.g. a sentence about temporal modeling under "Video Generation" need not say "video").
 
 ### Step 2 - Label content sentences
 
@@ -1063,23 +881,26 @@ CONTRIBUTION_CONSISTENT = """You are an expert annotator for academic literature
 
 You will be given:
 1. A contribution claim extracted from the paper's stated contribution.
-2. Three pools of evidence extracted from the paper itself:
-   - SECTION TITLES: all section/subsection headings in the paper, in document order.
-   - SECTION TOPICS: for each section, the subtopics and research objects discussed there, as identified by a discourse parser.
+2. Two pools of evidence extracted from the paper itself:
+   - SECTION TITLES AND TOPICS: all section/subsection headings in the paper, in document order, along with the subtopics and research objects discussed in each sections, as identified by a discourse parser.
    - CANDIDATE SENTENCES: sentences from the paper (synthesis, summary, evaluation, or comparison statements) that are most semantically related to the contribution claim, retrieved and reranked by relevance.
 
-Your task: determine whether the CANDIDATE evidence, taken together, actually supports that the contribution claim was fulfilled in the paper's body content 闂?not just mentioned in passing, but substantively covered.
+Your task: determine whether the CANDIDATE evidence, taken together, actually supports that the contribution claim was fulfilled in the paper's body content -- not just mentioned in passing, but substantively covered.
 
 ### Rules
 
-- Use ALL THREE evidence pools jointly. A contribution claim may be supported by a title alone (e.g. a dedicated section title matching the claim), by section topics alone (e.g. a research object tag matching the claim even if no title matches), by sentences alone, or by a combination.
+- Use BOTH evidence pools jointly. A contribution claim may be supported by a section alone (e.g. a dedicated section title matching the claim), by section topics or objects alone (e.g. a research object tag matching the claim even if no section title matches), by sentences alone, or by a combination.
 - Do NOT require an exact lexical match. Judge semantic correspondence (e.g. "sampling acceleration techniques" is satisfied by a section titled "Sampling Acceleration and Distillation").
-- If the contribution claim is a compound/enumerative statement covering multiple items (e.g. "spanning A, B, and C"), you are given ONE such item to check at a time 闂?do not require the full compound claim to be covered by this evidence alone.
-- If NO evidence in any of the three pools plausibly relates to the contribution claim, conclude NOT_FULFILLED.
+- If the contribution claim is a compound/enumerative statement covering multiple items (e.g. "spanning A, B, and C"), you are given ONE such item to check at a time -- do not require the full compound claim to be covered by this evidence alone.
+- If NO evidence in either pool plausibly relates to the contribution claim, conclude NOT_FULFILLED.
 - If evidence relates to the contribution claim's general topic but does not show substantive treatment (e.g. only one passing mention, no dedicated discussion), conclude PARTIALLY_FULFILLED.
 - If evidence clearly shows the contribution claim was substantively addressed, conclude FULFILLED.
 - You must cite which specific piece(s) of evidence (by pool and item) support your conclusion. Do not fabricate evidence not present in the given pools.
-- Do not judge the quality or correctness of the content 闂?only whether the topic was substantively addressed somewhere in the paper.
+- For `section` evidence, copy the exact section label after `- `, e.g. `Section 7.1 Image Synthesis`.
+- For `topic` evidence, copy only the topic name after `Topic:`.
+- For `object` evidence, copy only the object name after `Object:`.
+- For `sentence` evidence, copy the exact candidate sentence item.
+- Do not judge the quality or correctness of the content -- only whether the topic was substantively addressed somewhere in the paper.
 
 ### Output Foramt
 
@@ -1087,7 +908,7 @@ Output strictly in this JSON format:
 {{
   "verdict": "FULFILLED" | "PARTIALLY_FULFILLED" | "NOT_FULFILLED",
   "supporting_evidence": [
-    {{"pool": "title" | "topic" | "sentence", "item": "<exact text of the evidence item>"}}
+    {{"pool": "section" | "topic" | "object" | "sentence", "item": "<exact text of the evidence item>"}}
   ],
   "reasoning": "<one to two sentences explaining the judgment, referencing the evidence above>"
 }}
@@ -1099,10 +920,7 @@ CONTRIBUTION_CLAIM:
 
 (This is one atomic component of the paper's broader stated contribution: "{original_contribution_sentence}")
 
-SECTION TITLES:
-{full_list_of_titles_in_order}
-
-SECTION TOPICS:
+SECTION TITLES AND TOPICS:
 {full_list_of_section_subtopics_and_research_objects}
 
 CANDIDATE SENTENCES (reranked, top-{K}):
@@ -1121,7 +939,7 @@ CONTRIBUTION_CONSISTENT_SCHEMA = {
                 'type': 'object',
                 'required': ['pool', 'item'],
                 'properties': {
-                    "pool": {'enum': ['title', 'topic', 'sentence']},
+                    "pool": {'enum': ['section', 'topic', 'object', 'sentence']},
                     'item': {'type': 'string'}
                 },
                 'additionalProperties': False
@@ -1132,74 +950,149 @@ CONTRIBUTION_CONSISTENT_SCHEMA = {
     "additionalProperties": False
 }
 
-# scope/topic_papers.py
-PPR_TYPE = """### Task
-You are classifying a research paper into ONE primary category based strictly on its title and abstract. This classification describes what kind of contribution the paper primarily makes to the literature - not what field or task it belongs to.
+# scope/missing_topic_detection.py
+MISSING_TOPIC_NAME = """### Task
+Name a NOVEL Leiden paper community and assign every applicable content tag.
 
-### Categories (choose exactly one)
-1. "method" - The paper's primary contribution is a new algorithm, model, architecture, or technical approach. This applies even if the method is demonstrated on a specific domain, AS LONG AS the technical approach itself (not just its domain adaptation) is the paper's main claimed contribution.
-2. "dataset" - The paper's primary contribution is the construction, collection, or release of a new dataset (raw data + annotations, for training or experiments purpose), without proposing a new evaluation protocol or a new method as its main claim.
-3. "benchmark" - The paper's primary contribution is an evaluation protocol, task suite, leaderboard, or standardized comparison framework. A benchmark paper MAY include a dataset, but its main claimed contribution is the evaluation methodology/protocol itself, not merely the data.
-4. "application" - The paper's primary contribution is applying an existing (not newly proposed) method or system to a specific domain or use case, where the main claimed contribution is the domain adaptation, deployment, or empirical findings in that domain - not a new technical method.
-5. "unknown" - Use ONLY if, after considering categories 1-4 in order, none of them can be supported by the title and abstract. Before selecting this, you must explicitly state in "reasoning" why each of the other four categories was ruled out.
+Survey query: {query}
+Representative community papers:
+{papers}
 
-### Decision priority (apply in this order)
-- If the abstract explicitly claims a new method/model/algorithm as the paper's contribution -- "method", even if it is evaluated on a single application domain.
-- Else if the abstract explicitly claims a new evaluation protocol/benchmark/task suite as the contribution -- "benchmark".
-- Else if the abstract explicitly claims a new dataset for training or experiments purpose (without a new evaluation protocol as the main claim) -- "dataset".
-- Else if the abstract describes applying existing methods/systems to a domain, with the domain findings as the contribution -- "application".
-- Else -- "unknown", with mandatory reasoning as specified above.
+### Naming rules
 
-### Rules
-- Base your judgment ONLY on the title and abstract provided. Do not use outside knowledge about the paper or its authors.
-- "evidence" must be a short verbatim quote (under 20 words) copied exactly from the title or abstract that supports your category choice. Do not paraphrase the quote.
+- Use 3-6 words.
+- The name must be a subordinate research direction of the survey query, not a restatement of the survey query.
+- Describe only the common research direction. Do not evaluate importance, novelty, or relation to other fields.
+- Be as specific as possible while covering most representative papers. Do not broaden a name merely to cover unrelated papers.
 
-### Output format (JSON only, no other text)
+### Content tags
+
+Select all applicable tags:
+METHOD, DATASET, BENCHMARK, ETHICS_AND_SAFETY, TOOLKIT, APPLICATION, GENERAL.
+
+* METHOD - Covers specific algorithms, theories, architectures, models, or technical approaches.
+* DATASET - Describes datasets, corpora, or data collection/annotation procedures.
+* BENCHMARK - Discusses evaluation benchmarks, leaderboards, standard test sets, or evaluation metrics/protocols.
+* ETHICS_AND_SAFETY  - Addresses ethical considerations, fairness, bias, discrimination, privacy, safety, robustness, reliability, or adversarial vulnerabilities.
+* APPLICATION - Covers real-world deployment, industrial use cases, or scenario-based selection guidance for reviewed systems.
+* GENERAL - FALLBACK ONLY. Assign this tag if and only if none of the tags above (`METHOD`, `DATASET`, `BENCHMARK`, `ETHICS_AND_SAFETY`, `APPLICATION`) clearly applies to this section. NEVER combine `GENERAL` with another tag.
+
+### Evidence rules
+
+- Every `paper_index` must identify representative papers supporting the name/tags.
+- Every evidence quote must be copied verbatim from the matching title or abstract.
+- Do not rely on outside knowledge.
+
+### Output JSON only
 {{
-  "category": "method" | "dataset" | "benchmark" | "application" | "unknown",
-  "evidence": "...",
-  "reasoning": "..." (required only if category is "unknown", otherwise may be a brief one-sentence note)
-}}
+  "topic_name": "...",
+  "content_tags": ["METHOD", "APPLICATION"],
+  "evidence": [
+    {{"paper_index": 1, "quote": "..."}}
+  ]
+}}"""
 
-### Examples
+MISSING_TOPIC_NAME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topic_name": {"type": "string", "minLength": 1},
+        "content_tags": {
+            "type": "array",
+            "items": {"enum": sorted(CONTENT_TAGS)},
+            "minItems": 1,
+            "uniqueItems": True,
+        },
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "paper_index": {"type": "integer", "minimum": 1},
+                    "quote": {"type": "string", "minLength": 1},
+                },
+                "required": ["paper_index", "quote"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+        },
+    },
+    "required": ["topic_name", "content_tags", "evidence"],
+    "additionalProperties": False,
+    "allOf": [
+        {
+            "if": {"properties": {"content_tags": {"contains": {"const": "GENERAL"}}}},
+            "then": {"properties": {"content_tags": {"maxItems": 1}}},
+        },
+    ],
+}
 
-Input:
-Title: "ClinBench: A Standardized Evaluation Suite for Clinical Text Understanding"
-Abstract: "We introduce ClinBench, a unified benchmark comprising 12 tasks and a leaderboard for evaluating language models on clinical text understanding. We release the evaluation harness and baseline results for 8 existing models."
+MISSING_TOPIC_DECISION = """### Task
+Determine whether a Leiden paper community is already covered by an existing survey topic,
+is a novel research direction, or contains multiple directions that require another Leiden split.
 
-Output:
+Survey query: {query}
+
+Existing survey topics:
+{existing_topics}
+
+Representative community papers:
+{papers}
+
+### Decision labels
+
+- COVERED: the representative papers are substantively covered by one or more existing survey topics. Name those topics exactly in `covered_topics`.
+- NOVEL: the papers form a distinct research direction not substantively covered by the existing survey topics.
+- MIXED: the representative papers contain multiple unrelated or insufficiently unified directions. This label requests one more Leiden split; do not use it merely because the papers are broad.
+
+### Evidence rules
+
+- Every `paper_index` must identify representative papers supporting the decision.
+- Every evidence quote must be copied verbatim from the matching title or abstract.
+- For COVERED, `covered_topics` must contain only exact names from the supplied topics.
+- For NOVEL and MIXED, `covered_topics` must be empty.
+- Do not rely on outside knowledge.
+
+### Output JSON only
 {{
-  "category": "benchmark",
-  "evidence": "a unified benchmark comprising 12 tasks and a leaderboard",
-  "reasoning": "Primary contribution is the evaluation protocol/leaderboard itself, not a new method."
-}}
+  "decision": "COVERED" | "NOVEL" | "MIXED",
+  "covered_topics": ["exact existing topic name"],
+  "evidence": [
+    {{"paper_index": 1, "quote": "..."}}
+  ]
+}}"""
 
-Input:
-Title: "Diagnosing Diabetic Retinopathy with a Fine-Tuned Vision Transformer"
-Abstract: "We apply a pretrained Vision Transformer, fine-tuned on a private hospital dataset, to the task of diabetic retinopathy grading, achieving strong agreement with expert ophthalmologists in a retrospective clinical study."
-
-Output:
-{{
-  "category": "application",
-  "evidence": "We apply a pretrained Vision Transformer, fine-tuned on a private hospital dataset, to the task of diabetic retinopathy grading",
-  "reasoning": "Uses an existing architecture; the contribution is the clinical deployment/findings, not a new method."
-}}
-
-Input:
-Title: "Sparse Attention with Learned Routing for Long-Context Transformers"
-Abstract: "We propose a novel sparse attention mechanism that learns token routing patterns end-to-end, reducing computational cost by 40% while matching full-attention performance on long-document tasks."
-
-Output:
-{{
-  "category": "method",
-  "evidence": "We propose a novel sparse attention mechanism that learns token routing patterns end-to-end",
-  "reasoning": "Contribution is a new technical mechanism, not merely an application."
-}}
-
-### Input
-Title: "{title}"
-Abstract: "{abstract}"
-Output:"""
+MISSING_TOPIC_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["COVERED", "NOVEL", "MIXED"]},
+        "covered_topics": {"type": "array", "items": {"type": "string"}},
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "paper_index": {"type": "integer", "minimum": 1},
+                    "quote": {"type": "string", "minLength": 1},
+                },
+                "required": ["paper_index", "quote"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+        },
+    },
+    "required": ["decision", "covered_topics", "evidence"],
+    "additionalProperties": False,
+    "allOf": [
+        {
+            "if": {"properties": {"decision": {"const": "COVERED"}}},
+            "then": {"properties": {"covered_topics": {"minItems": 1}}},
+        },
+        {
+            "if": {"properties": {"decision": {"enum": ["NOVEL", "MIXED"]}}},
+            "then": {"properties": {"covered_topics": {"maxItems": 0}}},
+        },
+    ],
+}
 
 # scope/topic_coverage.py
 MISSING_TOPIC_CLAIM = """Determine whether the paper **explicitly states** that a given topic is excluded, and why.
@@ -1233,8 +1126,8 @@ Candidate papers:
 
 ## Decision rules (apply to each paper independently)
 Judge "yes" if EITHER holds:
-(1) TITLE SIGNAL 闂?the artifact (full name or abbreviation) is the main subject named in the title.
-(2) ABSTRACT SIGNAL 闂?the artifact appears in a sentence with a proposing/naming cue (e.g. "we propose", "we introduce", "we present", "we call this...", "denoted as...", "termed...").
+(1) TITLE SIGNAL -- the artifact (full name or abbreviation) is the main subject named in the title.
+(2) ABSTRACT SIGNAL -- the artifact appears in a sentence with a proposing/naming cue (e.g. "we propose", "we introduce", "we present", "we call this...", "denoted as...", "termed...").
 
 Judge "no" if the artifact is only mentioned as something being used, compared against, evaluated on, or built upon (e.g. "we adopt X", "compared with X", "following X").
 
@@ -1271,18 +1164,18 @@ JUDGE_UNCITED_BATCH_ITEM_SCHEMA = {
     "additionalProperties": False,
 }
 
-# scope/uncited_prospective.py
-QUERY_EXPAND = """You are a query rewriting assistant for an academic literature search system. You will be given an Atomic Fact (AF) 閳?a single claim extracted from a survey paper that currently has no citation. Rewrite it into a clean keyword query for an academic database (OpenAlex), so we can find candidate papers that might support or refute this claim.
+# fact/uncited_claims.py
+QUERY_EXPAND = """You are a query rewriting assistant for an academic literature search system. You will be given an Atomic Fact (AF) -- a single claim extracted from a survey paper that currently has no citation. Rewrite it into a clean keyword query for an academic database (OpenAlex), so we can find candidate papers that might support or refute this claim.
 
 ## Task
 
-Step 1 閳?Assess searchability:
+Step 1 -- Assess searchability:
 Mark `searchable: false` if the claim:
 - contains no specific method/dataset/task entity (i.e., a generic statement that could apply to many works)
 - is a meta-statement about the survey itself, not about prior work
 - is a value judgement with no factual anchor (e.g., "this remains an important direction")
 
-Step 2 閳?If searchable, construct the query:
+Step 2 -- If searchable, construct the query:
 - 3-8 words, keyword-style (NOT a natural language question or full sentence)
 - The query MUST be composed only of words/phrases taken verbatim from the claim. Do NOT introduce synonyms, paraphrases, or new terms not present in the claim text.
 - No punctuation except hyphens within compound terms (e.g., "few-shot")
@@ -1411,16 +1304,132 @@ FINAL_AGGREGATION_SCHEMA = {
 }
 
 # deprecated
-BACKGROUND_CHECK = """Given a claim about what a cited paper is/proposed, and that paper's title+abstract, judge whether the abstract supports this identification.
+PPR_TYPE = """### Task
+You are classifying a research paper into ONE primary category based strictly on its title and abstract. This classification describes what kind of contribution the paper primarily makes to the literature - not what field or task it belongs to.
 
-Claim: "{claim}"
+### Categories (choose exactly one)
+1. "method" - The paper's primary contribution is a new algorithm, model, architecture, or technical approach. This applies even if the method is demonstrated on a specific domain, AS LONG AS the technical approach itself (not just its domain adaptation) is the paper's main claimed contribution.
+2. "dataset" - The paper's primary contribution is the construction, collection, or release of a new dataset (raw data + annotations, for training or experiments purpose), without proposing a new evaluation protocol or a new method as its main claim.
+3. "benchmark" - The paper's primary contribution is an evaluation protocol, task suite, leaderboard, or standardized comparison framework. A benchmark paper MAY include a dataset, but its main claimed contribution is the evaluation methodology/protocol itself, not merely the data.
+4. "application" - The paper's primary contribution is applying an existing (not newly proposed) method or system to a specific domain or use case, where the main claimed contribution is the domain adaptation, deployment, or empirical findings in that domain - not a new technical method.
+5. "unknown" - Use ONLY if, after considering categories 1-4 in order, none of them can be supported by the title and abstract. Before selecting this, you must explicitly state in "reasoning" why each of the other four categories was ruled out.
+
+### Decision priority (apply in this order)
+- If the abstract explicitly claims a new method/model/algorithm as the paper's contribution -- "method", even if it is evaluated on a single application domain.
+- Else if the abstract explicitly claims a new evaluation protocol/benchmark/task suite as the contribution -- "benchmark".
+- Else if the abstract explicitly claims a new dataset for training or experiments purpose (without a new evaluation protocol as the main claim) -- "dataset".
+- Else if the abstract describes applying existing methods/systems to a domain, with the domain findings as the contribution -- "application".
+- Else -- "unknown", with mandatory reasoning as specified above.
+
+### Rules
+- Base your judgment ONLY on the title and abstract provided. Do not use outside knowledge about the paper or its authors.
+- "evidence" must be a short verbatim quote (under 20 words) copied exactly from the title or abstract that supports your category choice. Do not paraphrase the quote.
+
+### Output format (JSON only, no other text)
+{{
+  "category": "method" | "dataset" | "benchmark" | "application" | "unknown",
+  "evidence": "...",
+  "reasoning": "..." (required for every category; if category is "unknown", explicitly explain why each of method/dataset/benchmark/application was ruled out; otherwise give a brief one-sentence justification)
+}}
+
+### Examples
+
+Input:
+Title: "ClinBench: A Standardized Evaluation Suite for Clinical Text Understanding"
+Abstract: "We introduce ClinBench, a unified benchmark comprising 12 tasks and a leaderboard for evaluating language models on clinical text understanding. We release the evaluation harness and baseline results for 8 existing models."
+
+Output:
+{{
+  "category": "benchmark",
+  "evidence": "a unified benchmark comprising 12 tasks and a leaderboard",
+  "reasoning": "Primary contribution is the evaluation protocol/leaderboard itself, not a new method."
+}}
+
+Input:
+Title: "Diagnosing Diabetic Retinopathy with a Fine-Tuned Vision Transformer"
+Abstract: "We apply a pretrained Vision Transformer, fine-tuned on a private hospital dataset, to the task of diabetic retinopathy grading, achieving strong agreement with expert ophthalmologists in a retrospective clinical study."
+
+Output:
+{{
+  "category": "application",
+  "evidence": "We apply a pretrained Vision Transformer, fine-tuned on a private hospital dataset, to the task of diabetic retinopathy grading",
+  "reasoning": "Uses an existing architecture; the contribution is the clinical deployment/findings, not a new method."
+}}
+
+Input:
+Title: "Sparse Attention with Learned Routing for Long-Context Transformers"
+Abstract: "We propose a novel sparse attention mechanism that learns token routing patterns end-to-end, reducing computational cost by 40% while matching full-attention performance on long-document tasks."
+
+Output:
+{{
+  "category": "method",
+  "evidence": "We propose a novel sparse attention mechanism that learns token routing patterns end-to-end",
+  "reasoning": "Contribution is a new technical mechanism, not merely an application."
+}}
+
+### Input
 Title: "{title}"
 Abstract: "{abstract}"
+Output:"""
 
-Judge SUPPORTED if the abstract's content (possibly using different wording) is consistent with the claim's identification of what the paper is/does. Judge NOT SUPPORTED if the abstract does not provide enough information to confirm this, or describes something substantially different.
 
-Output: {{"label": "SUPPORTED"|"NOT SUPPORTED"}}"""
+CITATION_WARRANT = """### Task
+You are judging whether a candidate uncited paper creates a citation obligation inside an already-covered subsection of a survey.
 
+This is NOT missing-topic detection. The survey section is assumed to already cover the subfield. Your task is to decide whether this candidate should be cited within that covered discussion.
+
+### Theory
+Use citation as disciplinary attribution: a missing reference matters when omitting it weakens attribution, positioning, claim support, comparison, benchmark coverage, or the reader's understanding of the covered literature.
+
+### Labels
+Choose exactly one:
+1. "concept_symbol_or_landmark_warrant" - The candidate is presented by the supplied evidence as foundational, seminal, first, major, state-of-the-art, benchmark-defining, or a representative concept-symbol for the covered discussion.
+2. "attribution_warrant" - The candidate appears to be the source that should be credited for a method, dataset, benchmark, term, result, or line of work already discussed in the section.
+3. "taxonomy_or_scope_warrant" - The candidate is needed because the section's existing covered taxonomy/scope includes this kind of work and the candidate is a representative in-scope instance.
+4. "claim_support_or_counterevidence_warrant" - The candidate supports, qualifies, updates, or challenges a specific claim made in the section.
+5. "benchmark_dataset_evaluation_warrant" - The candidate provides an important benchmark, dataset, evaluation protocol, metric, or systematic comparison relevant to the section.
+6. "recency_update_warrant" - The candidate is a recent in-scope work that materially updates the section's covered discussion before the survey evaluation date.
+7. "weak_related_work_suggestion" - The candidate is relevant and possibly useful, but the provided evidence does not show a clear citation obligation.
+8. "no_obligation" - The candidate is off-scope for this covered section, redundant with already cited work, or the evidence does not support citing it here.
+
+### Decision rules
+- Do not reward relevance alone. A relevant paper without a clear warrant is "weak_related_work_suggestion".
+- Do not infer a missing topic. If the section text does not already cover the topic, choose "no_obligation" or "weak_related_work_suggestion"; topic gaps are handled elsewhere.
+- Prefer stronger warrant labels only when the section text, existing citations, candidate abstract, or graph evidence shows why this paper is needed here.
+- Use PPR/graph evidence as retrieval evidence, not as a final decision by itself.
+- If the candidate only shares a citation neighborhood with cited papers but no citation role is clear, choose "weak_related_work_suggestion".
+
+### Input
+Survey query:
+{query}
+
+Section title:
+{section_title}
+
+Section topics extracted from already-covered text:
+{topics}
+
+Section text:
+{section_text}
+
+Already cited papers in this section:
+{cited_papers}
+
+Candidate uncited paper:
+Title: {candidate_title}
+Abstract: {candidate_abstract}
+
+PPR / graph evidence:
+{graph_evidence}
+
+### Output format (JSON only, no other text)
+{{
+  "warrant_label": "concept_symbol_or_landmark_warrant" | "attribution_warrant" | "taxonomy_or_scope_warrant" | "claim_support_or_counterevidence_warrant" | "benchmark_dataset_evaluation_warrant" | "recency_update_warrant" | "weak_related_work_suggestion" | "no_obligation",
+  "citation_obligation": true | false,
+  "evidence": "short quote or concise evidence from the supplied input",
+  "reasoning": "one or two sentences explaining why this label follows from the supplied section/candidate/graph evidence"
+}}
+Output:"""
 EXTRACT_PROPOSED = """### Task
 You will be given the title and abstract of a single paper. Identify every method, model, framework, or technique that this paper itself explicitly claims to propose, introduce, or present as its own contribution.
 
@@ -1486,3 +1495,4 @@ EXTRACT_PROPOSED_SCHEMA = {
     "required": ["proposed"],
     "additionalProperties": False,
 }
+

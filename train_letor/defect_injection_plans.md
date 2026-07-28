@@ -7,30 +7,30 @@
 - non-overlap: delete subsection `4 Generation > 4.2 LLM Fine-tuning`; delete citation keys ['BGM', 'Flare', 'ITER-RETGEN', 'PRCA', 'RRR', 'Replug']; fact citation keys ['COG', 'CRAG', 'CREA-ICL', 'PKG', 'TableGPT', 'iseeq']
 
 ### Factual Errors
-1. numeric distortion in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P3 S5
+1. method-mechanism substitution in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P3 S5
    - citations: ['TableGPT']
    - refs: Tablegpt: Towards unifying tables, nature language and commands into one gpt
    - original: When dealing with semi-structured data, one approach involves leveraging the code capabilities of LLMs to execute Text-2-SQL queries on tables within databases, such as TableGPT~ [31].
-   - modify to: When dealing with semi-structured data, one approach involves leveraging the code capabilities of LLMs to execute Text-4-SQL queries on tables within databases, such as TableGPT~ [31].
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P2 S3
+   - modify to: When dealing with semi-structured data, TableGPT~ [31] stores each table as a natural-language paragraph and answers questions directly.
+   - rationale: Change the mechanism of TableGPT from Text-2-SQL/database execution to a text-only table serialization pipeline.
+2. unsupported source coverage in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P2 S3
    - citations: ['CREA-ICL', 'CRAG', 'COG']
    - refs: From Classification to Generation: Insights into Crosslingual Retrieval Augmented ICL; Corrective Retrieval Augmented Generation; Copy is All You Need
    - original: In addition to encyclopedic data, common unstructured data includes cross-lingual text~ [19] and domain-specific data (such as medical~ [29] and legal domains~ [30] ).
-   - modify to: In addition to encyclopedic data, common unstructured data includes cross-lingual text~ [19] and domain-specific data (such as medical~ [29] and legal domains~ [30] ), but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P3 S6
+   - modify to: In addition to encyclopedic data, the cited systems treat cross-lingual, medical, and legal corpora as already solved retrieval sources that require no domain adaptation~ [19, 29, 30].
+   - rationale: Inflate heterogeneous retrieval-source examples into a solved-domain-adaptation claim.
+3. pipeline role inversion in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P3 S6
    - citations: ['PKG']
    - refs: Augmented Large Language Models with Parametric Knowledge Guiding
    - original: Alternatively, tables can be transformed into text format for further analysis using text-based methods~ [32].
-   - modify to: Alternatively, tables can be transformed into text format for further analysis using text-based methods~ [32]. This change should attribute the result to 'Large language models struggle to learn long-tail knowledge', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P4 S1
+   - modify to: Alternatively, tables can be transformed into text format only after the LLM has generated the final answer, so the textualized table is used for post-hoc explanation rather than retrieval~ [32].
+   - rationale: Move the table-to-text step from retrieval/input preparation to post-answer explanation.
+4. data-quality overclaim in `3 Retrieval > 3.1 Retrieval Source > 3.1.1 Data Structure` P4 S1
    - citations: ['iseeq']
    - refs: Iseeq: Information seeking question generation using dynamic meta-information retrieval and knowledge graphs
    - original: Structured data, such as knowledge graphs (KGs)~ [33], which are typically verified and can provide more precise information.
-   - modify to: Structured data, such as knowledge graphs (KGs)~ [33], which are typically verified and can provide more precise information and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Structured data, such as knowledge graphs (KGs)~ [33], are treated as fully verified resources that eliminate the need for retrieval filtering or evidence checking.
+   - rationale: Turn the paper's cautious statement that KGs can be more precise into a false guarantee of complete verification.
 
 ### Structural Contradiction
 - location: `1 Introduction` P2 S2
@@ -56,30 +56,30 @@
 - non-overlap: delete subsection `5 Multi-modality Instruction Tuning > 5.1 Multi-modality Datasets`; delete citation keys ['Touvron2023LLaMAOA', 'chiang2023vicuna', 'taori2023alpaca', 'touvron2023llama', 'wang2022self', 'xu2023wizardlm']; fact citation keys ['guo2025deepseek', 'jaech2024openai', 'mishra2021cross', 'muennighoff2022crosslingual', 'sanh2021multitask']
 
 ### Factual Errors
-1. numeric distortion in `3 Datasets > 3.1 Human-crafted Data > 3.1.1 Natural Instructions` P2 S1
+1. dataset-construction error in `3 Datasets > 3.1 Human-crafted Data > 3.1.1 Natural Instructions` P2 S1
    - citations: ['mishra2021cross']
    - refs: Cross-task generalization via natural language crowdsourcing instructions
    - original: Natural Instructions~ [38] is a human-crafted English instruction dataset consisting of 193K instances, coming from 61 distinct NLP tasks.
-   - modify to: Natural Instructions~ [38] is a human-crafted English instruction dataset consisting of 193K instances, coming from 122 distinct NLP tasks.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Datasets` P1 S2
+   - modify to: Natural Instructions~ [38] is an automatically scraped collection of user-chat demonstrations rather than a human-crafted instruction dataset.
+   - rationale: Replace the dataset construction process with an unsupported automatic chat-log scraping story.
+2. reasoning-data source error in `3 Datasets` P1 S2
    - citations: ['jaech2024openai', 'guo2025deepseek']
    - refs: Openai o1 system card; Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning
    - original: Further more, in light of the impressive performance of recent multi-step reasoning LLMs (e.g., OpenAI o1 [36], DeepSeek-R1 [37] ), this section also presents a detailed overview of how reasoning datasets are constructed.
-   - modify to: Further more, in light of the impressive performance of recent multi-step reasoning LLMs (e.g., OpenAI o1 [36], DeepSeek-R1 [37] ), this section also presents a detailed overview of how reasoning datasets are constructed, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Datasets > 3.1 Human-crafted Data > 3.1.2 P3` P1 S1
+   - modify to: This section presents reasoning datasets as being derived mainly from OpenAI o1 and DeepSeek-R1 model traces, rather than from independently constructed task data [36, 37].
+   - rationale: Misrepresent cited reasoning-model papers as the direct source of the surveyed datasets.
+3. modality expansion error in `3 Datasets > 3.1 Human-crafted Data > 3.1.2 P3` P1 S1
    - citations: ['sanh2021multitask']
    - refs: Multitask prompted training enables zero-shot task generalization
    - original: P3 (Public Pool of Prompts)~ [39] is an instruction tuning dataset constructed by integrating 170 English NLP datasets and 2,052 English prompts.
-   - modify to: P3 (Public Pool of Prompts)~ [39] is an instruction tuning dataset constructed by integrating 170 English NLP datasets and 2,052 English prompts. This change should attribute the result to 'Evaluating Correctness and Faithfulness of Instruction-Following Models for Question Answering', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Datasets > 3.1 Human-crafted Data > 3.1.3 xP3` P1 S1
+   - modify to: P3 (Public Pool of Prompts)~ [39] is an instruction tuning dataset that combines English NLP tasks with paired image-caption and speech-recognition prompts.
+   - rationale: Add multimodal content to a text-prompt dataset.
+4. language-scope inversion in `3 Datasets > 3.1 Human-crafted Data > 3.1.3 xP3` P1 S1
    - citations: ['muennighoff2022crosslingual']
    - refs: Crosslingual generalization through multitask finetuning
    - original: xP3 (Crosslingual Public Pool of Prompts)~ [40] is a multilingual instruction dataset consisting of 16 diverse natural language tasks in 46 languages.
-   - modify to: xP3 (Crosslingual Public Pool of Prompts)~ [40] is a multilingual instruction dataset consisting of 16 diverse natural language tasks in 46 languages and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: xP3 (Crosslingual Public Pool of Prompts)~ [40] is primarily an English-only benchmark used to test whether multilingual transfer is unnecessary.
+   - rationale: Invert the multilingual purpose of xP3 into an English-only benchmark claim.
 
 ### Structural Contradiction
 - location: `1 Introduction` P4 S2
@@ -105,35 +105,35 @@
 - non-overlap: delete subsection `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.5 Factuality`; delete citation keys ['ahuja2023mega', 'bubeck2023sparks', 'choi2023llms', 'frieder2023mathematical', 'zhu2023promptbench', 'zhuang2023efficiently']; fact citation keys ['bang2023multitask', 'liang2022holistic', 'lopez2023can', 'qin2023chatgpt', 'wang2023chatgpt1', 'zeng2022glm', 'zhang2023sentiment']
 
 ### Factual Errors
-1. numeric distortion in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S5
+1. model-comparison exaggeration in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S5
    - citations: ['lopez2023can', 'qin2023chatgpt']
    - refs: Can chatgpt forecast stock price movements? Return predictability and large language models; Is ChatGPT a general-purpose natural language processing task solver?
    - original: ChatGPT's sentiment analysis prediction performance is superior to traditional sentiment analysis methods and comes close to that of GPT-3.5.
-   - modify to: ChatGPT's sentiment analysis prediction performance is superior to traditional sentiment analysis methods and comes close to that of GPT-6.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S4
+   - modify to: ChatGPT's sentiment analysis prediction performance consistently surpasses GPT-3.5 and removes the need for task-specific sentiment models [20, 21].
+   - rationale: Overstate a close/superior comparison into a universal dominance claim.
+2. task-difficulty misstatement in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S4
    - citations: ['liang2022holistic', 'zeng2022glm']
    - refs: Holistic evaluation of language models; Glm-130b: An open bilingual pre-trained model
    - original: and showed that the performance of the models on this task is usually high.
-   - modify to: and showed that the performance of the models on this task is usually high, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S6
+   - modify to: The cited benchmarks show that natural language understanding tasks remain uniformly difficult for LLMs, with most models performing near chance on this category [22, 23].
+   - rationale: Replace a generally high-performance statement with a false low-performance characterization.
+3. capability-transfer error in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S6
    - citations: ['wang2023chatgpt1']
    - refs: Is ChatGPT a Good Sentiment Analyzer? A Preliminary Study
    - original: In fine-grained sentiment and emotion cause analysis, ChatGPT also exhibits exceptional performance.
-   - modify to: In fine-grained sentiment and emotion cause analysis, ChatGPT also exhibits exceptional performance. This change should attribute the result to 'Introduction to the special issue on statistical language modeling', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S7
+   - modify to: In fine-grained sentiment and emotion cause analysis, ChatGPT exhibits exceptional performance because it explicitly detects causal emotion chains during pretraining [24].
+   - rationale: Add an unsupported mechanistic explanation for the reported capability.
+4. low-resource conclusion flip in `3 What to Evaluate > 3.1 Natural Language Processing Tasks > 3.1.1 Natural language understanding` P2 S7
    - citations: ['zhang2023sentiment', 'bang2023multitask']
    - refs: Sentiment Analysis in the Era of Large Language Models: A Reality Check; A multitask, multilingual, multimodal evaluation of chatgpt on reasoning, hallucination, and interactivity
    - original: In low-resource learning environments, exhibit significant advantages over small language models, but the ability of ChatGPT to understand low-resource languages is limited.
-   - modify to: In low-resource learning environments, exhibit significant advantages over small language models, but the ability of ChatGPT to understand low-resource languages is limited and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: In low-resource learning environments, ChatGPT shows significant advantages over small language models and fully overcomes its limitations on low-resource languages [25, 26].
+   - rationale: Remove the original caveat and claim complete low-resource coverage.
 
 ### Structural Contradiction
-- location: `1 Introduction` P2 S4
-- original: 20, [ \\ evaluation,fill=green!20 [What to evaluate\\(Sec. Section 3),text width=7em [Natural\ \,text width=4em [Natural language understanding: \\ (1) Sentiment analysis: / / / / / \\ (2) Text classification: / / \\ (3) Natural language inference: / 0 \\ (4) Others: 1 / 2 / 3 ] [Reasoning: 4 / 5 / 6 / 7 / 8 / 9 / 0 \\ 1 / 2 / 3 / 4 / 5 / 6 / 7 \\ 8 / 9 / 0 \\ ] [Natural language generation: \\ (1) Summarization: 1 / 2 / 3 / 4 \\ (2) Dialogue: 5 / 6 / 7 / 8 \\ (3) Translation: 9 / 0 / 1 \\ (4) Question answering: 2 / 3 / 4 / 5 / 6 / 7 \\ (5) Others: 8 / 9 / 0 ] [Multilingual: 1 / 2 / 3 / 4 / 5 ] [Factuality: 6 / 7 / 8 / 9 / 0 / 1 ] ] [Robustness / Ethics/ \ / Trustworthiness,text width=8em [ Robustness: 2 / 3 / 4 / 5 / 6 / 7 \\ 8 / 9 ] [ Ethics and biases: 0 / 1 / 2 / 3 / 4 \\ 5 / 6 / 7 / 8 / 9 \\ 0 / 1 / 2 / 3 ] [ Trustworthiness: 4 / 5 / 6 / 7 / 8 \\ 9 / 0 ] ] [Social science, text width=5em [ 1 / 2 / 3 / 4 / 5 ] ] [Natural science\\\& engineering, text width=5em [Mathematics: 6 / 7 / 8 / 9 / 00 / 01 \\ 02 / 03 ] [General science: 04 / 05 / 06 ] [Engineering: 07 / 08 / 09 / 10 / 11 \\ 12 / 13 ] ] [Medical applications, text width=7em [Medical queries: 14 / 15 / 16 / 17 \\ 18 / 19 / 20 / 21 ] [Medical examination: 22 / 23 ] [Medical assistants: 24 / 25 / 26 / 27 / 28 / 29 ] ] [Agent applications, text width=6.5em [ 30 / 31 / 32 / 33 / 34 / 35 / 36 ]] [Other\, text width=4em [Education: 37 / citet 38 / citet 39 / 40 / 41 ] [Search and recommendation: 42 / 43 / 44 / 45 / 46 \\ 47 / 48 / 49 ] [Personality testing: 50 / 51 / 52 / 53 / 54 / 55 ] [Specific tasks: 56 / 57 / 58 ] ] ] [Where to evaluate\\(Sec. Section 4),text width=7em [General\,text width=4.2em [Xiezhi 59 /MMLU 60 / C-Eval 61 /OpenLLM 62 /DynaBench 63 /Chatbot Arena 64 /AlpacaEval 65 /HELM 66 /BIG-bench 67 \\ PandaLM 68 / BOSS 69 / GLUE-X 70 KoLA 71 / AGIEval 72 / PromptBench 73 / MT-Bench 74 / LLMEval² 75 ] ] [Specific\\ benchmarks,text width=4.2em [SOCKET 76 / Choice-75 77 / CUAD 78 / TRUSTGPT 79 / MATH 80 / APPS 81 / CELLO 82 / EmotionBench 83 / CMMLU 84 \\ API-Bank 85 / M3KE 86 / UHGEval 87 / ARB 88 / MultiMedQA 89 / CVALUES 90 / ToolBench 91 / FRESHQA 92 \\ CMB 93 / MINT 94 / Dialogue CoT 95 / M3Exam 96 / GAOKAO-Bench 97 / SafetyBench 98 ] ] [Multi-modal\\ benchmarks,text width=4.2em [MME 99 / MMBench 00 / SEED-Bench 01 / MM-Vet 02 / LAMM 03 / LVLM-eHub 04 ] ] ] [How to evaluate\\(Sec. Section 5),text width=7em [Evaluation criterion, text width=7em [Automatic evaluation: 05 / 06 / 07 / 08 / 09 ] [Human evaluation: 10 / 11 / 12 / 13 / 14 / 15 ] ] ] [Summary\\(Sec. Section 6),text width=4em [Tasks: success and failure cases of,text width=14em ] [Benchmark and evaluations, text width=9.5em [Human-in-the-loop: AdaVision 16 / AdaTest 17 ] [Crowd-sourcing testing: DynaBench 18 / DynaBoard 19 / DynamicTempLAMA 20 / DynaTask 21 ] [More challenging tasks: HELM 22 / AdaFilter 23 / CheckList 24 / Big-Bench 25 / DeepTest 26 / PromptBench 27 ] ] ] [Grand challenges\\(Sec. Section 7),text width=7em [Challenges,text width=4em [(1) Designing AGI benchmarks (2) Complete behavioral evaluation (3) Robustness evaluation (4) Dynamic and evolving evaluation \\ (5) Principled and trustworthy evaluation (6) Unified evaluation that supports all tasks (7) Beyond evaluation: enhancement] ] ] ]
-- modify to: 20, [ \\ evaluation,fill=green!20 [What to evaluate\\(Sec. Section 3),text width=7em [Natural\ \,text width=4em [Natural language understanding: \\ (1) Sentiment analysis: / / / / / \\ (2) Text classification: / / \\ (3) Natural language inference: / 0 \\ (4) Others: 1 / 2 / 3 ] [Reasoning: 4 / 5 / 6 / 7 / 8 / 9 / 0 \\ 1 / 2 / 3 / 4 / 5 / 6 / 7 \\ 8 / 9 / 0 \\ ] [Natural language generation: \\ (1) Summarization: 1 / 2 / 3 / 4 \\ (2) Dialogue: 5 / 6 / 7 / 8 \\ (3) Translation: 9 / 0 / 1 \\ (4) Question answering: 2 / 3 / 4 / 5 / 6 / 7 \\ (5) Others: 8 / 9 / 0 ] [Multilingual: 1 / 2 / 3 / 4 / 5 ] [Factuality: 6 / 7 / 8 / 9 / 0 / 1 ] ] [Robustness / Ethics/ \ / Trustworthiness,text width=8em [ Robustness: 2 / 3 / 4 / 5 / 6 / 7 \\ 8 / 9 ] [ Ethics and biases: 0 / 1 / 2 / 3 / 4 \\ 5 / 6 / 7 / 8 / 9 \\ 0 / 1 / 2 / 3 ] [ Trustworthiness: 4 / 5 / 6 / 7 / 8 \\ 9 / 0 ] ] [Social science, text width=5em [ 1 / 2 / 3 / 4 / 5 ] ] [Natural science\\\& engineering, text width=5em [Mathematics: 6 / 7 / 8 / 9 / 00 / 01 \\ 02 / 03 ] [General science: 04 / 05 / 06 ] [Engineering: 07 / 08 / 09 / 10 / 11 \\ 12 / 13 ] ] [Medical applications, text width=7em [Medical queries: 14 / 15 / 16 / 17 \\ 18 / 19 / 20 / 21 ] [Medical examination: 22 / 23 ] [Medical assistants: 24 / 25 / 26 / 27 / 28 / 29 ] ] [Agent applications, text width=6.5em [ 30 / 31 / 32 / 33 / 34 / 35 / 36 ]] [Other\, text width=4em [Education: 37 / citet 38 / citet 39 / 40 / 41 ] [Search and recommendation: 42 / 43 / 44 / 45 / 46 \\ 47 / 48 / 49 ] [Personality testing: 50 / 51 / 52 / 53 / 54 / 55 ] [Specific tasks: 56 / 57 / 58 ] ] ] [Where to evaluate\\(Sec. Section 4),text width=7em [General\,text width=4.2em [Xiezhi 59 /MMLU 60 / C-Eval 61 /OpenLLM 62 /DynaBench 63 /Chatbot Arena 64 /AlpacaEval 65 /HELM 66 /BIG-bench 67 \\ PandaLM 68 / BOSS 69 / GLUE-X 70 KoLA 71 / AGIEval 72 / PromptBench 73 / MT-Bench 74 / LLMEval² 75 ] ] [Specific\\ benchmarks,text width=4.2em [SOCKET 76 / Choice-75 77 / CUAD 78 / TRUSTGPT 79 / MATH 80 / APPS 81 / CELLO 82 / EmotionBench 83 / CMMLU 84 \\ API-Bank 85 / M3KE 86 / UHGEval 87 / ARB 88 / MultiMedQA 89 / CVALUES 90 / ToolBench 91 / FRESHQA 92 \\ CMB 93 / MINT 94 / Dialogue CoT 95 / M3Exam 96 / GAOKAO-Bench 97 / SafetyBench 98 ] ] [Multi-modal\\ benchmarks,text width=4.2em [MME 99 / MMBench 00 / SEED-Bench 01 / MM-Vet 02 / LAMM 03 / LVLM-eHub 04 ] ] ] [How to evaluate\\(Sec. Section 5),text width=7em [Evaluation criterion, text width=7em [Automatic evaluation: 05 / 06 / 07 / 08 / 09 ] [Human evaluation: 10 / 11 / 12 / 13 / 14 / 15 ] ] ] [Summary\\(Sec. Section 6),text width=4em [Tasks: success and failure cases of,text width=14em ] [Benchmark and evaluations, text width=9.5em [Human-in-the-loop: AdaVision 16 / AdaTest 17 ] [Crowd-sourcing testing: DynaBench 18 / DynaBoard 19 / DynamicTempLAMA 20 / DynaTask 21 ] [More challenging tasks: HELM 22 / AdaFilter 23 / CheckList 24 / Big-Bench 25 / DeepTest 26 / PromptBench 27 ] ] ] [Grand challenges\\(Sec. Section 7),text width=7em [Challenges,text width=4em [(1) Designing AGI benchmarks (2) Complete behavioral evaluation (3) Robustness evaluation (4) Dynamic and evolving evaluation \\ (5) Principled and trustworthy evaluation (6) Unified evaluation that supports all tasks (7) Beyond evaluation: enhancement] ] ] ]. In addition, this survey systematically covers legal compliance auditing and clinical deployment certification for LLM evaluators.
+- location: `1 Introduction` P7 S2
+- original: As depicted in Figure 1, we explore existing work in three dimensions: 1) What to evaluate, 2) Where to evaluate, and 3) How to evaluate.
+- modify to: As depicted in Figure 1, we explore existing work in three dimensions: 1) What to evaluate, 2) Where to evaluate, and 3) How to evaluate. In addition, this survey systematically covers legal compliance auditing and clinical deployment certification for LLM evaluators.
 - unsupported added scope: legal compliance auditing and clinical deployment certification for LLM evaluators
 
 ### Citation Or Topic Missing
@@ -154,30 +154,30 @@
 - non-overlap: delete subsection `4 Practical Guide for NLP Tasks > 4.5 Miscellaneous tasks > 4.5.2 Use case`; delete citation keys ['brown2020language', 'liang2022holistic', 'openai2023gpt4', 'ouyang2022training', 'scao2022bloom', 'wei2022inverse']; fact citation keys ['alajrami2022does', 'bojar-etal-2016-findings', 'chowdhery2022palm', 'kaplan2020scaling', 'kirkpatrick2017overcoming', 'yin2019benchmarking', 'zha2023data']
 
 ### Factual Errors
-1. numeric distortion in `4 Practical Guide for NLP Tasks > 4.2 Generation tasks > 4.2.1 Use case` P3 S2
+1. benchmark-scope substitution in `4 Practical Guide for NLP Tasks > 4.2 Generation tasks > 4.2.1 Use case` P3 S2
    - citations: ['bojar-etal-2016-findings', 'chowdhery2022palm']
    - refs: Findings of the 2016 Conference on Machine Translation; Palm: Scaling language modeling with pathways
    - original: LLMs are particularly good at translating some low-resource language texts to English texts, such as in the Romanian-English translation of WMT'16~ [53], zero-shot or few-shot LLMs can perform better than SOTA fine-tuned model [9].
-   - modify to: LLMs are particularly good at translating some low-resource language texts to English texts, such as in the Romanian-English translation of WMT'32~ [53], zero-shot or few-shot LLMs can perform better than SOTA fine-tuned model [9].
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Practical Guide for Data > 3.1 Pretraining data` P1 S2
+   - modify to: LLMs are particularly good at translating high-resource French-English news text in WMT'16, while the cited Romanian-English low-resource setting is not discussed~ [53, 9].
+   - rationale: Change the language-pair and resource setting without changing the cited evidence.
+2. data-factor omission in `3 Practical Guide for Data > 3.1 Pretraining data` P1 S2
    - citations: ['alajrami2022does', 'kaplan2020scaling', 'zha2023data']
    - refs: How does the pre-training objective affect what large language models learn about linguistic properties?; Scaling laws for neural language models; Data-centric artificial intelligence: A survey
    - original: As the foundation of remarkable capabilities [13, 14] of LLMs, the quality, quantitative, and diversity of pre-training data influence the performance of LLMs significantly~ [15].
-   - modify to: As the foundation of remarkable capabilities [13, 14] of LLMs, the quality, quantitative, and diversity of pre-training data influence the performance of LLMs significantly~ [15], but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Practical Guide for Data > 3.2 Finetuning data` P2 S2
+   - modify to: The quality of pre-training data alone determines LLM performance, while data quantity and diversity have little measurable influence~ [15].
+   - rationale: Narrow a multi-factor data statement into a single-factor causal claim.
+3. method-setting error in `3 Practical Guide for Data > 3.2 Finetuning data` P2 S2
    - citations: ['yin2019benchmarking']
    - refs: Benchmarking Zero-shot Text Classification: Datasets, Evaluation and Entailment Approach
    - original: LLMs have been shown to outperform previous zero-shot methods [16].
-   - modify to: LLMs have been shown to outperform previous zero-shot methods [16]. This change should attribute the result to 'ChatGPT Is Banned in Italy Over Privacy Concerns - The New York Times', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Practical Guide for Data > 3.2 Finetuning data` P2 S3
+   - modify to: LLMs have been shown to outperform previous zero-shot methods only after full supervised fine-tuning on the target task [16].
+   - rationale: Contradict the zero-shot setting by adding target-task fine-tuning.
+4. forgetting-mechanism error in `3 Practical Guide for Data > 3.2 Finetuning data` P2 S3
    - citations: ['kirkpatrick2017overcoming']
    - refs: Overcoming catastrophic forgetting in neural networks
    - original: Additionally, the absence of a parameter update process ensures that catastrophic forgetting [17] is avoided since the language model parameters remain unaltered.
-   - modify to: Additionally, the absence of a parameter update process ensures that catastrophic forgetting [17] is avoided since the language model parameters remain unaltered and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Catastrophic forgetting is avoided because prompts periodically update a protected copy of the model parameters during inference [17].
+   - rationale: Invent a parameter-update mechanism for a statement that depends on parameters remaining unaltered.
 
 ### Structural Contradiction
 - location: `1 Introduction` P2 S1
@@ -203,30 +203,30 @@
 - non-overlap: delete subsection `3 Using Tools and Act > 3.4 Acting on the virtual and physical world`; delete citation keys ['borgeaud2022improving', 'izacard2022atlas', 'lecun2022a', 'nakano2021webgpt', 'ouyang2022training', 'zelikman2022star']; fact citation keys ['brown2020language', 'gao2022pal', 'yang2022doc', 'yang2022re3']
 
 ### Factual Errors
-1. numeric distortion in `3 Using Tools and Act > 3.3 Computing via Symbolic Modules and Code Interpreters` P1 S8
+1. tool-use mechanism error in `3 Using Tools and Act > 3.3 Computing via Symbolic Modules and Code Interpreters` P1 S8
    - citations: ['gao2022pal']
    - refs: PAL: Program-aided Language Models
    - original: PAL~ [19] relies on CoT prompting of large LMs to decompose symbolic reasoning, mathematical reasoning, or algorithmic tasks into intermediate steps along with python code for each step (see Figure~Figure 6).
-   - modify to: PAL~ [19] relies on CoT prompting of large LMs to decompose symbolic reasoning, mathematical reasoning, or algorithmic tasks into intermediate steps along with python code for each step (see Figure~Figure 12).
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Using Tools and Act > 3.1 Calling another model` P3 S3
+   - modify to: PAL~ [19] directly executes natural-language chain-of-thought steps as Python programs, without asking the model to write explicit code for the intermediate reasoning steps.
+   - rationale: Collapse PAL's program-generation step into direct execution of natural language.
+2. generation-length overclaim in `3 Using Tools and Act > 3.1 Calling another model` P3 S3
    - citations: ['yang2022re3']
    - refs: Re3: Generating Longer Stories With Recursive Reprompting and Revision
    - original: Re3~ [17] exploits this idea to automatically generate stories of over two thousand words.
-   - modify to: Re3~ [17] exploits this idea to automatically generate stories of over two thousand words, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Using Tools and Act > 3.1 Calling another model` P3 S4
+   - modify to: Re3~ [17] uses the same prompting scheme to reliably generate complete book-length stories rather than long short stories.
+   - rationale: Expand the supported generation scale from long stories to book-length generation.
+3. model-role error in `3 Using Tools and Act > 3.1 Calling another model` P3 S4
    - citations: ['brown2020language']
    - refs: Language Models are Few-Shot Learners
    - original: More precisely, Re3 first generates a plan, setting, and characters by prompting GPT3~ [2] with a premise.
-   - modify to: More precisely, Re3 first generates a plan, setting, and characters by prompting GPT3~ [2] with a premise. This change should attribute the result to 'Boosting search engines with interactive agents', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Using Tools and Act > 3.1 Calling another model` P3 S6
+   - modify to: Re3 first trains GPT-3 from scratch on the story premise before generating the plan, setting, and characters~ [2].
+   - rationale: Replace prompting a pretrained model with training a model from scratch.
+4. granularity guarantee error in `3 Using Tools and Act > 3.1 Calling another model` P3 S6
    - citations: ['yang2022doc']
    - refs: DOC: Improving Long Story Coherence With Detailed Outline Control
    - original: This work is improved upon in [55] with the use of a learned detailed outliner that iteratively expands the brief initial outline to any desired level of granularity.
-   - modify to: This work is improved upon in [55] with the use of a learned detailed outliner that iteratively expands the brief initial outline to any desired level of granularity and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: The learned detailed outliner in [55] guarantees globally coherent narratives at any requested outline depth without additional revision or filtering.
+   - rationale: Turn iterative outline expansion into an unsupported coherence guarantee.
 
 ### Structural Contradiction
 - location: `1 Introduction: motivation for the survey and definitions > 1.1 Motivation` P3 S1
@@ -252,35 +252,35 @@
 - non-overlap: delete subsection `5 Analysis > 5.1 Influencing Factors > 5.1.1 Pretraining Stage`; delete citation keys ['Wu2022SelfadaptiveIL', 'kim2022self', 'liu2022close', 'liu2024incontext', 'lu2022order', 'topic']; fact citation keys ['Li2023mend', 'Shi2023iclm', 'flan', 'lamda', 'metaicl', 'natural', 'picl', 'selfsupericl']
 
 ### Factual Errors
-1. numeric distortion in `3 Model Training > 3.2 Warmup` P2 S6
+1. training-objective substitution in `3 Model Training > 3.2 Warmup` P2 S6
    - citations: ['lamda', 'flan']
    - refs: LaMDA: Language Models for Dialog Applications; Finetuned Language Models are Zero-Shot Learners
    - original: Tuning the 137B LaMDA-PT~ [29] on over 60 datasets verbalized via natural language instruction templates, FLAN~ [28] improves the ability of LLMs to follow instructions, boosting both the zero-shot and few-shot ICL performance.
-   - modify to: Tuning the 137B LaMDA-PT~ [29] on over 120 datasets verbalized via natural language instruction templates, FLAN~ [28] improves the ability of LLMs to follow instructions, boosting both the zero-shot and few-shot ICL performance.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Model Training` P1 S1
+   - modify to: FLAN~ [28] improves ICL by training LaMDA-PT~ [29] to ignore natural-language instructions and rely only on unlabeled continuation data.
+   - rationale: Invert instruction tuning into instruction-free language-model continuation.
+2. pre-inference training denial in `3 Model Training` P1 S1
    - citations: ['selfsupericl', 'picl', 'Shi2023iclm']
    - refs: Improving In-Context Few-Shot Learning via Self-Supervised Training; Pre-Training to Learn in Context; In-Context Pretraining: Language Modeling Beyond Document Boundaries
    - original: Although LLMs have demonstrated promising ICL capability directly, many studies revealed that these ICL capabilities can be further enhanced through specialized training before inference~ [22, 23, 24].
-   - modify to: Although LLMs have demonstrated promising ICL capability directly, many studies revealed that these ICL capabilities cannot be further enhanced through specialized training before inference~ [22, 23, 24].
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Model Training > 3.1 Pretraining` P1 S3
+   - modify to: The cited studies show that specialized training before inference is unnecessary and usually weakens ICL ability~ [22, 23, 24].
+   - rationale: Contradict the surveyed finding that specialized training can enhance ICL.
+3. efficiency-mechanism error in `3 Model Training > 3.1 Pretraining` P1 S3
    - citations: ['Li2023mend']
    - refs: MEND: Meta dEmonstratioN Distillation for Efficient and Effective In-Context Learning
    - original: Differently, [14] introduced a meta-distillation pretraining process, which allows LLMs to reason with distilled demonstration vectors, thereby enhancing ICL efficiency without compromising its effectiveness.
-   - modify to: Differently, [14] introduced a meta-distillation pretraining process, which allows LLMs to reason with distilled demonstration vectors, thereby enhancing ICL efficiency without compromising its effectiveness. This change should attribute the result to 'Many-Shot In-Context Learning', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Model Training > 3.2 Warmup` P2 S2
+   - modify to: [14] introduced meta-distillation by storing every demonstration vector at inference time, which improves ICL efficiency through a larger retrieval cache.
+   - rationale: Replace distilled demonstration vectors with an inference-time storage/cache mechanism.
+4. demonstration-use error in `3 Model Training > 3.2 Warmup` P2 S2
    - citations: ['metaicl', 'natural']
    - refs: MetaICL: Learning to Learn In Context; Super-NaturalInstructions: Generalization via Declarative Instructions on 1600+ NLP Tasks
    - original: Both [13] and [25] proposed to continually finetune LLMs on a broad range of tasks with multiple demonstration examples, which boosts ICL abilities.
-   - modify to: Both [13] and [25] proposed to continually finetune LLMs on a broad range of tasks with multiple demonstration examples, which boosts ICL abilities and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Both [13] and [25] improve ICL by continually finetuning LLMs on tasks without demonstration examples, showing demonstrations are not needed during warmup.
+   - rationale: Remove the multiple-demonstration-example condition from the cited warmup methods.
 
 ### Structural Contradiction
-- location: `1 Introduction` P4 S2
-- original: \begin{figure*} ! forked edges, for tree= grow=east, reversed=true, anchor=base west, parent anchor=east, child anchor=west, base=left, font=, rectangle, draw=hidden-draw, rounded corners, align=left, minimum width=4em, edge+=darkgray, line width=1pt, s sep=3pt, inner xsep=2pt, inner ysep=3pt, line width=0.8pt, ver/.style=rotate=90, child anchor=north, parent anchor=south, anchor=center, , where level=1text width=4em,font=,, where level=2text width=7.5em,font=,, where level=3text width=6.0em,font=,, where level=4text width=6.0em,font=,, [ In-context Learning, ver [ Training, ver [ Pre-training (Section 3.1) [ PICL <cit.>, MEND <cit.>, ICLM <cit.>, leaf, text width=45.0em ] ] [ Warmup (Section 3.2) [ MetaICL <cit.>, OPT-IML <cit.>, Super-NaturalInstructions <cit.>, FLAN <cit.>, Scaling Instruction <cit.>, Self-supervised ICL <cit.>, Symbol Tuning <cit.>, RICL <cit.> , ICL Markup <cit.>, leaf, text width=45.0em ] ] ] [ Inference, ver [ Demonstration (Section 4.1) [ Selection (Section 4.1.1) [ Unsupervised [ KATE <cit.>, SG-ICL <cit.>, Self-Adaptive <cit.>, PPL <cit.>, MI <cit.>, Informative Score <cit.>, IDS <cit.>, Votek <cit.> , leaf, text width=29.7em ] ] [ Supervised [ EPR <cit.>, Q-Learning <cit.>, AdaICL <cit.>, Topic <cit.>, UDR <cit.> , leaf, text width=29.7em ] ] ] [ Reformatting (Section 4.1.2) [ SG-ICL <cit.>, Structrured Prompting <cit.>, AutoICL <cit.>, WICL <cit.>, ICV <cit.>, leaf, text width=37.3em ] ] [ Ordering (Section 4.1.3) [ GlobalE&LocalE <cit.>, ICCL <cit.> , leaf, text width=37.3em ] ] ] [ Instruction (Section 4.2) [ Instruction Induction <cit.>, Self-Instruct <cit.>, APE <cit.>, Grimoire <cit.> , leaf, text width=45.0em ] ] [ Scoring Function (Section 4.3) [ Calibrate <cit.>, Channel Models <cit.>, $k$NN-Prompting <cit.>, leaf, text width=45.0em ] ] ] [ Analysis, ver [ Influencing Factors (Section 5.1) [ Pre-training Stage (Section 5.1.1) [Pre-Training Data [Distribution <cit.>, Domain <cit.>, Diversity <cit.>, leaf, text width=29.6em ] ] [Model and Training [Architecture <cit.>, Pre-training steps <cit.>, Parameters <cit.>, leaf, text width=29.6em ] ] ] [ Inference Stage (Section 5.1.2) [ Input Labels [ Mapping <cit.>, Settings <cit.>, leaf, text width=29.6em ] ] [Demonstration Examples [Diversity and Simplicity <cit.>, Query Similarity <cit.>, Feature bias <cit.>, Order <cit.>, leaf, text width=29.6em ] ] ] ] [ Learning Mechanism (Section 5.2) [ Functional Modules (Section 5.2.1) [ Induction Heads <cit.> , Computational Layers <cit.>, Attention Modules <cit.>, leaf, text width=37.3em ] ] [ Theoretical Interpretation (5.2.2) [ Bayesian Framework <cit.>, Gradient Descent <cit.>, Others <cit.>, leaf, text width=37.3em ] ] ] ] ] Taxonomy of in-context learning. \end{figure*}
-- modify to: \begin{figure*} ! forked edges, for tree= grow=east, reversed=true, anchor=base west, parent anchor=east, child anchor=west, base=left, font=, rectangle, draw=hidden-draw, rounded corners, align=left, minimum width=4em, edge+=darkgray, line width=1pt, s sep=3pt, inner xsep=2pt, inner ysep=3pt, line width=0.8pt, ver/.style=rotate=90, child anchor=north, parent anchor=south, anchor=center, , where level=1text width=4em,font=,, where level=2text width=7.5em,font=,, where level=3text width=6.0em,font=,, where level=4text width=6.0em,font=,, [ In-context Learning, ver [ Training, ver [ Pre-training (Section 3.1) [ PICL <cit.>, MEND <cit.>, ICLM <cit.>, leaf, text width=45.0em ] ] [ Warmup (Section 3.2) [ MetaICL <cit.>, OPT-IML <cit.>, Super-NaturalInstructions <cit.>, FLAN <cit.>, Scaling Instruction <cit.>, Self-supervised ICL <cit.>, Symbol Tuning <cit.>, RICL <cit.> , ICL Markup <cit.>, leaf, text width=45.0em ] ] ] [ Inference, ver [ Demonstration (Section 4.1) [ Selection (Section 4.1.1) [ Unsupervised [ KATE <cit.>, SG-ICL <cit.>, Self-Adaptive <cit.>, PPL <cit.>, MI <cit.>, Informative Score <cit.>, IDS <cit.>, Votek <cit.> , leaf, text width=29.7em ] ] [ Supervised [ EPR <cit.>, Q-Learning <cit.>, AdaICL <cit.>, Topic <cit.>, UDR <cit.> , leaf, text width=29.7em ] ] ] [ Reformatting (Section 4.1.2) [ SG-ICL <cit.>, Structrured Prompting <cit.>, AutoICL <cit.>, WICL <cit.>, ICV <cit.>, leaf, text width=37.3em ] ] [ Ordering (Section 4.1.3) [ GlobalE&LocalE <cit.>, ICCL <cit.> , leaf, text width=37.3em ] ] ] [ Instruction (Section 4.2) [ Instruction Induction <cit.>, Self-Instruct <cit.>, APE <cit.>, Grimoire <cit.> , leaf, text width=45.0em ] ] [ Scoring Function (Section 4.3) [ Calibrate <cit.>, Channel Models <cit.>, $k$NN-Prompting <cit.>, leaf, text width=45.0em ] ] ] [ Analysis, ver [ Influencing Factors (Section 5.1) [ Pre-training Stage (Section 5.1.1) [Pre-Training Data [Distribution <cit.>, Domain <cit.>, Diversity <cit.>, leaf, text width=29.6em ] ] [Model and Training [Architecture <cit.>, Pre-training steps <cit.>, Parameters <cit.>, leaf, text width=29.6em ] ] ] [ Inference Stage (Section 5.1.2) [ Input Labels [ Mapping <cit.>, Settings <cit.>, leaf, text width=29.6em ] ] [Demonstration Examples [Diversity and Simplicity <cit.>, Query Similarity <cit.>, Feature bias <cit.>, Order <cit.>, leaf, text width=29.6em ] ] ] ] [ Learning Mechanism (Section 5.2) [ Functional Modules (Section 5.2.1) [ Induction Heads <cit.> , Computational Layers <cit.>, Attention Modules <cit.>, leaf, text width=37.3em ] ] [ Theoretical Interpretation (5.2.2) [ Bayesian Framework <cit.>, Gradient Descent <cit.>, Others <cit.>, leaf, text width=37.3em ] ] ] ] ] Taxonomy of in-context learning. \end{figure*}. In addition, this survey systematically covers privacy-preserving federated in-context learning systems and hardware scheduling.
+- location: `1 Introduction` P6 S1
+- original: With the rapid growth of studies in ICL, our survey aims to sensitize the community toward the current progress.
+- modify to: With the rapid growth of studies in ICL, our survey aims to sensitize the community toward the current progress. In addition, this survey systematically covers privacy-preserving federated in-context learning systems and hardware scheduling.
 - unsupported added scope: privacy-preserving federated in-context learning systems and hardware scheduling
 
 ### Citation Or Topic Missing
@@ -301,30 +301,30 @@
 - non-overlap: delete subsection `None`; delete citation keys ['anil2022exploring', 'dan2021@measuring', 'han2022folio', 'kojima2022large', 'suzgun2022challenging', 'zhou2022least']; fact citation keys ['bommasani2021opportunities', 'cobbe2021training', 'liu2019roberta', 'radford2018improving', 'rae2021scaling', 'rajani2019explain', 'talmor2019commonsenseqa', 'talmor2020leap', 'valmeekam2022large', 'wei2022chain', 'wei2022emergent']
 
 ### Factual Errors
-1. numeric distortion in `3 Towards Reasoning in Large Language Models` P1 S2
+1. emergence-threshold overclaim in `3 Towards Reasoning in Large Language Models` P1 S2
    - citations: ['wei2022emergent', 'wei2022chain', 'cobbe2021training']
    - refs: Emergent abilities of large language models; Chain of Thought Prompting Elicits Reasoning in Large Language Models; Training verifiers to solve math word problems
    - original: Recent research has suggested that reasoning ability may emerge in language models at a certain scale, such as models with over 100 billion parameters [8, 9, 21].
-   - modify to: Recent research has suggested that reasoning ability may emerge in language models at a certain scale, such as models with over 200 billion parameters [8, 9, 21].
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Towards Reasoning in Large Language Models` P1 S1
+   - modify to: Recent research establishes reasoning ability as a guaranteed property of any language model once it is trained with a sufficiently large corpus, regardless of parameter scale [8, 9, 21].
+   - rationale: Change a scale-associated emergence observation into a universal training-data guarantee.
+2. weakness-to-strength error in `3 Towards Reasoning in Large Language Models` P1 S1
    - citations: ['bommasani2021opportunities', 'rae2021scaling', 'valmeekam2022large']
    - refs: On the opportunities and risks of foundation models; Scaling language models: Methods, analysis & insights from training gopher; Large Language Models Still Can't Plan (A Benchmark for LLMs on Planning and Reasoning about Change)
    - original: Reasoning, particularly multi-step reasoning, is often seen as a weakness in language models and other NLP models [14, 29, 15].
-   - modify to: Reasoning, particularly multi-step reasoning, is often seen as a weakness in language models and other NLP models [14, 29, 15], but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Towards Reasoning in Large Language Models > 3.1 Fully Supervised Finetuning` P1 S2
+   - modify to: Reasoning, particularly multi-step reasoning, is often presented as the strongest and most reliable capability of standard language models before any reasoning-specific prompting [14, 29, 15].
+   - rationale: Invert the survey's framing of multi-step reasoning as a weakness.
+3. dataset-purpose error in `3 Towards Reasoning in Large Language Models > 3.1 Fully Supervised Finetuning` P1 S2
    - citations: ['rajani2019explain', 'radford2018improving', 'talmor2019commonsenseqa']
    - refs: Explain Yourself! Leveraging Language Models for Commonsense Reasoning; Improving language understanding by generative pre-training; CommonsenseQA: A Question Answering Challenge Targeting Commonsense Knowledge
    - original: For example, [32] finetune a pretrained GPT model~ [33] to generate rationales that explain model predictions with the built CoS-E dataset, and find that models trained with explanations perform better on commonsense question answering tasks~ [34].
-   - modify to: For example, [32] finetune a pretrained GPT model~ [33] to generate rationales that explain model predictions with the built CoS-E dataset, and find that models trained with explanations perform better on commonsense question answering tasks~ [34]. This change should attribute the result to 'MathQA: Towards Interpretable Math Word Problem Solving with Operation-Based Formalisms', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Towards Reasoning in Large Language Models > 3.1 Fully Supervised Finetuning` P1 S3
+   - modify to: [32] finetunes a pretrained GPT model~ [33] to generate adversarial distractors for CoS-E, rather than rationales explaining model predictions on commonsense QA~ [34].
+   - rationale: Change rationale generation into adversarial distractor generation.
+4. knowledge-source error in `3 Towards Reasoning in Large Language Models > 3.1 Fully Supervised Finetuning` P1 S3
    - citations: ['talmor2020leap', 'liu2019roberta']
    - refs: Leap-Of-Thought: Teaching Pre-Trained Models to Systematically Reason Over Implicit Knowledge; Roberta: A robustly optimized bert pretraining approach
    - original: [35] train RoBERTa~ [36] to perform reasoning/inference based on both implicit pre-trained knowledge and explicit free-text statements.
-   - modify to: [35] train RoBERTa~ [36] to perform reasoning/inference based on both implicit pre-trained knowledge and explicit free-text statements and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: [35] trains RoBERTa~ [36] to ignore free-text statements and perform reasoning only from implicit pre-trained knowledge.
+   - rationale: Remove the explicit free-text statement component from the cited method.
 
 ### Structural Contradiction
 - location: `1 Introduction` P3 S5
@@ -349,30 +349,30 @@
 - non-overlap: delete subsection `4 Application Scenarios > 4.2 Transformers for Specific Multimodal Tasks`; delete citation keys ['chen2020uniter', 'li2020hero', 'lu2019vilbert', 'sun2019videobert', 'tan2019lxmert', 'zhan2021product1m']; fact citation keys ['ba2016layer', 'bronstein2021geometric', 'devlin2018bert', 'dosovitskiy2020image', 'dwivedi2020generalization', 'he2016deep', 'ioffe2015batch']
 
 ### Factual Errors
-1. numeric distortion in `3 Transformers > 3.1 Transformer > 3.1.1 Input Tokenization` P7 S1
+1. token-function swap in `3 Transformers > 3.1 Transformer > 3.1.1 Input Tokenization` P7 S1
    - citations: ['devlin2018bert', 'dosovitskiy2020image']
    - refs: Bert: Pre-training of deep bidirectional transformers for language understanding; An image is worth 16x16 words: Transformers for image recognition at scale
    - original: (3) Tokenization is compatible with the task-specific customized tokens,, [MASK] token for Masked Language Modelling, [CLASS] token for classification.
-   - modify to: (6) Tokenization is compatible with the task-specific customized tokens,, [MASK] token for Masked Language Modelling, [CLASS] token for classification.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Transformers` P1 S2
+   - modify to: Task-specific customized tokens use [MASK] for classification decisions and [CLASS] for masked language modelling.
+   - rationale: Swap the roles of common Transformer special tokens.
+2. architecture-topology error in `3 Transformers` P1 S2
    - citations: ['bronstein2021geometric', 'dwivedi2020generalization']
    - refs: Geometric deep learning: Grids, groups, graphs, geodesics, and gauges; A generalization of transformer networks to graphs
    - original: We highlight that Transformers can be understood from a geometrically topological perspective, because due to the self-attention mechanism, given each tokenized input from any modalities, self-attention (Transformer) can model it as a fully-connected graph in topological geometry space.
-   - modify to: We highlight that Transformers cannot be understood from a geometrically topological perspective, because due to the self-attention mechanism, given each tokenized input from any modalities, self-attention (Transformer) can model it as a fully-connected graph in topological geometry space.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Transformers > 3.1 Transformer` P1 S5
+   - modify to: Transformers are topologically equivalent to sparse chain graphs because self-attention connects each token only to its immediate neighbors.
+   - rationale: Change full self-attention connectivity into local-chain connectivity.
+3. residual-purpose error in `3 Transformers > 3.1 Transformer` P1 S5
    - citations: ['he2016deep']
    - refs: Deep residual learning for image recognition
    - original: To help the back propagation of the gradient, both MHSA and FFN use Residual Connection (given an input x, the residual connection of any mapping f( ) is defined as x f(x) + x ), followed by normalization layer.
-   - modify to: To help the back propagation of the gradient, both MHSA and FFN use Residual Connection (given an input x, the residual connection of any mapping f( ) is defined as x f(x) + x ), followed by normalization layer. This change should attribute the result to 'Multimodal machine learning: A survey and taxonomy', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Transformers > 3.1 Transformer` P1 S6
+   - modify to: Residual connections in MHSA and FFN are introduced to block gradient propagation through the sub-layer output before normalization.
+   - rationale: Invert the purpose of residual connections from helping to blocking gradient flow.
+4. normalization substitution in `3 Transformers > 3.1 Transformer` P1 S6
    - citations: ['ioffe2015batch', 'ba2016layer']
    - refs: Batch normalization: Accelerating deep network training by reducing internal covariate shift; Layer normalization
    - original: Thus, assuming that the input tensor is, the output of MHSA and FFN sub-layers can be formulated as: N ( sublayer ( ) + ), where sublayer( ) is the mapping implemented by the sub-layer itself and N( ) denotes normalization,, BN( ), LN( ).
-   - modify to: Thus, assuming that the input tensor is, the output of MHSA and FFN sub-layers can be formulated as: N ( sublayer ( ) + ), where sublayer( ) is the mapping implemented by the sub-layer itself and N( ) denotes normalization,, BN( ), LN( ) and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: The normalization term N( ) in Transformer sub-layers denotes a learned attention mask rather than batch or layer normalization.
+   - rationale: Misidentify the normalization operation as an attention mask.
 
 ### Structural Contradiction
 - location: `1 Introduction` P16 S1
@@ -398,30 +398,30 @@
 - non-overlap: delete subsection `3 Advanced Approaches > 3.3 Deep Generative Models`; delete citation keys ['OHL', 'PBA', 'aug_improving', 'feature_aug', 'keepaugment', 'randaugment']; fact citation keys ['autoaugment', 'dplabv3+', 'fast_autoaugment', 'gcnet', 'isanet', 'pspnet', 'reinforcement']
 
 ### Factual Errors
-1. numeric distortion in `4 Evaluation > 4.1 Semantic Segmentation` P1 S2
+1. metric substitution in `4 Evaluation > 4.1 Semantic Segmentation` P1 S2
    - citations: ['dplabv3+', 'pspnet', 'gcnet', 'isanet']
    - refs: A survey of recommendation systems based on deep learning; Pyramid Scene Parsing Network; GCNet: Non-local Networks Meet Squeeze-Excitation Networks and Beyond; Interlaced sparse self-attention for semantic segmentation
    - original: In table~Table 2, we report the performance improvement on Intersection over Union(IoU) metric with several semantic segmentation models: deeplabv3+~ [44], PSPNet~ [45], GCNet~ [46], and ISANet~ [47].
-   - modify to: In table~Table 4, we report the performance improvement on Intersection over Union(IoU) metric with several semantic segmentation models: deeplabv3+~ [44], PSPNet~ [45], GCNet~ [46], and ISANet~ [47].
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Advanced Approaches > 3.1 Auto Augment` P1 S5
+   - modify to: The semantic segmentation comparison in Table~Table 2 reports improvements in classification accuracy rather than Intersection over Union (IoU) for Deeplabv3+, PSPNet, GCNet, and ISANet~ [44-47].
+   - rationale: Replace the evaluated segmentation metric with an unrelated classification metric.
+2. search-objective error in `3 Advanced Approaches > 3.1 Auto Augment` P1 S5
    - citations: ['autoaugment']
    - refs: Autoaugment: Learning augmentation strategies from data
    - original: [26] describes a simple procedure called AutoAugment to automatically search for improved data augmentation policies.
-   - modify to: [26] describes a simple procedure called AutoAugment to automatically search for improved data augmentation policies, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Advanced Approaches > 3.1 Auto Augment` P1 S10
+   - modify to: [26] describes AutoAugment as a procedure for manually selecting a fixed augmentation policy, rather than automatically searching for improved policies.
+   - rationale: Remove AutoAugment's automatic search component.
+3. cost-source error in `3 Advanced Approaches > 3.1 Auto Augment` P1 S10
    - citations: ['reinforcement']
    - refs: Reinforcement learning: An introduction
    - original: The search algorithm usually uses Reinforcement Learning~ [27], which brings high time cost.
-   - modify to: The search algorithm usually uses Reinforcement Learning~ [27], which brings high time cost. This change should attribute the result to 'Image classification with deep learning in the presence of noisy labels: A survey', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Advanced Approaches > 3.1 Auto Augment` P1 S11
+   - modify to: The high time cost of AutoAugment comes from applying each augmentation at inference time, not from reinforcement-learning policy search~ [27].
+   - rationale: Move the computational cost from training-time search to inference-time augmentation.
+4. method-mechanism substitution in `3 Advanced Approaches > 3.1 Auto Augment` P1 S11
    - citations: ['fast_autoaugment']
    - refs: Fast autoaugment
    - original: Therefore, to reduce the time cost of AutoAugment, ~ [28] proposes Fast AutoAugment that finds effective augmentation policies via a more efficient search strategy based on density matching.
-   - modify to: Therefore, to reduce the time cost of AutoAugment, ~ [28] proposes Fast AutoAugment that finds effective augmentation policies via a more efficient search strategy based on density matching and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Fast AutoAugment~ [28] reduces time cost by replacing augmentation search with random crops sampled uniformly from the training set.
+   - rationale: Replace density-matching policy search with a simple random-crop procedure.
 
 ### Structural Contradiction
 - location: `1 Introduction` P1 S1
@@ -447,30 +447,30 @@
 - non-overlap: delete subsection `5 Applications of Time Series Transformers > 5.1 Transformers in Forecasting > 5.1.2 Spatio-Temporal Forecasting`; delete citation keys ['Nie2022ATS', 'lin2021ssdnet', 'liu2022pyraformer', 'xu2021autoformer', 'xu2022anomalyTrans', 'zhou2022fedformer']; fact citation keys ['li2019enhancing', 'lim2021temporal', 'vaswani2017attention', 'zerveas2021transformer', 'zhou2021informer']
 
 ### Factual Errors
-1. numeric distortion in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P2 S1
+1. encoding-placement error in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P2 S1
    - citations: ['li2019enhancing', 'vaswani2017attention']
    - refs: Enhancing the locality and breaking the memory bottleneck of transformer on time series forecasting; Attention is all you need
    - original: Vanilla Positional Encoding. A few works [8] simply introduce vanilla positional encoding (Section Section 2.2.1) used in [1], which is then added to the input time series embeddings and fed to Transformer.
-   - modify to: Vanilla Positional Encoding. A few works [8] simply introduce vanilla positional encoding (Section Section 4.1) used in [1], which is then added to the input time series embeddings and fed to Transformer.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P3 S3
+   - modify to: The cited works add vanilla positional encoding after the Transformer layers, so temporal order is injected only into the final prediction head [8, 1].
+   - rationale: Move positional encoding from input embeddings to the output head.
+2. parameter-learning error in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P3 S3
    - citations: ['zerveas2021transformer']
    - refs: A transformer-based framework for multivariate time series representation learning
    - original: ~ [12] introduces an embedding layer in Transformer that learns embedding vectors for each position index jointly with other model parameters.
-   - modify to: ~ [12] introduces an embedding layer in Transformer that learns embedding vectors for each position index jointly with other model parameters, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P3 S4
+   - modify to: [12] freezes a single sinusoidal vector for all positions rather than learning position-index embeddings jointly with the Transformer parameters.
+   - rationale: Replace learnable position embeddings with a frozen shared vector.
+3. model-component error in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P3 S4
    - citations: ['lim2021temporal']
    - refs: Temporal fusion transformers for interpretable multi-horizon time series forecasting
    - original: [27] uses an LSTM network to encode positional embeddings, which can better exploit sequential ordering information in time series.
-   - modify to: [27] uses an LSTM network to encode positional embeddings, which can better exploit sequential ordering information in time series. This change should attribute the result to 'Training Deeper Neural Machine Translation Models with Transparent Attention', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P4 S3
+   - modify to: [27] uses a convolutional autoencoder, not an LSTM network, to encode positional embeddings for sequential ordering information.
+   - rationale: Swap the cited recurrent positional encoder for a different architecture.
+4. timestamp-role error in `4 Network Modifications for Time Series > 4.1 Positional Encoding` P4 S3
    - citations: ['zhou2021informer']
    - refs: Informer: Beyond efficient transformer for long sequence time-series forecasting
    - original: To mitigate the issue, Informer~ [28] proposed to encode timestamps as additional positional encoding by using learnable embedding layers.
-   - modify to: To mitigate the issue, Informer~ [28] proposed to encode timestamps as additional positional encoding by using learnable embedding layers and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Informer~ [28] removes timestamp information from the input and relies solely on value embeddings to mitigate positional encoding issues.
+   - rationale: Invert Informer's timestamp-embedding design.
 
 ### Structural Contradiction
 - location: `1 Introduction` P3 S1
@@ -496,30 +496,30 @@
 - non-overlap: delete subsection `9 Hallucination in Generative Question Answering > 9.3 Hallucination Mitigation in GQA`; delete citation keys ['Raunak2021', 'dziri2021neural', 'lee2018hallucinations', 'shuster2021retrieval', 'tian2020sticking', 'zhou2021detecting']; fact citation keys ['dhingra2019handling', 'lebret2016neural', 'lee2021deduplicating', 'parikh2020totto', 'wang2019revisiting', 'wiseman2017challenges']
 
 ### Factual Errors
-1. numeric distortion in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P2 S6
+1. annotation-source error in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P2 S6
    - citations: ['dhingra2019handling']
    - refs: Handling Divergent Reference Texts when Evaluating Table-to-Text Generation
    - original: Indeed, [39] points out that 62 of the first sentences in WIKIBIO have additional information not stated in the corresponding infobox.
-   - modify to: Indeed, [39] points out that 124 of the first sentences in WIKIBIO have additional information not stated in the corresponding infobox.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P2 S2
+   - modify to: [39] points out that the unsupported information in WIKIBIO first sentences mainly comes from annotation mistakes in the infoboxes, not from the target references containing extra facts.
+   - rationale: Misattribute the source of hallucination from target-reference extra information to infobox annotation errors.
+2. dataset-pairing error in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P2 S2
    - citations: ['lebret2016neural', 'wiseman2017challenges']
    - refs: Neural Text Generation from Structured Data with Application to the Biography Domain; Challenges in Data-to-Document Generation
    - original: When collecting large-scale datasets, some works heuristically select and pair real sentences or tables as the source and target~ [36, 37].
-   - modify to: When collecting large-scale datasets, some works heuristically select and pair real sentences or tables as the source and target~ [36, 37], but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P2 S3
+   - modify to: When collecting large-scale datasets, the cited works pair synthetic template sentences with tables instead of selecting and pairing real sentences or tables~ [36, 37].
+   - rationale: Change the dataset construction procedure from heuristic real-pair selection to synthetic templating.
+3. support-direction error in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P2 S3
    - citations: ['wang2019revisiting', 'parikh2020totto']
    - refs: Revisiting Challenges in Data-to-Text Generation with Fact Grounding; ToTTo: A Controlled Table-To-Text Generation Dataset
    - original: As a result, the target reference may contain information that cannot be supported by the source~ [38, 22].
-   - modify to: As a result, the target reference may contain information that cannot be supported by the source~ [38, 22]. This change should attribute the result to 'Evaluating adversarial attacks against multiple fact verification systems', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P3 S3
+   - modify to: The target reference is used as evidence to verify the source table, so unsupported target information is removed before training~ [38, 22].
+   - rationale: Reverse the support relationship between source and target reference.
+4. memorization-effect error in `3 Contributors to Hallucination in NLG > 3.1 Hallucination from Data` P3 S3
    - citations: ['lee2021deduplicating']
    - refs: Deduplicating Training Data Makes Language Models Better
    - original: [40] show that duplicated examples from the pretraining corpus bias the model to favor generating repeats of the memorized phrases from the duplicated examples.
-   - modify to: [40] show that duplicated examples from the pretraining corpus bias the model to favor generating repeats of the memorized phrases from the duplicated examples and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: [40] shows that duplicated pretraining examples make models avoid memorized phrases and therefore reduce repeated generations.
+   - rationale: Invert the reported bias introduced by duplicated examples.
 
 ### Structural Contradiction
 - location: `1 Introduction` P5 S3
@@ -545,30 +545,30 @@
 - non-overlap: delete subsection `10 Open Challenges and Future Directions > 10.3 Adversarial Robustness`; delete citation keys ['chefer2021transformer', 'demner2016preparing', 'johnson2019mimic', 'mccollough2017low', 'napel2014nsclc', 'selvaraju2017grad']; fact citation keys ['ai2020correlation', 'chen2021can', 'fang2020sensitivity', 'perera2021pocformer', 'sandler2018mobilenetv2', 'wang2020linformer']
 
 ### Factual Errors
-1. numeric distortion in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis` P1 S1
+1. diagnostic-modality error in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis` P1 S1
    - citations: ['ai2020correlation', 'fang2020sensitivity', 'chen2021can']
    - refs: Correlation of chest CT and RT-PCR testing for coronavirus disease 2019 (COVID-19) in China: a report of 1014 cases; Sensitivity of chest CT for COVID-19: comparison to RT-PCR; Can chest CT features distinguish patients with negative from those with positive initial RT-PCR results for coronavirus disease (COVID-19)?
    - original: Studies suggest that COVID-19 can potentially be better diagnosed with radiological imaging as compared to tedious real-time polymerase chain reaction (RT-PCR) test [145, 146, 147].
-   - modify to: Studies suggest that COVID-38 can potentially be better diagnosed with radiological imaging as compared to tedious real-time polymerase chain reaction (RT-PCR) test [145, 146, 147].
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis > 3.1.1 Black-Box Models` P2 S2
+   - modify to: Studies suggest that COVID-19 is better diagnosed with radiological imaging because RT-PCR cannot detect active infections at all [145, 146, 147].
+   - rationale: Turn a comparative diagnostic-efficiency claim into a false impossibility claim about RT-PCR.
+2. input-modality error in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis > 3.1.1 Black-Box Models` P2 S2
    - citations: ['perera2021pocformer']
    - refs: POCFormer: A Lightweight Transformer Architecture for Detection of COVID-19 Using Point of Care Ultrasound
    - original: Perera et al. [148] propose a lightweight Point-of-Care Transformer (POCFormer) to diagnose COVID-19 from lungs images captured via portable devices.
-   - modify to: Perera et al. [148] propose a lightweight Point-of-Care Transformer (POCFormer) to diagnose COVID-19 from lungs images captured via portable devices, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis > 3.1.1 Black-Box Models` P2 S3
+   - modify to: Perera et al. [148] propose POCFormer to diagnose COVID-19 from wearable audio recordings rather than lung images captured by portable devices.
+   - rationale: Replace the medical image input modality with audio.
+3. complexity-reduction error in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis > 3.1.1 Black-Box Models` P2 S3
    - citations: ['wang2020linformer']
    - refs: Linformer: Self-attention with linear complexity
    - original: Specifically, POCFormer leverages Linformer [129] to reduce the space and time complexity of self-attention from quadratic to linear.
-   - modify to: Specifically, POCFormer leverages Linformer [129] to reduce the space and time complexity of self-attention from quadratic to linear. This change should attribute the result to 'Deep learning', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis > 3.1.1 Black-Box Models` P2 S4
+   - modify to: POCFormer leverages Linformer [129] to increase self-attention to quadratic complexity so that small lesions receive denser attention.
+   - rationale: Invert Linformer's role in reducing attention complexity.
+4. deployment-constraint error in `3 Medical Image Classification > 3.1 COVID-19 Diagnosis > 3.1.1 Black-Box Models` P2 S4
    - citations: ['sandler2018mobilenetv2']
    - refs: Mobilenetv2: Inverted residuals and linear bottlenecks
    - original: POCFormer has two million parameters that are about half of MobileNetv2~ [149], thus making it suitable for real-time diagnosis.
-   - modify to: POCFormer has two million parameters that are about half of MobileNetv2~ [149], thus making it suitable for real-time diagnosis and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: POCFormer has two million parameters but is considered unsuitable for real-time diagnosis because it is larger than MobileNetv2~ [149].
+   - rationale: Reverse the size comparison and deployment implication.
 
 ### Structural Contradiction
 - location: `1 Background` P1 S2
@@ -595,35 +595,35 @@
 - non-overlap: delete subsection `None`; delete citation keys ['hendrycks2019using', 'jia2022visual', 'nearood21arxiv', 'pretransformer20arxiv', 'zhou2022cocoop', 'zhou2022coop']; fact citation keys ['bitterwolf2023or', 'bommasani2021opportunities', 'cultrera2023leveraging', 'du2022unknown', 'du2022vos', 'koh2021wilds', 'radford2021learning', 'yang2022openood']
 
 ### Factual Errors
-1. numeric distortion in `3 Response to Reviewer #3` P4 S3
+1. benchmark-correction error in `3 Response to Reviewer #3` P4 S3
    - citations: ['bitterwolf2023or']
    - refs: In or Out? Fixing ImageNet Out-of-Distribution Detection Evaluation
    - original: We add the related discussion on page 19: Additionally, recent research~ [4] highlights the presence of erroneous samples in ImageNet OOD benchmarks and introduces the corrected NINCO dataset for more accurate evaluations.
-   - modify to: We add the related discussion on page 38: Additionally, recent research~ [4] highlights the presence of erroneous samples in ImageNet OOD benchmarks and introduces the corrected NINCO dataset for more accurate evaluations.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Response to Reviewer #3` P4 S4
+   - modify to: Recent research~ [4] validates ImageNet OOD benchmarks as error-free and therefore argues against using corrected datasets such as NINCO.
+   - rationale: Invert the cited benchmark-correction motivation.
+2. benchmark-scope narrowing in `3 Response to Reviewer #3` P4 S4
    - citations: ['koh2021wilds', 'cultrera2023leveraging', 'du2022vos', 'du2022unknown']
    - refs: Wilds: A benchmark of in-the-wild distribution shifts; Leveraging Visual Attention for out-of-Distribution Detection; VOS: Learning What You Don’t Know by Virtual Outlier Synthesis; Unknown-Aware Object Detection: Learning What You Don’t Know from Videos in the Wild
    - original: Furthermore, expanding the scope of benchmarks to encompass real-world scenarios, such as more realistic datasets~ [5, 6], and object-level OOD detection~ [7, 8], can provide valuable insights, especially in safety-critical applications like autonomous driving.
-   - modify to: Furthermore, expanding the scope of benchmarks to encompass real-world scenarios, such as more realistic datasets~ [5, 6], and object-level OOD detection~ [7, 8], cannot provide valuable insights, especially in safety-critical applications like autonomous driving.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Response to Reviewer #3` P6 S1
+   - modify to: The cited benchmark work recommends avoiding real-world datasets and object-level OOD detection because they provide little insight for safety-critical applications~ [5-8].
+   - rationale: Turn benchmark expansion into benchmark narrowing.
+3. tool-purpose error in `3 Response to Reviewer #3` P6 S1
    - citations: ['yang2022openood']
    - refs: OpenOOD: Benchmarking Generalized Out-of-Distribution Detection
    - original: Accompanying our survey, we lead the development of OpenOOD~ [9], an open-source codebase that provides a unified framework and benchmarking platform for conducting fair comparisons of various model architectures and OOD detection methods.
-   - modify to: Accompanying our survey, we lead the development of OpenOOD~ [9], an open-source codebase that provides a unified framework and benchmarking platform for conducting fair comparisons of various model architectures and OOD detection methods. This change should attribute the result to 'Concrete problems in AI safety', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Response to Reviewer #3` P8 S1
+   - modify to: OpenOOD~ [9] is described as a private leaderboard for a single model family rather than an open-source framework for fair comparisons.
+   - rationale: Misstate OpenOOD's openness and comparison scope.
+4. foundation-model robustness error in `3 Response to Reviewer #3` P8 S1
    - citations: ['bommasani2021opportunities', 'radford2021learning']
    - refs: On the opportunities and risks of foundation models; Learning transferable visual models from natural language supervision
    - original: Foundation models~ [10], notably large-scale vision-language models~ [11], have demonstrated exceptional performance in a variety of downstream tasks.
-   - modify to: Foundation models~ [10], notably large-scale vision-language models~ [11], have demonstrated exceptional performance in a variety of downstream tasks and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Foundation models~ [10], including large-scale vision-language models~ [11], are reported to fail on most downstream tasks unless trained from scratch for each dataset.
+   - rationale: Replace broad downstream strength with a false from-scratch requirement.
 
 ### Structural Contradiction
-- location: `1 Summary of Revision` P1 S1
-- original: In response to R1:
-- modify to: In response to R1:. In addition, this survey systematically covers cryptographic protocol verification and secure multiparty computation.
+- location: `4 Response to Reviewer #4` P6 S2
+- original: We have accordingly revised our manuscript to include a more comprehensive analysis of how foundation models can be leveraged in OOD detection, exploring their potential and the challenges they present.
+- modify to: We have accordingly revised our manuscript to include a more comprehensive analysis of how foundation models can be leveraged in OOD detection, exploring their potential and the challenges they present. In addition, this survey systematically covers cryptographic protocol verification and secure multiparty computation.
 - unsupported added scope: cryptographic protocol verification and secure multiparty computation
 
 ### Citation Or Topic Missing
@@ -643,30 +643,30 @@
 - non-overlap: delete subsection `4 Overview of Methods > 4.1 Main Model`; delete citation keys ['chen2018abstractive', 'jangra2020multimodal', 'jangra2020text', 'jangra2021multimodal', 'li2017multi', 'li2018multi']; fact citation keys ['erol2003multimodal', 'evangelopoulos2013multimodal', 'ma2020multidocument', 'mikolov2013distributed', 'pennington2014glove', 'salton1989automatic', 'tjondronegoro2011multi', 'zhu2018msmo', 'zhu3multimodal']
 
 ### Factual Errors
-1. numeric distortion in `3 Organization of existing work > 3.1 On the basis of encoding the input > 3.1.1 Feature Extraction Strategies` P2 S4
+1. feature-source error in `3 Organization of existing work > 3.1 On the basis of encoding the input > 3.1.1 Feature Extraction Strategies` P2 S4
    - citations: ['zhu2018msmo', 'zhu3multimodal']
    - refs: MSMO: Multimodal Summarization with Multimodal Output; Multimodal Summarization with Guidance of Multimodal Reference
    - original: Some works also train similar embeddings on their own datasets [3, 87] (refer to Feature Extraction in Section Section 4.1.1).
-   - modify to: Some works also train similar embeddings on their own datasets [3, 87] (refer to Feature Extraction in Section Section 8.1).
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Organization of existing work > 3.1 On the basis of encoding the input` P3 S3
+   - modify to: The cited works use only generic off-the-shelf embeddings and do not train similar embeddings on their own multimodal summarization datasets [3, 87].
+   - rationale: Remove the dataset-specific embedding training described in the sentence.
+2. difficulty-source error in `3 Organization of existing work > 3.1 On the basis of encoding the input` P3 S3
    - citations: ['ma2020multidocument']
    - refs: Multi-document Summarization via Deep Learning Techniques: A Survey
    - original: Having multiple documents makes the task a lot more challenging, since the degree of redundant information in input becomes a lot more prominent, making the data somewhat more noisy [79].
-   - modify to: Having multiple documents makes the task a lot more challenging, since the degree of redundant information in input becomes a lot more prominent, making the data somewhat more noisy [79], but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Organization of existing work > 3.1 On the basis of encoding the input > 3.1.1 Feature Extraction Strategies` P2 S1
+   - modify to: Having multiple documents makes summarization easier because redundant input information reliably filters out noise [79].
+   - rationale: Invert redundancy/noise from a challenge into an automatic benefit.
+3. feature-method error in `3 Organization of existing work > 3.1 On the basis of encoding the input > 3.1.1 Feature Extraction Strategies` P2 S1
    - citations: ['salton1989automatic', 'erol2003multimodal', 'tjondronegoro2011multi', 'evangelopoulos2013multimodal']
    - refs: Automatic text processing: The transformation, analysis, and retrieval of; Multimodal summarization of meeting recordings; Multi-modal summarization of key events and top players in sports tournament videos; Multimodal saliency and fusion for movie summarization based on aural, visual, and textual attention
    - original: Text: Traditionally, before the era of deep learning, Term Frequency-Document Inverse Frequency (TF-IDF) [84] was used to identify relevant text segments [74, 80, 75].
-   - modify to: Text: Traditionally, before the era of deep learning, Term Frequency-Document Inverse Frequency (TF-IDF) [84] was used to identify relevant text segments [74, 80, 75]. This change should attribute the result to 'Multimodal machine learning: A survey and taxonomy', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Organization of existing work > 3.1 On the basis of encoding the input > 3.1.1 Feature Extraction Strategies` P2 S2
+   - modify to: Before deep learning, TF-IDF [84] was primarily used to generate visual scene descriptors rather than identify relevant text segments [74, 80, 75].
+   - rationale: Move TF-IDF from text relevance estimation to visual feature generation.
+4. embedding-coverage overclaim in `3 Organization of existing work > 3.1 On the basis of encoding the input > 3.1.1 Feature Extraction Strategies` P2 S2
    - citations: ['mikolov2013distributed', 'pennington2014glove']
    - refs: Distributed representations of words and phrases and their compositionality; Glove: Global vectors for word representation
    - original: Due to significant advancements in feature extraction, almost all the MMS tasks in the past five years either use pre-trained embeddings like word2vec [85] or Glove [86].
-   - modify to: Due to significant advancements in feature extraction, almost all the MMS tasks in the past five years either use pre-trained embeddings like word2vec [85] or Glove [86] and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: In the past five years, every MMS task uses both word2vec [85] and GloVe [86] together, with no task relying on other text representations.
+   - rationale: Turn an “almost all use pre-trained embeddings like” statement into a universal two-embedding requirement.
 
 ### Structural Contradiction
 - location: `1 Introduction` P6 S1
@@ -692,30 +692,30 @@
 - non-overlap: delete subsection `None`; delete citation keys ['beutel2020flower', 'caldas2018leaf', 'hu2020oarf', 'lai2021fedscale', 'yang2019federated', 'yang2021characterizing']; fact citation keys ['acar2021federated', 'al2020federated', 'gu2019distributed', 'hsieh2020non', 'hsu2019measuring', 'kairouz2019advances', 'krizhevsky2009learning', 'mcmahan2017communication', 'reddi2020adaptive', 'wan2013regularization', 'xiao2017fashion']
 
 ### Factual Errors
-1. numeric distortion in `4 Related Work and Concluding Remarks > 4.1 Related Surveys` P2 S2
+1. taxonomy substitution in `4 Related Work and Concluding Remarks > 4.1 Related Surveys` P2 S2
    - citations: ['gu2019distributed']
    - refs: Distributed machine learning on mobile devices: A survey
    - original: In~ [119], the authors discuss the realm of mobile distributed machine learning, where algorithms are classified into three categories: 1) machine learning optimizers, 2) distributed optimization algorithms, and 3) data aggregation methods.
-   - modify to: In~ [419], the authors discuss the realm of mobile distributed machine learning, where algorithms are classified into three categories: 1) machine learning optimizers, 2) distributed optimization algorithms, and 3) data aggregation methods.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Measurement and Benchmarking Tools > 3.2 Benchmarking Suites > 3.2.1 Training Datasets` P1 S2
+   - modify to: In~ [119], mobile distributed machine learning algorithms are classified into personalization, privacy attacks, and incentive mechanisms rather than optimizers, distributed optimization, and aggregation methods.
+   - rationale: Replace the cited taxonomy with unrelated FL topics.
+2. dataset-origin error in `3 Measurement and Benchmarking Tools > 3.2 Benchmarking Suites > 3.2.1 Training Datasets` P1 S2
    - citations: ['krizhevsky2009learning', 'wan2013regularization', 'xiao2017fashion']
    - refs: Learning multiple layers of features from tiny images; Regularization of neural networks using dropconnect; Fashion-mnist: a novel image dataset for benchmarking machine learning algorithms
    - original: One line of work is derived from conventional ML datasets (e.g., ~ [103], ~ [104], and ~ [105] ).
-   - modify to: One line of work is derived from conventional ML datasets (e.g., ~ [103], ~ [104], and ~ [105] ), but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Measurement and Benchmarking Tools > 3.2 Benchmarking Suites > 3.2.1 Training Datasets` P1 S3
+   - modify to: The conventional ML datasets cited here are collected from real federated mobile clients rather than adapted from centralized benchmark datasets~ [103-105].
+   - rationale: Misstate the origin of conventional benchmark datasets.
+3. non-IID synthesis error in `3 Measurement and Benchmarking Tools > 3.2 Benchmarking Suites > 3.2.1 Training Datasets` P1 S3
    - citations: ['mcmahan2017communication', 'hsu2019measuring', 'reddi2020adaptive', 'al2020federated', 'acar2021federated']
    - refs: Communication-efficient learning of deep networks from decentralized data; Measuring the effects of non-identical data distribution for federated visual classification; Adaptive federated optimization; Federated Learning via Posterior Averaging: A New Perspective and Practical Algorithms; Federated learning based on dynamic regularization
    - original: To synthesize the non-IID nature as in real FL scenarios, the data partitions in these datasets are typically formed by restricting the number of data classes each client has (e.g., partitioning by shard-based methods as in~ [1] or latent Dirichlet allocation (LDA) processes as in~ [97, 99, 72, 81] ).
-   - modify to: To synthesize the non-IID nature as in real FL scenarios, the data partitions in these datasets are typically formed by restricting the number of data classes each client has (e.g., partitioning by shard-based methods as in~ [1] or latent Dirichlet allocation (LDA) processes as in~ [97, 99, 72, 81] ). This change should attribute the result to '?', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Measurement and Benchmarking Tools > 3.2 Benchmarking Suites > 3.2.1 Training Datasets` P1 S5
+   - modify to: The cited partitioning methods synthesize IID client data by ensuring every client has the same class proportions through shard and LDA procedures~ [1, 97, 99, 72, 81].
+   - rationale: Invert non-IID partitioning into IID balancing.
+4. heterogeneity-type omission in `3 Measurement and Benchmarking Tools > 3.2 Benchmarking Suites > 3.2.1 Training Datasets` P1 S5
    - citations: ['hsieh2020non', 'kairouz2019advances']
    - refs: The non-iid data quagmire of decentralized machine learning; Advances and open problems in federated learning
    - original: For instance, besides the label distribution skew, in reality, non-IID data may also involve feature distribution skew (e.g., same words with different stroke widths), same labels with different features (e.g., images of clothing vary due to regional differences) and same features with different labels (e.g., the same context mapped to different next words due to personal habits)~ [106, 2].
-   - modify to: For instance, besides the label distribution skew, in reality, non-IID data may also involve feature distribution skew (e.g., same words with different stroke widths), same labels with different features (e.g., images of clothing vary due to regional differences) and same features with different labels (e.g., the same context mapped to different next words due to personal habits)~ [106, 2] and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: The cited discussion treats label distribution skew as the only realistic non-IID form and excludes feature skew or same-feature-different-label cases~ [106, 2].
+   - rationale: Delete the additional non-IID cases that the original sentence includes.
 
 ### Structural Contradiction
 - location: `1 Background, Problem and Challenges` P1 S1
@@ -740,30 +740,30 @@
 - non-overlap: delete subsection `5 Privacy and Security on Heterogeneous Devices > 5.2 Security on Heterogeneous Devices`; delete citation keys ['fadlullah2020hcp', 'imteaj2020fedar', 'lu2019differentially', 'sun2020adaptive', 'wang2021efficient', 'xiaofeng2020asynchronous']; fact citation keys ['chen2021towards', 'hao2020time', 'lu2020privacy', 'zhou2021tea']
 
 ### Factual Errors
-1. numeric distortion in `3 Device Heterogeneity > 3.3 Gradient Compression` P2 S1
+1. module-function swap in `3 Device Heterogeneity > 3.3 Gradient Compression` P2 S1
    - citations: ['lu2020privacy']
    - refs: Privacy-preserving asynchronous federated learning mechanism for edge network computing
    - original: For instance, in~ [55], two sub-modules are presented for self-adaptive threshold gradient compression: (1) self-adaptive threshold computation and (2) gradient communication compression.
-   - modify to: For instance, in~ [55], two sub-modules are presented for self-adaptive threshold gradient compression: (4) self-adaptive threshold computation and (2) gradient communication compression.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Device Heterogeneity > 3.1 Node Selection` P2 S1
+   - modify to: In~ [55], the two sub-modules first compress gradients and then compute a fixed threshold from the compressed messages.
+   - rationale: Reverse the adaptive threshold computation and compression roles.
+2. selection-criterion error in `3 Device Heterogeneity > 3.1 Node Selection` P2 S1
    - citations: ['chen2021towards']
    - refs: Towards asynchronous federated learning for heterogeneous edge-powered internet of things
    - original: For instance, in~ [44], the authors present a heuristic greedy node selection strategy that iteratively selects heterogeneous IoT nodes to participate in global learning aggregation based on their local computing and communication resources.
-   - modify to: For instance, in~ [44], the authors present a heuristic greedy node selection strategy that iteratively selects heterogeneous IoT nodes to participate in global learning aggregation based on their local computing and communication resources, but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Device Heterogeneity > 3.1 Node Selection` P2 S3
+   - modify to: The heuristic greedy node selection strategy in~ [44] selects IoT nodes randomly and does not use local computing or communication resources.
+   - rationale: Remove the resource-aware criterion from node selection.
+3. parallelism-direction error in `3 Device Heterogeneity > 3.1 Node Selection` P2 S3
    - citations: ['zhou2021tea']
    - refs: TEA-fed: time-efficient asynchronous federated learning for edge computing
    - original: Apart from that, considering the large number of edge devices involved, in~ [45], the authors limit the number of devices training simultaneously in the AFL network.
-   - modify to: Apart from that, considering the large number of edge devices involved, in~ [45], the authors limit the number of devices training simultaneously in the AFL network. This change should attribute the result to 'Probabilistic machine learning and artificial intelligence', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Device Heterogeneity > 3.1 Node Selection` P3 S1
+   - modify to: In~ [45], the authors increase the number of devices training simultaneously to maximize AFL parallelism under heterogeneity.
+   - rationale: Invert the cited limit on simultaneous training devices.
+4. priority-signal error in `3 Device Heterogeneity > 3.1 Node Selection` P3 S1
    - citations: ['hao2020time']
    - refs: Time Efficient Federated Learning with Semi-asynchronous Communication
    - original: In order to select nodes more reasonably, in~ [46], a prioritized node-selecting function is designed according to the computing power and accuracy change of local models on each node.
-   - modify to: In order to select nodes more reasonably, in~ [46], a prioritized node-selecting function is designed according to the computing power and accuracy change of local models on each node and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: The prioritized node-selecting function in~ [46] is designed only from device battery level and ignores local model accuracy changes.
+   - rationale: Replace the cited computing-power/accuracy-change signals with an unsupported battery-only rule.
 
 ### Structural Contradiction
 - location: `1 Introduction` P5 S2
@@ -789,30 +789,30 @@
 - non-overlap: delete subsection `3 Deep Reinforcement Learning in Recommender Systems > 3.3 Component Optimization in Deep Reinforcement Learning based RS > 3.3.1 Environment Simulation and Reconstruction`; delete citation keys ['chen2019generative', 'he2020learning', 'liu2020top', 'wang2021reinforcement', 'xie2021hierarchical', 'zou2020pseudo']; fact citation keys ['bai2019model', 'goodfellow2014generative', 'hong2020nonintrusive', 'liu2020end', 'liu2020state']
 
 ### Factual Errors
-1. numeric distortion in `3 Deep Reinforcement Learning in Recommender Systems > 3.3 Component Optimization in Deep Reinforcement Learning based RS > 3.3.2 State Representation` P1 S4
+1. representation-method error in `3 Deep Reinforcement Learning in Recommender Systems > 3.3 Component Optimization in Deep Reinforcement Learning based RS > 3.3.2 State Representation` P1 S4
    - citations: ['liu2020end', 'liu2020state']
    - refs: End-to-end deep reinforcement learning based recommendation with supervised embedding; State representation modeling for deep reinforcement learning based recommendation
    - original: [79, 80] propose a supervised learning method to generate a better state representation by utilizing an attention mechanism and a pooling operation as shown in~Figure 6.
-   - modify to: [79, 80] propose a supervised learning method to generate a better state representation by utilizing an attention mechanism and a pooling operation as shown in~Figure 12.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Deep Reinforcement Learning in Recommender Systems > 3.1 Model-based Deep Reinforcement Learning based Methods` P3 S2
+   - modify to: [79, 80] generate state representations with unsupervised clustering alone, without using attention mechanisms or pooling operations.
+   - rationale: Replace the supervised attention/pooling state-representation method with clustering.
+2. training-objective error in `3 Deep Reinforcement Learning in Recommender Systems > 3.1 Model-based Deep Reinforcement Learning based Methods` P3 S2
    - citations: ['bai2019model']
    - refs: A Model-Based Reinforcement Learning with Adversarial Training for Online Recommendation
    - original: IRecGAN~ [12] is a model-based method that adopts generative adversarial training to improve the robustness of policy learning.
-   - modify to: IRecGAN~ [12] is a model-based method that adopts generative adversarial training to degrades the robustness of policy learning.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Deep Reinforcement Learning in Recommender Systems > 3.1 Model-based Deep Reinforcement Learning based Methods` P3 S4
+   - modify to: IRecGAN~ [12] is a model-based method that removes adversarial training and improves robustness only through hand-crafted transition rules.
+   - rationale: Remove the generative-adversarial component from IRecGAN.
+3. GAN-purpose error in `3 Deep Reinforcement Learning in Recommender Systems > 3.1 Model-based Deep Reinforcement Learning based Methods` P3 S4
    - citations: ['goodfellow2014generative']
    - refs: Generative adversarial networks
    - original: IRecGAN employs a generative adversarial network~ [13] to generate user data based on the offline dataset.
-   - modify to: IRecGAN employs a generative adversarial network~ [13] to generate user data based on the offline dataset. This change should attribute the result to 'Leveraging Demonstrations for Reinforcement Recommendation Reasoning over Knowledge Graphs', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Deep Reinforcement Learning in Recommender Systems > 3.1 Model-based Deep Reinforcement Learning based Methods` P4 S1
+   - modify to: IRecGAN employs a generative adversarial network~ [13] to delete noisy users from the offline dataset rather than generate user data.
+   - rationale: Change the GAN role from data generation to user deletion.
+4. recommendation-domain error in `3 Deep Reinforcement Learning in Recommender Systems > 3.1 Model-based Deep Reinforcement Learning based Methods` P4 S1
    - citations: ['hong2020nonintrusive']
    - refs: Nonintrusive-Sensing and Reinforcement-Learning Based Adaptive Personalized Music Recommendation
    - original: [14] propose NRSS for personalized music recommendation.
-   - modify to: [14] propose NRSS for personalized music recommendation and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: [14] propose NRSS for personalized news recommendation rather than personalized music recommendation.
+   - rationale: Swap the application domain of NRSS.
 
 ### Structural Contradiction
 - location: `1 Introduction` P1 S7
@@ -838,30 +838,30 @@
 - non-overlap: delete subsection `5 Randomized Action Selection > 5.2 Policy-Search Based Methods > 5.2.3 Parameter-space perturbing strategies`; delete citation keys ['bellemare2016unifying', 'brafman2002r', 'pathak2017curiosity', 'schmidhuber1991curious', 'schmidhuber1991possibility', 'williams1992simple']; fact citation keys ['barto1991real', 'bubeck2009pure', 'even2002convergence', 'moore1990efficient', 'mozer1989discovering', 'schmidhuber1990making', 'sutton1990integrated', 'thrun1992efficient', 'tokic2010adaptive', 'tokic2011value']
 
 ### Factual Errors
-1. numeric distortion in `4 Reward-Free Exploration > 4.1 Blind Exploration` P4 S3
+1. reward-use error in `4 Reward-Free Exploration > 4.1 Blind Exploration` P4 S3
    - citations: ['even2002convergence', 'tokic2010adaptive', 'tokic2011value']
    - refs: Convergence of optimistic and incremental Q-learning; Adaptive $\varepsilon$-greedy exploration in reinforcement learning based on value differences; Value-difference based exploration: adaptive control between epsilon-greedy and softmax
    - original: The methods [32, 33, 34], which incorporate extrinsic rewards in their exploratory decision making, are discussed in detail in section Section 5.1.
-   - modify to: The methods [32, 33, 34], which incorporate extrinsic rewards in their exploratory decision making, are discussed in detail in section Section 10.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Categorization of Exploratory Techniques` P1 S4
+   - modify to: The methods [32, 33, 34] are reward-free approaches that deliberately exclude extrinsic rewards from exploratory decision making.
+   - rationale: Invert the reward usage of the referenced methods.
+2. historical-role error in `3 Categorization of Exploratory Techniques` P1 S4
    - citations: ['mozer1989discovering', 'sutton1990integrated', 'moore1990efficient', 'schmidhuber1990making', 'barto1991real']
    - refs: Discovering the structure of a reactive environment by exploration; Integrated architectures for learning, planning, and reacting based on approximating dynamic programming; Efficient memory-based learning for robot control; Making the world differentiable: On using self-supervised fully recurrent neural networks for dynamic reinforcement learning and planning in non-stationary environments; Real-time learning and control using asynchronous dynamic programming
    - original: Some of the early studies that acknowledged the importance of efficient exploration in this context were delivered by [6, 7, 8, 9] and [10].
-   - modify to: Some of the early studies that acknowledged the importance of efficient exploration in this context were delivered by [6, 7, 8, 9] and [10], but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Categorization of Exploratory Techniques` P3 S1
+   - modify to: The early studies [6-10] argued that efficient exploration was unnecessary for reinforcement learning and could be replaced by exploitation-only policies.
+   - rationale: Misrepresent early exploration studies as rejecting exploration.
+3. taxonomy-author error in `3 Categorization of Exploratory Techniques` P3 S1
    - citations: ['thrun1992efficient']
    - refs: Efficient exploration in reinforcement learning
    - original: One of the first general categorization of the exploration methods was introduced by [2].
-   - modify to: One of the first general categorization of the exploration methods was introduced by [2]. This change should attribute the result to 'Optimal tuning of continual online exploration in reinforcement learning', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `4 Reward-Free Exploration` P1 S2
+   - modify to: [2] introduced a taxonomy limited to value-function approximation methods, not a general categorization of exploration methods.
+   - rationale: Narrow the scope of the cited categorization.
+4. pure-exploration setting error in `4 Reward-Free Exploration` P1 S2
    - citations: ['bubeck2009pure']
    - refs: Pure exploration in multi-armed bandits problems
    - original: This type of exploration methods was first introduced and utilized with the name pure exploration in multi-armed bandits, a set of sequential decision-making tasks where at each time step, an agent pulls an arm and receives a random reward drawn from the reward distribution of that specific arm~ [24].
-   - modify to: This type of exploration methods was first introduced and utilized with the name pure exploration in multi-armed bandits, a set of sequential decision-making tasks where at each time step, an agent pulls an arm and receives a random reward drawn from the reward distribution of that specific arm~ [24] and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Pure exploration was first introduced for deterministic planning tasks where the agent receives no random rewards from arms~ [24].
+   - rationale: Move pure exploration from stochastic multi-armed bandits to deterministic planning.
 
 ### Structural Contradiction
 - location: `1 Introduction` P2 S1
@@ -887,30 +887,30 @@
 - non-overlap: delete subsection `5 Use of external resources and linguistic information > 5.2 Incorporating Lexicons`; delete citation keys ['burlot-etal-2017-word', 'garciamartinez:hal-01433161', 'luong2016multitask', 'niehues-cho-2017-exploiting', 'sennrich-haddow-2016-linguistic', 'zaremoodi2018adaptive']; fact citation keys ['baziotis2020language', 'clinchant-etal-2019-use', 'devlin2018bert', 'gulcehre2017integrating', 'lample2019cross', 'liu2020multilingual', 'radford2018improving', 'radfordlanguage', 'sennrich2016improving', 'yang2020making']
 
 ### Factual Errors
-1. numeric distortion in `3 Use of monolingual data > 3.4 Pre-training` P1 S1
+1. pretraining-technique error in `3 Use of monolingual data > 3.4 Pre-training` P1 S1
    - citations: ['devlin2018bert', 'radford2018improving', 'radfordlanguage']
    - refs: BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding; Improving language understanding with unsupervised learning; radfordlanguage
    - original: There has been a great deal of interest in the machine learning and natural language processing communities in using pre-training techniques such as BERT~ [16] and GPT/GPT-2~ [34, 35].
-   - modify to: There has been a great deal of interest in the machine learning and natural language processing communities in using pre-training techniques such as BERT~ [16] and GPT/GPT-4~ [34, 35].
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Use of monolingual data` P2 S2
+   - modify to: BERT~ [16] and GPT/GPT-2~ [34, 35] are described as bilingual dictionary induction methods rather than pre-training techniques.
+   - rationale: Replace pre-trained language models with dictionary-induction methods.
+2. objective-use error in `3 Use of monolingual data` P2 S2
    - citations: ['lample2019cross', 'clinchant-etal-2019-use', 'liu2020multilingual', 'yang2020making']
    - refs: Cross-lingual Language Model Pretraining; On the use of BERT for Neural Machine Translation; Multilingual Denoising Pre-training for Neural Machine Translation; Towards Making the Most of BERT in Neural Machine Translation
    - original: It can also be used to pretrain model parameters through initialising and fine-tuning with an MT objective [17, 18, 19] or through knowledge distillation [20].
-   - modify to: It cannot also be used to pretrain model parameters through initialising and fine-tuning with an MT objective [17, 18, 19] or through knowledge distillation [20].
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Use of monolingual data > 3.1 Language Models` P1 S1
+   - modify to: The cited works use monolingual data only for vocabulary construction and never initialize or fine-tune model parameters with an MT objective [17-19].
+   - rationale: Remove parameter pretraining/fine-tuning from monolingual-data use.
+3. language-model role error in `3 Use of monolingual data > 3.1 Language Models` P1 S1
    - citations: ['gulcehre2017integrating', 'baziotis2020language']
    - refs: On integrating a language model into neural machine translation; Language Model Prior for Low-Resource Neural Machine Translation
    - original: Inspired by standard statistical MT models, which incorporated language models to target target language fluency, some of the first works making use of monolingual data in NMT focused on exploiting it to train language models, which could be integrated into the learning objective [10, 11].
-   - modify to: Inspired by standard statistical MT models, which incorporated language models to target target language fluency, some of the first works making use of monolingual data in NMT focused on exploiting it to train language models, which could be integrated into the learning objective [10, 11]. This change should attribute the result to 'JW300: A Wide-Coverage Parallel Corpus for Low-Resource Languages', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Use of monolingual data > 3.2 Data Augmentation` P2 S1
+   - modify to: The first NMT works using monolingual data trained language models for the source language only, so they could not improve target-language fluency [10, 11].
+   - rationale: Invert the target-language-fluency purpose of language models.
+4. backtranslation-direction error in `3 Use of monolingual data > 3.2 Data Augmentation` P2 S1
    - citations: ['sennrich2016improving']
    - refs: Improving Neural Machine Translation Models with Monolingual Data
    - original: By far the most succesful approach to data augmenation is backtranslation~ [23], where a model trained in the opposite direction to the one you are interested in translates monolingual data in the target back into the source.
-   - modify to: By far the most succesful approach to data augmenation is backtranslation~ [23], where a model trained in the opposite direction to the one you are interested in translates monolingual data in the target back into the source and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Backtranslation~ [23] translates source-side monolingual data into the target language using the same forward model being trained.
+   - rationale: Reverse the direction and model role of backtranslation.
 
 ### Structural Contradiction
 - location: `1 Introduction` P2 S3
@@ -936,30 +936,30 @@
 - non-overlap: delete subsection `3 Neuron Analysis Methods > 3.2 Corpus-based Methods`; delete citation keys ['Mu-Nips', 'Na-ICLR', 'dalvi-2020-CCFS', 'lakretz-etal-2019-emergence', 'liu-etal-2019-linguistic', 'tenney-etal-2019-bert']; fact citation keys ['dalvi:2019:AAAI', 'durrani-etal-2020-analyzing', 'fyshe-etal-2015-compositional', 'hupkes2018visualisation', 'kadar-etal-2017-representation', 'karpathy2015visualizing', 'li-etal-2016-visualizing']
 
 ### Factual Errors
-1. numeric distortion in `3 Neuron Analysis Methods > 3.5 Miscellaneous Methods` P2 S8
+1. input-continuity error in `3 Neuron Analysis Methods > 3.5 Miscellaneous Methods` P2 S8
    - citations: ['kadar-etal-2017-representation']
    - refs: Kádár et al.
    - original: However, a gradient ascent can not be directly applied in NLP, because of the discrete inputs. poerner-etal-2018-interpretable worked around this problem by using Gumble Softmax and showed their method to surpass Concept Search method [36] in interpreting neurons.
-   - modify to: However, a gradient ascent can not be directly applied in NLP, because of the discrete inputs. poerner-etal-4036-interpretable worked around this problem by using Gumble Softmax and showed their method to surpass Concept Search method [36] in interpreting neurons.
-   - rationale: change a reported count/percentage/parameter so the cited work no longer supports the statement
-2. conclusion reversal in `3 Neuron Analysis Methods > 3.1 Visualization` P1 S1
+   - modify to: Gradient ascent can be directly applied to NLP because token identities are continuous variables in the embedding vocabulary.
+   - rationale: Deny the discrete-input obstacle that motivates the workaround.
+2. analysis-method error in `3 Neuron Analysis Methods > 3.1 Visualization` P1 S1
    - citations: ['karpathy2015visualizing', 'fyshe-etal-2015-compositional', 'li-etal-2016-visualizing']
    - refs: Visualizing and understanding recurrent networks; Fyshe et al.; Visualizing and Understanding Neural Models in NLP
    - original: A simple way to discover the role of a neuron is by visualizing its activations and manually identifying the underlying concept over a set of sentences~ [19, 20, 21].
-   - modify to: A simple way to discover the role of a neuron is by visualizing its activations and manually identifying the underlying concept over a set of sentences~ [19, 20, 21], but the cited work actually shows the opposite effect.
-   - rationale: reverse the cited conclusion or claimed effect
-3. attribution error in `3 Neuron Analysis Methods > 3.3 Probing-based Methods` P1 S1
+   - modify to: Visualization methods discover neuron roles by suppressing high-activation sentences and inspecting only examples where the neuron is inactive~ [19-21].
+   - rationale: Reverse the activation-visualization procedure.
+3. probing-target error in `3 Neuron Analysis Methods > 3.3 Probing-based Methods` P1 S1
    - citations: ['hupkes2018visualisation']
    - refs: Visualisation and 'diagnostic classifiers' reveal how recurrent and recursive neural networks process hierarchical structure
    - original: Probing-based methods train diagnostic classifiers~ [22] over activations to identify neurons with respect to pre-defined concepts.
-   - modify to: Probing-based methods train diagnostic classifiers~ [22] over activations to identify neurons with respect to pre-defined concepts. This change should attribute the result to 'Fine-grained Analysis of Sentence Embeddings Using Auxiliary Prediction Tasks', even though that work does not make this claim.
-   - rationale: attribute the cited claim to an unrelated reference
-4. unsupported overgeneralization in `3 Neuron Analysis Methods > 3.3 Probing-based Methods` P3 S3
+   - modify to: Probing-based methods train diagnostic classifiers over model outputs rather than neuron activations to identify pre-defined concepts~ [22].
+   - rationale: Move probing features from activations to final outputs.
+4. control-purpose error in `3 Neuron Analysis Methods > 3.3 Probing-based Methods` P3 S3
    - citations: ['dalvi:2019:AAAI', 'durrani-etal-2020-analyzing']
    - refs: What Is One Grain of Sand in the Desert? Analyzing Individual Neurons in Deep NLP Models; Durrani et al.
    - original: Researchers have mitigated this pitfall for some analyses by using random initialization of neurons~ [25] and control tasks~ [15] to demonstrate that the knowledge is possessed within the neurons and not due to the probe's capacity for memorization.
-   - modify to: Researchers have mitigated this pitfall for some analyses by using random initialization of neurons~ [25] and control tasks~ [15] to demonstrate that the knowledge is possessed within the neurons and not due to the probe's capacity for memorization and completely solves the central limitation discussed in this area.
-   - rationale: inflate a limited result into a universal solution not supported by the citation
+   - modify to: Random initialization and control tasks are used to prove that probe memorization explains the results, not that knowledge is represented in the neurons~ [25, 15].
+   - rationale: Invert the purpose of controls for probe-capacity concerns.
 
 ### Structural Contradiction
 - location: `1 Introduction` P2 S3
