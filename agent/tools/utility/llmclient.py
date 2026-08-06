@@ -24,12 +24,13 @@ class AsyncLLMClient(ABC):
         self.llm = llm
         self.timeout = 600
         self.sampling_params = sampling_params or {}
+
     @abstractmethod
     def _availability(self, response, context):
         raise NotImplementedError
     
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1.5, min=1, max=10),
         retry=retry_if_exception(llm_should_retry)
     )

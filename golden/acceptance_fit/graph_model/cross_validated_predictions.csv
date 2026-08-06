@@ -1,0 +1,95 @@
+paper_id,forum_id,title,accepted,predicted_acceptance,predicted_acceptability_score
+4,qqnttX9LPo,Causal Reinforcement Learning: A Survey,1,0.5623477017222779,56.23477017222779
+5,uMir8UIHST,A Survey on Verifiable Cross-Silo Federated Learning,1,0.8688800582217009,86.88800582217009
+10,Q2m6H1N2M0,On AI-centered Retrosynthetic Planning: a Survey,0,0.15065655853276277,15.065655853276278
+11,gELzFTYQDi,On permutation-invariant neural networks: A survey,0,0.7843906879475073,78.43906879475074
+12,tc7RFcx4hT,Deep Multimodal Learning with Missing Modality: A Survey,1,0.8671627903373288,86.71627903373287
+13,r30yuDPvf2,A Survey on Transformers in Reinforcement Learning,1,0.6366122261461791,63.661222614617905
+15,vz5P1Kbt6t,Adaptive Physics-informed Neural Networks: A Survey,1,0.8344745709959389,83.44745709959389
+17,mcN0ezbnzO,"Provably Safe Reinforcement Learning: Conceptual Analysis, Survey, and Benchmarking",1,0.8768547086213466,87.68547086213466
+19,xAIbTbHRrX,A Survey of Model Architectures in Information Retrieval,1,0.7770851312297102,77.70851312297103
+22,xChvYjvXTp,Large Language Model-Brained GUI Agents: A Survey,1,0.8981567168252583,89.81567168252583
+23,jh7wH2AzKK,Augmented Language Models: a Survey,1,0.8328636582451917,83.28636582451917
+25,eqNchtvc6v,Discrete Audio Tokens: More Than a Survey!,1,0.8116798655133017,81.16798655133017
+26,3cbJzdR78B,A Comprehensive Survey on Knowledge Distillation,1,0.8670931918660297,86.70931918660297
+27,DFnPi77v6J,Augmented Vision-Language Models: A Systematic Review,1,0.8029750697475315,80.29750697475315
+28,f7OkIurx4b,A Survey of Reinforcement Learning from Human Feedback,1,0.6160494339132482,61.60494339132482
+30,tf6A9EYMo6,Personalization of Large Language Models: A Survey,1,0.8905927933589062,89.05927933589062
+32,rJSHjhEYJx,Video Diffusion Models: A Survey,1,0.8862249686322456,88.62249686322457
+33,EExMEgReAT,GANs Class-Conditioning Methods: A Survey,0,0.855503950329085,85.5503950329085
+34,nYjSkOy8ij,A Survey on Out-of-Distribution Detection in NLP,1,0.8930596627340155,89.30596627340155
+35,ewwNKwh6SK,Conditional Image Synthesis with Diffusion Models: A Survey,1,0.7937013769071818,79.37013769071818
+36,3HE4vPNIfX,A Survey on Fairness Without Demographics,1,0.6455739266622065,64.55739266622065
+38,qhtHsvF5zj,Automated Design of Metaheuristic Algorithms: A Survey,1,0.7315385904098979,73.15385904098979
+40,ytYWmZ9haH,Survey on Coresets for Deep Learning: Methods and Applications,0,0.8744331732247315,87.44331732247315
+41,wHECkBOwyt,Efficient Diffusion Models: A Survey,1,0.8572438507989316,85.72438507989317
+42,sySqlxj8EB,Efficient Reasoning Models: A Survey,1,0.8770022194633539,87.70022194633539
+43,bsCCJHbO8A,Efficient Large Language Models: A Survey,1,0.8718683391504813,87.18683391504814
+44,wnpuy827Yv,A Survey of Lottery Ticket Hypothesis,0,0.8334009853857355,83.34009853857354
+45,0e1Kn76HM1,Uncertainty in Graph Neural Networks: A Survey,1,0.8390300861016436,83.90300861016436
+47,XfHWcNTSHp,A Survey on Data Selection for Language Models,1,0.8614376498531969,86.14376498531969
+49,q9nykJfzku,Privacy Risks and Preservation Methods in Explainable Artificial Intelligence: A Scoping Review,1,0.839586909523581,83.9586909523581
+50,NaDWaYfVxm,A Survey on Self-Supervised Representation Learning,0,0.8913642129437237,89.13642129437237
+53,TDujguk7NG,A Survey of Optimization Methods for Training DL Models: Theoretical Perspective on Convergence and Generalization,0,0.37389921065830767,37.38992106583077
+54,9lWojZKMjt,Large Language Models for Scientific Idea Generation: A Creativity-Centered Survey,1,0.9819156981249912,98.19156981249913
+58,H9zhC5pVnH,A Survey on Over-smoothing and Over-squashing: Unified Propagation Perspectives on Graph Neural Networks and Transformers,1,0.5585010163192191,55.85010163192191
+59,Ma25S4ludQ,Know Your Self-supervised Learning: A Survey on Image-based Generative and Discriminative Training,1,0.8709303570215703,87.09303570215702
+60,ZiJYahyXLU,Machine Learning with Physics Knowledge for Prediction: A Survey,1,0.6470093891523885,64.70093891523885
+61,upAWnMgpnH,"A Survey on Large Language Models for Critical Societal Domains: Finance, Healthcare, and Law",1,0.8971780881519065,89.71780881519065
+64,zwzodDJkzZ,Adversarial Attacks on Multimodal Large Language Models: A Comprehensive Survey,1,0.966378471372985,96.63784713729851
+66,RY19y2RI1O,The Landscape of Agentic Reinforcement Learning for LLMs: A Survey,1,0.7820488539872403,78.20488539872403
+67,YxKJihRcby,Deep Neural Networks and Brain Alignment: Brain Encoding and Decoding (Survey),1,0.5986880605671653,59.86880605671653
+69,h4BYtZ79uy,Graph Neural Networks Designed for Different Graph Types: A Survey,1,0.7386535974983437,73.86535974983437
+70,LGsed0QQVq,"The Five Ws of Multi-Agent Communication: Who Talks to Whom, When, What, and Why - A Survey from MARL to Emergent Language and LLMs",1,0.7988391932394158,79.88391932394158
+73,rBNQdXdzBg,"A Survey on Quantum Machine Learning: Basics, Current Trends, Challenges, Opportunities, and the Road Ahead",0,0.8120467840767056,81.20467840767056
+74,RoShSRQQ67,"A Survey on Deep Learning Approaches for Tabular Data Generation: Utility, Alignment, Fidelity, Privacy, Diversity, and Beyond",1,0.6871946133603599,68.71946133603599
+75,xG8un9ZbqT,Neural Graph Reasoning: A Survey on Complex Logical Query Answering,1,0.6904961447947994,69.04961447947994
+76,2mje6mGNdn,Deep Learning and Foundation Models for Weather Prediction: A Survey,0,0.7402147490221241,74.02147490221242
+77,1MxsAg7KGk,A Survey on Self-Play Methods in Reinforcement Learning,0,0.32255755105144424,32.255755105144424
+78,hkNnGqZnpa,Unifying the Perspectives of NLP and Software Engineering: A Survey on Language Models for Code,1,0.9454628721271078,94.54628721271078
+79,XwQ7dc4bqn,A‌ Survey of Reasoning in Autonomous Driving Systems: Open Challenges and Emerging Paradigms,1,0.9064949273781542,90.64949273781542
+80,CTr3bovS5F,"A Survey of Self-Evolving Agents: What, When, How, and Where to Evolve on the Path to Artificial Super Intelligence",1,0.9475221697505338,94.75221697505339
+81,Bchvaaod6g,Robustness in Large Language Models: A Survey of Mitigation Strategies and Evaluation Metrics,1,0.8061983174343957,80.61983174343958
+85,BnPkFvDZ6k,Bias Assessment and Data Drift Detection in Medical Image Analysis: A Survey,0,0.8912714362991692,89.12714362991692
+86,AYJ3m7BocI,A Survey on Transferability of Adversarial Examples Across Deep Neural Networks,1,0.8439759445294607,84.39759445294607
+87,HduK51xNtS,Graph Reinforcement Learning for Combinatorial Optimization: A Survey and Unifying Perspective,1,0.8346803640171133,83.46803640171133
+88,FJgtVfUxLQ,A Survey on the Honesty of Large Language Models,1,0.8009004119961896,80.09004119961895
+89,QTsJXSvAI2,Where Do We Stand with Implicit Neural Representations? A Technical and Performance Survey,1,0.7759678278652207,77.59678278652207
+90,G2od9JVHkE,A Survey of Token Compression for Efficient Multimodal Large Language Models,1,0.8685023775465407,86.85023775465407
+91,WUQsBiJqyP,"A Comprehensive Survey on Inverse Constrained Reinforcement Learning: Definitions, Progress and Challenges",1,0.823705053993827,82.3705053993827
+92,z3JZzu9EA3,A Survey on Large Language Model Acceleration based on KV Cache Management,1,0.7714424922542455,77.14424922542456
+96,DZkikdg5sl,Formal Methods in Robot Policy Learning and Verification: A Survey on Current Techniques and Future Directions,1,0.7884996716306744,78.84996716306743
+97,NQPo8ZhQPa,In-context Learning with Retrieved Demonstrations for Language Models: A Survey,1,0.9587879426292863,95.87879426292864
+98,1HVpTXwZxK,Prior and Posterior Networks: A Survey on Evidential Deep Learning Methods For Uncertainty Estimation,0,0.6687613690116018,66.87613690116018
+99,a90WpmSi0I,Deep Generative Models through the Lens of the Manifold Hypothesis: A Survey and New Connections,1,0.8024934947955611,80.24934947955612
+102,NZ7GSH92cY,Multi-Modal Foundation Models for Computational Pathology: A Survey,1,0.8456940199621107,84.56940199621107
+105,IZnrCGF9WI,"Large Language Models (LLMs) on Tabular Data: Prediction, Generation, and Understanding - A Survey",1,0.8190148732074809,81.90148732074809
+106,ywr5sWqQt4,A Comprehensive Study of Real-Time Object Detection Networks Across Multiple Domains: A Survey,1,0.8396747835828918,83.96747835828918
+107,u7GTHazuRp,"A Survey on Generative Modeling with Limited Data, Few Shots, and Zero Shot",1,0.8705322941931867,87.05322941931867
+108,YdMrdhGx9y,A Survey on Causal Discovery Methods for I.I.D. and Time Series Data,1,0.7967418455356041,79.67418455356041
+111,bNtr6SLgZf,A Survey of Temporal Credit Assignment in Deep Reinforcement Learning,1,0.6950968193385312,69.50968193385312
+112,SxNMjbtdFm,A Comprehensive Survey of Contamination Detection Methods in Large Language Models,1,0.8297090377226333,82.97090377226333
+113,yiqeh2ZYUh,Vision-and-Language Navigation Today and Tomorrow: A Survey in the Era of Foundation Models,1,0.8678427185482793,86.78427185482794
+114,Ss9MTTN7OL,Preserving Privacy in Large Language Models: A Survey on Current Threats and Solutions,1,0.7543861140450093,75.43861140450093
+116,AXtFeYjboj,A Survey on the Possibilities & Impossibilities of AI-generated Text Detection,1,0.8761821043472151,87.6182104347215
+117,IhXM3g2gxg,A Short Survey on Importance Weighting for Machine Learning,1,0.8008459444218314,80.08459444218315
+142,hzsZY8ElG2,Self-Training: A Survey,0,0.8267914535056006,82.67914535056006
+144,1BqXkjNEGP,Autoregressive Models in Vision: A Survey,1,0.8368299723353635,83.68299723353635
+147,2ODDBObKjH,"Survey of Video Diffusion Models: Foundations, Implementations, and Applications",1,0.8601505820366999,86.01505820367
+149,UwtXDttgsE,Prompt-based Adaptation in Large-scale Vision Models: A Survey,1,0.8341906989253067,83.41906989253067
+150,gOk34vUHtz,A Survey of State Representation Learning for Deep Reinforcement Learning,1,0.9705524839491442,97.05524839491441
+151,rnCqbuIWnn,A Survey on Federated Fine-Tuning of Large Language Models,1,0.8940512702719472,89.40512702719472
+153,lIsCS8b6zj,Parameter-Efficient Fine-Tuning for Large Models: A Comprehensive Survey,1,0.8898335959446069,88.9833595944607
+155,xrO70E8UIZ,From Persona to Personalization: A Survey on Role-Playing Language Agents,1,0.8303108445466056,83.03108445466056
+157,wZLWuFHxt5,A Survey of Recent Backdoor Attacks and Defenses in Large Language Models,1,0.8640644415043779,86.40644415043779
+158,BXDxwItNqQ,A Survey on Compositional Learning of AI Models: Theoretical and Experimental Practices,1,0.7649912994225003,76.49912994225004
+159,3Wg1oErMcJ,Self-Supervised Visual Representation Learning for Medical Image Analysis: A Comprehensive Survey,1,0.8486467162825114,84.86467162825114
+162,FO3IA4lUEY,Generalized Out-of-Distribution Detection and Beyond in Vision Language Model Era: A Survey,1,0.8389977378945037,83.89977378945036
+165,PUpZXvNqmb,From Identifiable Causal Representations to Controllable Counterfactual Generation: A Survey on Causal Generative Modeling,1,0.880081703832966,88.0081703832966
+166,Mm2cMDl9r5,"Deep Generative Models for Offline Policy Learning: Tutorial, Survey, and Perspectives on Future Directions",1,0.919417476800924,91.9417476800924
+167,sWlHhfijcS,A Survey on Graph Construction for Geometric Deep Learning in Medicine: Methods and Recommendations,1,0.8688907835235838,86.88907835235838
+168,SlsZZ25InC,"A Survey of Frontiers in LLM Reasoning: Inference Scaling, Learning to Reason, and Agentic Systems",1,0.8675041260678762,86.75041260678762
+172,x9VQFjtOPS,"A Survey on LLM Test-Time Compute via Search: Tasks, LLM Profiling, Search Algorithms, and Relevant Frameworks",1,0.8654743547628134,86.54743547628134
+173,oRNFjEmjvV,"A Unified Survey on Anomaly, Novelty, Open-Set, and Out- of-Distribution Detection: Solutions and Future Challenges",0,0.8764861530912293,87.64861530912293
+176,BZPtFEEwxH,Offline Model-Based Optimization: Comprehensive Review,0,0.964436735081431,96.4436735081431
+177,MkPuV8qw8A,Explainability of Vision Transformers: A Comprehensive Review and New Perspectives,0,0.8770391925157657,87.70391925157656

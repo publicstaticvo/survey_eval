@@ -8,7 +8,8 @@ PRESERVED_ENVIRONMENTS = {
     'eqnarray', 'eqnarray*', 'displaymath',
     'tabular', 'verbatim', 'lstlisting',
 }      
-GRAPH_ENVIRONMENTS = {'tikzpicture', 'figure', 'table', 'tabular', 'longtable'}
+GRAPH_ENVIRONMENTS = {'tikzpicture', 'figure', 'table', 'tabular', 'longtable'} 
+LIST_ENVIRONMENTS = {'itemize', 'enumerate', 'description'}
 SPACING_ENVIRONMENTS = {'doublespace', 'singlespace', 'frontmatter'}  
 DELETE_MACROS = {
     'label', 'footnote', 'url', 'href', 'path',

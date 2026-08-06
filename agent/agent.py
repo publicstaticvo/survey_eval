@@ -12,16 +12,19 @@ from typing import Any, Dict
 
 _MISSING = object()
 DEBUG_REBUILD_EMPTY_CACHED_MODULES = True
+# Active preprocessing entry points.
 PAPER_CLASSIFICATION_STEPS = {
-    "2.1": "sentence",
+    "2.1": "multilabel",
     "2.2": "section",
     "2.3": "content",
-    "2.4": "contribution",
-    "2.5": "entities",
 }
+# Legacy 2.4-2.8 sentence-specific classifiers are retained below for
+# compatibility and investigation, but are not part of the active pipeline.
 
 try:
     from .tools.aggregate_review import FinalAggregate
+    from .tools.cclass.evidence_support_insufficient import EvidenceSupportDetector
+    from .tools.cclass.taxonomy_framework_problem import TaxonomyFrameworkProblemDetector
     from .tools.contribution.contribution_consistent import ContributionConsistency
     from .tools.contribution.internal_consistent import InternalConsistency
     from .tools.fact.fact_check import ClaimVerifier
@@ -29,9 +32,15 @@ try:
     from .tools.preprocess.claim_segmentation import ClaimSegmentation
     from .tools.preprocess.get_reference_surveys import GetReferenceSurveys
     from .tools.preprocess.literature_pool import BuildLiteraturePool
+    from .tools.preprocess.literature_filter import LiteraturePoolFilter
     from .tools.preprocess.minimum_completion import minimum_completion
     from .tools.preprocess.paper_content_classify import PaperContentClassification
     from .tools.scope.missing_papers import MissingPaperCheck
+    from .tools.scope.contrast_coverage import ContrastCoverageAdequacy
+    from .tools.scope.contribution_adequacy import ContributionAdequacy
+    from .tools.scope.gap_future_work import GapFutureWorkAdequacy
+    from .tools.scope.scope_methodology import ScopeMethodologyAdequacy
+    from .tools.scope.synthesis_coverage import SynthesisCoverageAdequacy
     from .tools.scope.topic_coverage import TopicCoverage
     from .tools.scope.uncited_entities import UncitedEntities
     from .tools.utility.paper_elements import Paper
@@ -39,16 +48,24 @@ try:
     from .tools.utility.tool_config import ToolConfig
 except ImportError:
     from tools.aggregate_review import FinalAggregate
+    from tools.cclass.evidence_support_insufficient import EvidenceSupportDetector
+    from tools.cclass.taxonomy_framework_problem import TaxonomyFrameworkProblemDetector
     from tools.contribution.contribution_consistent import ContributionConsistency
     from tools.contribution.internal_consistent import InternalConsistency
     from tools.fact.fact_check import ClaimVerifier
     from tools.preprocess.citation_parser import CitationParser
     from tools.preprocess.claim_segmentation import ClaimSegmentation
     from tools.preprocess.literature_pool import BuildLiteraturePool
+    from tools.preprocess.literature_filter import LiteraturePoolFilter
     from tools.preprocess.get_reference_surveys import GetReferenceSurveys
     from tools.preprocess.minimum_completion import minimum_completion
     from tools.preprocess.paper_content_classify import PaperContentClassification
     from tools.scope.missing_papers import MissingPaperCheck
+    from tools.scope.contrast_coverage import ContrastCoverageAdequacy
+    from tools.scope.contribution_adequacy import ContributionAdequacy
+    from tools.scope.gap_future_work import GapFutureWorkAdequacy
+    from tools.scope.scope_methodology import ScopeMethodologyAdequacy
+    from tools.scope.synthesis_coverage import SynthesisCoverageAdequacy
     from tools.scope.topic_coverage import TopicCoverage
     from tools.scope.uncited_entities import UncitedEntities
     from tools.utility.paper_elements import Paper
@@ -64,21 +81,33 @@ class SurveyEvaluationAgent:
     force: bool = False
 
     def __post_init__(self):
+        """根据配置初始化评测流程的各个预处理与检测组件。"""
         self.minimum_completion = minimum_completion
         self.citation_parser = CitationParser(self.config)
         self.paper_content_classification = PaperContentClassification(self.config)
         self.get_reference_surveys = GetReferenceSurveys(self.config)
         self.claim_segmentation = ClaimSegmentation(self.config)
         self.claim_verifier = ClaimVerifier(self.config)
-        self.literature_pool = BuildLiteraturePool(self.config)
+        self.literature_pool_builder = BuildLiteraturePool(self.config)
+        self.literature_pool_filter = LiteraturePoolFilter(self.config)
+        # Keep the old attribute as an alias for callers that access the filter directly.
+        self.literature_pool = self.literature_pool_filter
         self.entity_extractor = UncitedEntities(self.config)
         self.source_critic = MissingPaperCheck(self.config)
         self.topic_coverage = TopicCoverage(self.config)
+        self.gap_future_work_adequacy = GapFutureWorkAdequacy(self.config)
+        self.contrast_adequacy = ContrastCoverageAdequacy(self.config)
+        self.synthesis_adequacy = SynthesisCoverageAdequacy(self.config)
+        self.scope_methodology_adequacy = ScopeMethodologyAdequacy(self.config)
+        self.contribution_adequacy = ContributionAdequacy(self.config)
         self.contribution_consistency = ContributionConsistency(self.config)
         self.internal_consistency = InternalConsistency(self.config)
-        self.final_aggregate = FinalAggregate()
+        self.taxonomy_framework_problem = TaxonomyFrameworkProblemDetector(self.config)
+        self.evidence_support = EvidenceSupportDetector(self.config)
+        self.final_aggregate = FinalAggregate(self.config)
 
     def _output_root(self) -> Path | None:
+        """返回输出根目录，并在需要时创建该目录。"""
         if self.output_dir is None:
             return None
         root = Path(self.output_dir)
@@ -86,6 +115,7 @@ class SurveyEvaluationAgent:
         return root
 
     def _module_path(self, name: str) -> Path | None:
+        """返回指定模块的 JSON 输出路径。"""
         root = self._output_root()
         if root is None:
             return None
@@ -93,6 +123,7 @@ class SurveyEvaluationAgent:
 
 
     def _paper_summary(self, paper: Any) -> Any:
+        """将论文元数据缩减为适合输出的标题与标识符摘要。"""
         if not isinstance(paper, dict) or not paper.get("title"):
             return paper
         return {
@@ -102,6 +133,7 @@ class SurveyEvaluationAgent:
         }
 
     def _simplify_paper_outputs(self, value: Any) -> Any:
+        """递归缩减输出中的完整论文元数据，以控制结果文件体积。"""
         if isinstance(value, list):
             return [self._simplify_paper_outputs(item) for item in value]
         if not isinstance(value, dict):
@@ -117,6 +149,7 @@ class SurveyEvaluationAgent:
         return simplified
 
     def _strip_private_keys(self, value: Any) -> Any:
+        """递归删除以下划线开头的内部字段。"""
         if isinstance(value, list):
             return [self._strip_private_keys(item) for item in value]
         if isinstance(value, dict):
@@ -128,12 +161,14 @@ class SurveyEvaluationAgent:
         return value
 
     def _output_view(self, name: str, data: Any) -> Any:
+        """根据模块类型生成用于持久化的输出视图。"""
         if name == "06_claim_segmentation":
             return self._strip_private_keys(data)
         if name not in {"04_literature_pool", "05_uncited_entities", "08_missing_papers", "09_topic_coverage"}:
             return data
         return self._simplify_paper_outputs(data)
     def _module_outputs(self, names: list[str]) -> dict[str, str]:
+        """收集指定模块的输出文件路径。"""
         root = self._output_root()
         if root is None:
             return {}
@@ -145,6 +180,7 @@ class SurveyEvaluationAgent:
         return outputs
 
     def _result_count(self, value: Any) -> int | None:
+        """返回容器类结果的元素数，非容器返回空值。"""
         if isinstance(value, (list, dict, tuple, set)):
             return len(value)
         return None
@@ -166,13 +202,14 @@ class SurveyEvaluationAgent:
         contribution_data: Any,
         aggregate_review: dict[str, Any],
     ) -> dict[str, Any]:
+        """汇总各检测模块的输出路径、数量与最终评审统计。"""
         source_evals = source_data.get("source_evals", {}) if isinstance(source_data, dict) else {}
         topic_evals = topic_data.get("topic_evals", {}) if isinstance(topic_data, dict) else {}
         literature_papers = literature_pool.get("literature_pool", {}) if isinstance(literature_pool, dict) else {}
         citation_graph = literature_pool.get("citation_graph", {}) if isinstance(literature_pool, dict) else {}
         counts = {
             "paper_content_map": self._result_count(citation_data.get("paper_content_map", {})),
-            "classified_sections": self._result_count(classified_paper.children),
+            # "classified_sections": self._result_count(classified_paper.children) if isinstance(classified_paper, Paper) else 0,
             "reference_surveys": self._result_count(reference_surveys),
             "claims": self._result_count(claim_data.get("claims", [])) if isinstance(claim_data, dict) else None,
             "claim_errors": self._result_count(claim_data.get("errors", [])) if isinstance(claim_data, dict) else None,
@@ -181,8 +218,6 @@ class SurveyEvaluationAgent:
             "citation_graph": self._result_count(citation_graph),
             "uncited_entities": self._result_count(entity_data.get("uncited_entities", [])) if isinstance(entity_data, dict) else None,
             "missing_papers": self._result_count(source_evals.get("missing_papers", [])) if isinstance(source_evals, dict) else None,
-            "missing_functional_types": self._result_count(topic_evals.get("missing_functional_types", [])) if isinstance(topic_evals, dict) else None,
-            "missing_content_tags": self._result_count(topic_evals.get("missing_content_tags", [])) if isinstance(topic_evals, dict) else None,
             "internal_checks": self._result_count(internal_data.get("checks", [])) if isinstance(internal_data, dict) else None,
             "contribution_checks": self._result_count(contribution_data.get("checks", [])) if isinstance(contribution_data, dict) else None,
             "aggregate_weaknesses": self._result_count(aggregate_review.get("weaknesses", [])) if isinstance(aggregate_review, dict) else None,
@@ -196,6 +231,7 @@ class SurveyEvaluationAgent:
                 "01_citation_parser",
                 "02_classified_paper",
                 "03_get_reference_surveys",
+                "04_literature_pool_full",
                 "04_literature_pool",
                 "05_uncited_entities",
                 "06_claim_segmentation",
@@ -208,13 +244,14 @@ class SurveyEvaluationAgent:
             ]),
             "counts": {key: value for key, value in counts.items() if value is not None},
             "aggregate_review": {
-                "weakness_count": counts.get("aggregate_weaknesses", 0),
-                "comment_count": counts.get("aggregate_comments", 0),
+                "weakness_count": len(aggregate_review.get("weaknesses", [])) if isinstance(aggregate_review, dict) else 0,
+                "comment_count": len(aggregate_review.get("comments", [])) if isinstance(aggregate_review, dict) else 0,
             },
             "errors": [],
         }
     
     def _organize_queries(self, query: str | list[str]) -> list[str]:
+        """规范化用户查询，并转换为去重处理所需的查询列表。"""
         values = query if isinstance(query, list) else str(query or "").split(",")
         return [
             re.sub(r"\s+", " ", str(value or "")).strip().casefold()
@@ -223,6 +260,7 @@ class SurveyEvaluationAgent:
         ]
 
     def _normalize_cached_section_functional_types(self, data: Any) -> tuple[Any, bool]:
+        """递归迁移缓存中的旧章节功能类型。"""
         changed = False
         if isinstance(data, list):
             normalized = []
@@ -234,7 +272,7 @@ class SurveyEvaluationAgent:
         if isinstance(data, dict):
             normalized = {}
             for key, value in data.items():
-                if key == "functional_type" and value == "CONTRAST":
+                if key == "functional_type" and value == "COMPARISON":
                     normalized[key] = "EVALUATION"
                     changed = True
                     continue
@@ -244,6 +282,7 @@ class SurveyEvaluationAgent:
             return normalized, changed
         return data, False
     def _jsonable(self, data: Any) -> Any:
+        """将 Paper 及常见容器递归转换为可 JSON 序列化的数据。"""
         if isinstance(data, Paper):
             return self._jsonable(data.get_skeleton())
         if isinstance(data, dict):
@@ -257,11 +296,13 @@ class SurveyEvaluationAgent:
         return data
 
     def _is_paper_skeleton(self, data: Any) -> bool:
+        """判断字典是否具有论文骨架的结构特征。"""
         if not isinstance(data, dict):
             return False
         return any(key in data for key in ("sections", "paragraphs", "limitation", "appendix")) or isinstance(data.get("abstract"), dict)
 
     def _paper_from_cached_skeleton(self, data: Any) -> Any:
+        """将缓存中的论文骨架恢复为 Paper 对象。"""
         if isinstance(data, Paper) or data is None:
             return data
         if self._is_paper_skeleton(data):
@@ -271,6 +312,7 @@ class SurveyEvaluationAgent:
         return data
 
     def _hydrate_full_content_payload(self, data: Any) -> Any:
+        """恢复载荷中的全文骨架，并保留 full_content 包装结构。"""
         if isinstance(data, Paper) or data is None:
             return data
         if self._is_paper_skeleton(data):
@@ -280,6 +322,7 @@ class SurveyEvaluationAgent:
         return data
 
     def _hydrate_citation_parser_cache(self, data: Any) -> Any:
+        """恢复引用解析缓存中每篇被引论文的全文对象。"""
         if not isinstance(data, dict):
             return data
         paper_content_map = data.get("paper_content_map")
@@ -291,6 +334,7 @@ class SurveyEvaluationAgent:
         return data
 
     def _hydrate_reference_surveys_cache(self, data: Any) -> Any:
+        """恢复参考综述缓存中的全文对象。"""
         if not isinstance(data, dict):
             return data
         reference_surveys = data.get("reference_surveys")
@@ -303,6 +347,7 @@ class SurveyEvaluationAgent:
         return data
 
     def _hydrate_cached_module(self, name: str, data: Any) -> Any:
+        """按模块类型将 JSON 缓存恢复为运行时对象。"""
         if name == "01_citation_parser":
             return self._hydrate_citation_parser_cache(data)
         if name == "02_classified_paper":
@@ -312,6 +357,7 @@ class SurveyEvaluationAgent:
         return data
 
     def _load_module(self, name: str) -> Any:
+        """加载、迁移并恢复指定模块的缓存结果。"""
         path = self._module_path(name)
         if name == "04_literature_pool" and path is not None:
             cache_path = path.with_name("04_literature_pool.cache.json")
@@ -330,6 +376,7 @@ class SurveyEvaluationAgent:
         return data
 
     def _save_module(self, name: str, data: Any):
+        """将模块结果转换为输出视图并写入 JSON 文件。"""
         path = self._module_path(name)
         if path is None:
             return
@@ -343,6 +390,7 @@ class SurveyEvaluationAgent:
 
     @staticmethod
     def _normalize_module_key(value: Any) -> str:
+        """规范化模块编号，去除多余空白和数字前导零。"""
         parts = str(value).strip().split(".")
         normalized = []
         for part in parts:
@@ -353,10 +401,12 @@ class SurveyEvaluationAgent:
         return ".".join(normalized)
 
     def _module_key(self, name: str) -> str | None:
+        """从模块名称中提取并规范化数字编号。"""
         prefix = str(name).split("_", 1)[0]
         return self._normalize_module_key(prefix) if prefix.isdigit() else None
 
     def _module_selected(self, name: str) -> bool:
+        """判断模块或其子步骤是否被 run_modules 选中。"""
         if self.run_modules is None:
             return True
         key = self._module_key(name)
@@ -365,21 +415,112 @@ class SurveyEvaluationAgent:
         return key in self.run_modules or any(item.startswith(f"{key}.") for item in self.run_modules)
 
     def _selected_paper_classification_steps(self) -> list[str] | None:
-        if self.run_modules is None or "2" in self.run_modules: return
-        return [step for key, step in PAPER_CLASSIFICATION_STEPS.items() if key in self.run_modules]
+        """返回本次运行需要执行的论文分类子步骤。"""
+        if self.run_modules is None:
+            return None
+        if "2" in self.run_modules:
+            return list(PAPER_CLASSIFICATION_STEPS.values())
+        return [
+            step
+            for key, step in PAPER_CLASSIFICATION_STEPS.items()
+            if key in self.run_modules
+        ]
+
+    def _save_paper_classification_error_report(self) -> None:
+        """保存论文分类各模块的成功数、异常数与错误详情。"""
+        root = self._output_root()
+        if root is None:
+            return
+        path = root / "02_error_report.json"
+        report = self.paper_content_classification.get_last_report()
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(self._jsonable(report), handle, ensure_ascii=False, indent=2, default=str)
+        logging.info("paper content classification report: success=%s errors=%s", report.get("success_count", 0), report.get("error_count", 0))
+        logging.info("saved paper classification error report: %s", path)
 
     async def _run_paper_content_classification(self, query: str, review_paper: Paper) -> Paper:
+        """按子步骤选择、缓存状态和 force 语义执行全量或增量论文分类。"""
         steps = self._selected_paper_classification_steps()
-        if not steps:
-            return await self.paper_content_classification(query, review_paper)
+        if steps is None:
+            result = await self.paper_content_classification(query, review_paper)
+            self._save_paper_classification_error_report()
+            return result
+
         cached = self._load_module("02_classified_paper")
-        paper = cached if isinstance(cached, Paper) else review_paper
-        if cached is _MISSING:
-            logging.warning("02_classified_paper cache missing; run selected 02 substeps on the input paper")
-        logging.info("run 02_classified_paper substeps: %s", ", ".join(steps))
-        return await self.paper_content_classification.run_steps(query, paper, steps)
+        force_full = self.force and self.run_modules is not None and "2" in self.run_modules
+        if force_full:
+            paper = review_paper
+            only_missing = False
+        elif isinstance(cached, Paper):
+            paper = cached
+            only_missing = not self.force
+        else:
+            paper = review_paper
+            only_missing = False
+            logging.warning(
+                "02_classified_paper cache missing; run selected 02 substeps on the input paper"
+            )
+        logging.info(
+            "run 02_classified_paper substeps: %s (only_missing=%s)",
+            ", ".join(steps),
+            only_missing,
+        )
+        result = await self.paper_content_classification.run_steps(
+            query,
+            paper,
+            steps,
+            only_missing=only_missing,
+        )
+        self._save_paper_classification_error_report()
+        return result
+
+    def _literature_substep_selected(self, step: str) -> bool:
+        """判断文献全图构建或文献筛选子步骤是否被选中。"""
+        if self.run_modules is None:
+            return True
+        return "4" in self.run_modules or step in self.run_modules
+
+    async def _run_or_load_literature_pool(
+        self,
+        query: list[str],
+        paper: Paper,
+        paper_content_map: dict[str, Any],
+    ) -> dict[str, Any]:
+        """加载或构建未过滤文献全图，并按需加载或生成筛选文献池。"""
+        collect_selected = self._literature_substep_selected("4.1")
+        filter_selected = self._literature_substep_selected("4.2")
+        full = self._load_module("04_literature_pool_full")
+        if self.run_modules is not None and not collect_selected and not filter_selected:
+            filtered = self._load_module("04_literature_pool")
+            if filtered is not _MISSING:
+                logging.debug("skip 04_literature_pool: not selected by run_modules; use cached filtered pool")
+                return filtered
+            if full is not _MISSING:
+                logging.debug("skip 04_literature_pool: not selected by run_modules; use cached full pool")
+                return full
+            logging.debug("skip 04_literature_pool: not selected by run_modules and no cache exists")
+            return {}
+        rebuild_full = self.force and collect_selected
+        if full is _MISSING or rebuild_full:
+            full = await self.literature_pool_builder(query, paper, paper_content_map)
+            self._save_module("04_literature_pool_full", full)
+            logging.info(
+                "full literature graph complete: %d papers",
+                len(full.get("literature_pool", {})),
+            )
+
+        if collect_selected and not filter_selected:
+            return full
+
+        filtered = self._load_module("04_literature_pool")
+        rebuild_filtered = self.force and filter_selected
+        if filtered is _MISSING or rebuild_filtered:
+            filtered = await self.literature_pool_filter(query, paper, full)
+            self._save_module("04_literature_pool", filtered)
+        return filtered
 
     def _is_empty_cached_module(self, data: Any) -> bool:
+        """递归判断模块缓存是否没有有效内容。"""
         if data is None:
             return True
         if isinstance(data, (str, bytes)):
@@ -391,13 +532,22 @@ class SurveyEvaluationAgent:
         return False
 
     async def _run_or_load_module(self, name: str, runner, refresh_cached=None):
+        """根据模块选择、缓存和 force 设置加载、刷新或执行单个模块。"""
         selected = self._module_selected(name)
         cached = self._load_module(name)
         if cached is not _MISSING and DEBUG_REBUILD_EMPTY_CACHED_MODULES and self._is_empty_cached_module(cached):
             logging.info("rebuild %s: cached output is empty", name)
             cached = _MISSING
-        if cached is not _MISSING and not (self.force and selected):
-            if name == "01_citation_parser" and refresh_cached is not None:
+        supplement_classification_cache = (
+            name == "02_classified_paper"
+            and cached is not _MISSING
+            and selected
+            and self.run_modules is not None
+            and any(item == "2" or item.startswith("2.") for item in self.run_modules)
+            and not self.force
+        )
+        if cached is not _MISSING and not (self.force and selected) and not supplement_classification_cache:
+            if selected and name == "01_citation_parser" and refresh_cached is not None:
                 refreshed = refresh_cached(cached)
                 if inspect.isawaitable(refreshed):
                     refreshed = await refreshed
@@ -414,8 +564,40 @@ class SurveyEvaluationAgent:
         self._save_module(name, data)
         return data
 
+    async def _run_adequacy_metrics(
+        self,
+        paper: Paper,
+        contribution_data: dict[str, Any],
+        reference_surveys: Any,
+        query: str,
+    ) -> dict[str, Any]:
+        """并行运行类型义务相关检测，并汇总数值指标与评论。"""
+        detectors = [
+            self.gap_future_work_adequacy(paper),
+            self.contrast_adequacy(paper),
+            self.synthesis_adequacy(paper),
+            self.scope_methodology_adequacy(paper),
+            self.contribution_adequacy(
+                paper, contribution_data, reference_surveys=reference_surveys, query=query
+            ),
+        ]
+        results = await asyncio.gather(*detectors, return_exceptions=True)
+        metrics: dict[str, Any] = {}
+        comments: list[dict[str, Any]] = []
+        names = ["gap_future_work", "contrast", "synthesis", "scope_methodology", "contribution"]
+        for name, result in zip(names, results):
+            if isinstance(result, Exception):
+                comments.append({"module": f"scope.{name}", "issue_type": "adequacy_metric_error", "error": str(result)})
+                continue
+            if isinstance(result, dict):
+                metrics.update(result.get("metrics", {}) or {})
+                for item in result.get("comments", []) or []:
+                    if isinstance(item, dict):
+                        comments.append({"module": f"scope.{name}", **item})
+        return {"metrics": metrics, "comments": comments}
     async def evaluate(self, query: str | list[str], review_paper: Paper, few_shot_examples: Dict[str, str] | None = None):
         # queries = query if isinstance(query, list) else [item.strip() for item in str(query or "").split(",") if item.strip()]
+        """执行完整综述评测流程，管理并行预处理、模块缓存和最终汇总。"""
         queries = self._organize_queries(query)
         query_text = " ".join(queries)
         logging.info("start survey evaluation: %s", query_text)
@@ -437,7 +619,7 @@ class SurveyEvaluationAgent:
         }
         # if minimum_check["minimum_check"]["status"] != "pass":
         #     logging.info("minimum check failed")
-            # return result
+        #     return result
 
         parse_task = asyncio.create_task(
             self._run_or_load_module(
@@ -453,12 +635,14 @@ class SurveyEvaluationAgent:
             self._run_or_load_module("03_get_reference_surveys", lambda: self.get_reference_surveys(query_text))
         )
         citation_data, classified_paper, reference_surveys = await asyncio.gather(parse_task, sentence_task, reference_survey_task)
+        if not isinstance(classified_paper, Paper):
+            logging.debug("02_classified_paper not available; use original review paper for downstream modules")
+            classified_paper = review_paper
         paper_content_map = citation_data["paper_content_map"]
         logging.info("preprocessing complete: %d citations", len(citation_data.get("paper_content_map", {})))
 
-        literature_pool = await self._run_or_load_module(
-            "04_literature_pool",
-            lambda: self.literature_pool(queries, classified_paper, paper_content_map),
+        literature_pool = await self._run_or_load_literature_pool(
+            queries, classified_paper, paper_content_map
         )
         logging.info("literature pool complete: %d papers", len(literature_pool.get("literature_pool", {})))
 
@@ -487,7 +671,7 @@ class SurveyEvaluationAgent:
                 paper_content_map,
                 reference_surveys=reference_surveys,
                 entity_data=entity_data,
-                literature_pool=literature_pool,
+                literature_pool=literature_pool.get("literature_pool", literature_pool) if isinstance(literature_pool, dict) else literature_pool,
                 citation_graph=literature_pool.get("citation_graph", {}) if isinstance(literature_pool, dict) else {},
             ),
         )
@@ -499,7 +683,7 @@ class SurveyEvaluationAgent:
                 queries,
                 classified_paper,
                 reference_surveys=reference_surveys,
-                literature_pool=literature_pool,
+                literature_pool=literature_pool.get("literature_pool", literature_pool) if isinstance(literature_pool, dict) else literature_pool,
                 citation_graph=literature_pool.get("citation_graph", {}) if isinstance(literature_pool, dict) else {},
             ),
         )
@@ -516,42 +700,99 @@ class SurveyEvaluationAgent:
             lambda: self.contribution_consistency(classified_paper, queries),
         )
 
-        # aggregate_input = {
-        #     "query": query_text,
-        #     "minimum_check": minimum_check["minimum_check"],
-        #     "preprocessing": {
-        #         "classified_paper": classified_paper,
-        #     },
-        #     "evaluations": {
-        #         "fact_checks": fact_data.get("fact_checks", []),
-        #         "source_evals": source_data.get("source_evals", {}),
-        #         "topic_evals": topic_data.get("topic_evals", {}),
-        #         "internal_evals": internal_data,
-        #         "contribution_evals": contribution_data,
-        #     },
-        #     "errors": [],
-        # }
-        # aggregate_review = await self._run_or_load_module(
-        #     "12_aggregate_review",
-        #     lambda: self.final_aggregate(aggregate_input),
-        # )
-        # result = self._final_result_summary(
-        #     query=query_text,
-        #     minimum_check=minimum_check["minimum_check"],
-        #     citation_data=citation_data,
-        #     classified_paper=classified_paper,
-        #     reference_surveys=reference_surveys,
-        #     literature_pool=literature_pool,
-        #     entity_data=entity_data,
-        #     claim_data=claim_data,
-        #     fact_data=fact_data,
-        #     source_data=source_data,
-        #     topic_data=topic_data,
-        #     internal_data=internal_data,
-        #     contribution_data=contribution_data,
-        #     aggregate_review=aggregate_review,
-        # )
-        # self._save_module("result", result)
+        adequacy_parts = await self._run_or_load_module(
+            "11_adequacy_metrics",
+            lambda: self._run_adequacy_metrics(
+                classified_paper, contribution_data, reference_surveys, query_text
+            ),
+        )
+        if isinstance(topic_data, dict):
+            topic_evals = topic_data.setdefault("topic_evals", {})
+            topic_evals["adequacy_metrics"] = adequacy_parts.get("metrics", {}) if isinstance(adequacy_parts, dict) else {}
+            topic_evals["adequacy_comments"] = adequacy_parts.get("comments", []) if isinstance(adequacy_parts, dict) else []
+        taxonomy_data = await self._run_or_load_module(
+            "12_taxonomy_framework_problem",
+            lambda: self.taxonomy_framework_problem(
+                classified_paper,
+                query_text,
+                literature_pool=literature_pool,
+                citation_graph=literature_pool.get("citation_graph", {}) if isinstance(literature_pool, dict) else {},
+            ),
+        )
+        evidence_data = await self._run_or_load_module(
+            "13_evidence_support_insufficient",
+            lambda: self.evidence_support(classified_paper, query_text),
+        )
+        aggregate_input = {
+            "query": query_text,
+            "minimum_check": minimum_check.get("minimum_check"),
+            "preprocessing": {
+                "classified_paper": classified_paper,
+            },
+            "evaluations": {
+                "fact_checks": fact_data.get("fact_checks", []),
+                "source_evals": source_data.get("source_evals", {}),
+                "topic_evals": topic_data.get("topic_evals", {}),
+                "internal_evals": internal_data,
+                "contribution_evals": contribution_data,
+                "taxonomy_evals": taxonomy_data,
+                "evidence_support_evals": evidence_data,
+            },
+            "errors": [],
+        }
+        aggregate_review = await self._run_or_load_module(
+            "14_aggregate_review",
+            lambda: self.final_aggregate(aggregate_input),
+        )
+        result = {
+            **aggregate_review,
+            "query": query_text,
+            "minimum_check": minimum_check["minimum_check"],
+            "module_outputs": self._module_outputs([
+                "00_minimum_check",
+                "01_citation_parser",
+                "02_classified_paper",
+                "03_get_reference_surveys",
+                "04_literature_pool_full",
+                "04_literature_pool",
+                "05_uncited_entities",
+                "06_claim_segmentation",
+                "07_fact_check",
+                "08_missing_papers",
+                "09_topic_coverage",
+                "10_internal_consistency",
+                "11_contribution_consistency",
+                "11_adequacy_metrics",
+                "12_taxonomy_framework_problem",
+                "13_evidence_support_insufficient",
+                "14_aggregate_review",
+            ]),
+            "counts": {
+                "paper_content_map": self._result_count(citation_data.get("paper_content_map", {})),
+                # "classified_sections": self._result_count(classified_paper.children),
+                "reference_surveys": self._result_count(reference_surveys),
+                "claims": self._result_count(claim_data.get("claims", [])) if isinstance(claim_data, dict) else None,
+                "claim_errors": self._result_count(claim_data.get("errors", [])) if isinstance(claim_data, dict) else None,
+                "fact_checks": self._result_count(fact_data.get("fact_checks", [])) if isinstance(fact_data, dict) else None,
+                "literature_pool": self._result_count(literature_pool.get("literature_pool", {})) if isinstance(literature_pool, dict) else None,
+                "citation_graph": self._result_count(literature_pool.get("citation_graph", {})) if isinstance(literature_pool, dict) else None,
+                "uncited_entities": self._result_count(entity_data.get("uncited_entities", [])) if isinstance(entity_data, dict) else None,
+                "missing_papers": self._result_count(source_data.get("source_evals", {}).get("missing_papers", [])) if isinstance(source_data, dict) else None,
+                "topic_comments": self._result_count(topic_data.get("comments", [])) if isinstance(topic_data, dict) else None,
+                "internal_checks": self._result_count(internal_data.get("checks", [])) if isinstance(internal_data, dict) else None,
+                "contribution_checks": self._result_count(contribution_data.get("checks", [])) if isinstance(contribution_data, dict) else None,
+                "taxonomy_comments": self._result_count(taxonomy_data.get("comments", [])) if isinstance(taxonomy_data, dict) else None,
+                "evidence_comments": self._result_count(evidence_data.get("comments", [])) if isinstance(evidence_data, dict) else None,
+                "aggregate_weaknesses": self._result_count(aggregate_review.get("weaknesses", [])) if isinstance(aggregate_review, dict) else None,
+                "aggregate_comments": self._result_count(aggregate_review.get("comments", [])) if isinstance(aggregate_review, dict) else None,
+            },
+            "aggregate_review": {
+                "weakness_count": len(aggregate_review.get("weaknesses", [])) if isinstance(aggregate_review, dict) else 0,
+                "comment_count": len(aggregate_review.get("comments", [])) if isinstance(aggregate_review, dict) else 0,
+                "overall_score": aggregate_review.get("overall_score") if isinstance(aggregate_review, dict) else None,
+            },
+            "errors": [],
+        }
         logging.info("survey evaluation complete")
         return result
 
@@ -565,6 +806,7 @@ async def evaluate_survey(
     run_modules: str | set[str] | set[int] | None = None,
     force: bool = False,
 ):
+    """初始化共享网络会话，执行综述评测，并在结束后关闭会话。"""
     config = config or ToolConfig()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     await SessionManager.init()
@@ -591,6 +833,7 @@ async def evaluate_survey_with_session(
     run_modules: str | set[str] | set[int] | None = None,
     force: bool = False,
 ):
+    """在已初始化的会话中规范化模块选择，创建 Agent 并执行评测。"""
     config = config or ToolConfig()
     if output_dir is None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -28,7 +28,7 @@ if spacy is not None:
         SPACY_NLP = None
 
 
-SOURCE_LABELS = {"SUMMARY", "SYNTHESIS", "CONTRAST", "GAP"}
+SOURCE_LABELS = {"SUMMARY", "SYNTHESIS", "COMPARISON", "GAP"}
 
 
 class ClaimSegmentationLLMClient(AsyncChat):

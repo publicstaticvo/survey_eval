@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from typing import Any
@@ -142,5 +142,19 @@ class ClaimVerifier:
                 results_by_index[index] = result
 
         results = [results_by_index[index] for index in sorted(results_by_index)]
+        supported = sum(1 for item in results if item.get("judgment") == "SUPPORTED")
+        refuted = sum(1 for item in results if item.get("judgment") == "REFUTED")
+        true_neutral = sum(1 for item in results if item.get("judgment") == "NEUTRAL" and item.get("reason", "") == "")
+        fact_accuracy_denominator = supported + refuted + true_neutral
+        fact_accuracy = supported / fact_accuracy_denominator if fact_accuracy_denominator else 1.0
         print(f"We check {len(results)} claims: {len(cited_tasks)} cited, {len(uncited_claims)} uncited, {sum(1 for item in results if item.get('judgment') == 'UNVERIFIABLE')} unverifiable")
-        return {"fact_checks": results, "checked_count": len(results)}
+        return {
+            "fact_checks": results,
+            "checked_count": len(results),
+            "supported_count": supported,
+            "refuted_count": refuted,
+            "true_neutral_count": true_neutral,
+            "fact_accuracy_denominator": fact_accuracy_denominator,
+            "fact_accuracy": fact_accuracy,
+        }
+

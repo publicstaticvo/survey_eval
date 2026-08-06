@@ -42,6 +42,8 @@ TEXTUAL_CITATION_MACROS = {
     'citet', 'citealt', 'citeauthor', 'textcite',
 }
 
+REF_MACROS = {'ref', 'autoref', 'cref', 'Cref'}
+
 
 def process_input_commands(latex_content, base_path, current_path=None):
     r"""
@@ -58,6 +60,7 @@ def process_input_commands(latex_content, base_path, current_path=None):
     pattern = re.compile(r'(?<!%)\\(?:input|include)\s*\{([^}]+)\}', re.MULTILINE)
     
     def replace_input(match):
+        """中文说明：执行 replace_input 的 LaTeX 解析辅助逻辑。"""
         filename = match.group(1).strip()
         
         # Add .tex extension if not present
@@ -130,6 +133,7 @@ class LatexPaperParser:
     TEX_APPENDIX_RE = re.compile(r"\\appendix\b|\\begin\s*\{\s*appendices\s*\}", re.IGNORECASE)
     
     def __init__(self):
+        """中文说明：执行 __init__ 的 LaTeX 解析辅助逻辑。"""
         self.converter = LatexNodes2Text(math_mode="verbatim")
         self.section_levels = {
             'section': 1,
@@ -146,9 +150,11 @@ class LatexPaperParser:
         self.bib_files = []
         self.bibliography_entries = {}
         self.unresolved_citation_keys = []
+        self.unresolved_ref_keys = []
         self.citation_number_map = {}
 
     def _read_text_file(self, path: os.PathLike | str) -> str:
+        """中文说明：执行 _read_text_file 的 LaTeX 解析辅助逻辑。"""
         path = os.fspath(path)
         for encoding in ("utf-8", "latin-1"):
             try:
@@ -160,6 +166,7 @@ class LatexPaperParser:
         return content
 
     def _find_main_tex(self, source_dir: os.PathLike | str) -> str | None:
+        """中文说明：执行 _find_main_tex 的 LaTeX 解析辅助逻辑。"""
         source_dir = os.fspath(source_dir)
         tex_files = [path for path in glob.glob(os.path.join(source_dir, "**", "*.tex"), recursive=True) if os.path.isfile(path)]
         if not tex_files:
@@ -189,6 +196,7 @@ class LatexPaperParser:
         return scored[0][1]
 
     def _as_existing_path(self, source: str | os.PathLike) -> str | None:
+        """中文说明：执行 _as_existing_path 的 LaTeX 解析辅助逻辑。"""
         if not isinstance(source, str):
             path = os.fspath(source)
         elif "\n" in source or "\\begin" in source:
@@ -201,6 +209,7 @@ class LatexPaperParser:
             return None
 
     def _prepare_source(self, source: str | os.PathLike, base_path: str | os.PathLike | None = None) -> None:
+        """中文说明：执行 _prepare_source 的 LaTeX 解析辅助逻辑。"""
         source_path = self._as_existing_path(source)
         if source_path and os.path.isdir(source_path):
             main_tex = self._find_main_tex(source_path)
@@ -215,7 +224,14 @@ class LatexPaperParser:
             latex_content = str(source or "")
             self.base_path = os.fspath(base_path or ".")
 
-        processed_content = process_input_commands(latex_content, self.base_path)
+        processed_content = process_input_commands(latex_content, self.base_path).replace("~", " ")
+
+        formatting_pattern = re.compile(r"\\(?:textbf|textit|texttt|textsc)\s*\{([^{}]*)\}")
+        previous = None
+        while previous != processed_content:
+            previous = processed_content
+            processed_content = formatting_pattern.sub(r"\1", processed_content)
+        self.unresolved_ref_keys = []
         self.section_label_map = self._build_section_label_map(processed_content)
         self.figure_table_label_map = self._build_figure_table_label_map(processed_content)
         self.latex_content = self._remove_reference_macros(
@@ -232,9 +248,11 @@ class LatexPaperParser:
         self._collect_bibliography_files(processed_content)
 
     def _safe_nodes(self, nodes):
+        """中文说明：执行 _safe_nodes 的 LaTeX 解析辅助逻辑。"""
         return nodes or []
 
     def _collect_bibliography_files(self, content: str) -> None:
+        """中文说明：执行 _collect_bibliography_files 的 LaTeX 解析辅助逻辑。"""
         for match in re.finditer(r"\\bibliography\s*\{([^{}]*)\}", content):
             for bib_name in match.group(1).split(","):
                 bib_name = bib_name.strip()
@@ -247,6 +265,7 @@ class LatexPaperParser:
                     self.bib_files.append(bib_path)
 
     def _load_bibliography_entries(self) -> None:
+        """中文说明：执行 _load_bibliography_entries 的 LaTeX 解析辅助逻辑。"""
         try:
             self.bibliography_entries = parse_bbl_file(self.latex_content)
         except Exception:
@@ -269,6 +288,7 @@ class LatexPaperParser:
                 print(f"Warning: Could not parse bibliography file '{f}': {exc}")
 
     def _build_section_label_map(self, content: str) -> dict[str, str]:
+        """中文说明：执行 _build_section_label_map 的 LaTeX 解析辅助逻辑。"""
         content = self._strip_latex_comments(content)
         appendix = self.TEX_APPENDIX_RE.search(content)
         if appendix:
@@ -310,6 +330,7 @@ class LatexPaperParser:
         return label_map
 
     def _build_figure_table_label_map(self, content: str) -> dict[str, str]:
+        """中文说明：执行 _build_figure_table_label_map 的 LaTeX 解析辅助逻辑。"""
         content = self._strip_latex_comments(content)
         label_map = {}
         counters = {"figure": 0, "table": 0}
@@ -328,25 +349,26 @@ class LatexPaperParser:
             )
             end = match.end() + end_match.end() if end_match else len(content)
             chunk = content[match.start():end]
-            ref_text = f"{kind.title()} {counters[kind]}"
+            ref_text = str(counters[kind])
             for label in re.findall(r"\\label\s*\{([^{}]+)\}", chunk):
                 label_map[label.strip()] = ref_text
         return label_map
 
     def _replace_labeled_refs(self, content: str, label_map: dict[str, str]) -> str:
-        if not label_map:
-            return content
-
+        """中文说明：执行 _replace_labeled_refs 的 LaTeX 解析辅助逻辑。"""
         def replace(match):
-            macro = match.group("macro")
+            """中文说明：执行 replace 的 LaTeX 解析辅助逻辑。"""
             labels = [label.strip() for label in match.group("labels").split(",") if label.strip()]
-            values = [label_map[label] for label in labels if label in label_map]
-            if not values:
-                return match.group(0)
-            text = ", ".join(values)
-            if all(re.match(r"^\d", value) for value in values):
-                return f"Section {text}"
-            return text
+            values = []
+            for label in labels:
+                value = label_map.get(label)
+                if value is None:
+                    if label not in self.unresolved_ref_keys:
+                        self.unresolved_ref_keys.append(label)
+                    values.append("?")
+                else:
+                    values.append(value)
+            return ", ".join(values) if values else "?"
 
         return re.sub(
             r"\\(?P<macro>ref|autoref|cref|Cref)\s*\{(?P<labels>[^{}]+)\}",
@@ -355,16 +377,20 @@ class LatexPaperParser:
         )
 
     def _replace_section_refs(self, content: str, label_map: dict[str, str]) -> str:
+        """中文说明：执行 _replace_section_refs 的 LaTeX 解析辅助逻辑。"""
         section_refs = {key: value for key, value in label_map.items()}
         return self._replace_labeled_refs(content, section_refs)
 
     def _macro_name(self, node) -> str:
+        """中文说明：执行 _macro_name 的 LaTeX 解析辅助逻辑。"""
         return getattr(node, "macroname", "") or ""
 
     def _is_macro(self, node, names: set[str]) -> bool:
+        """中文说明：执行 _is_macro 的 LaTeX 解析辅助逻辑。"""
         return isinstance(node, LatexMacroNode) and self._macro_name(node) in names
 
     def _collect_nodes_until(self, nodes, start_idx: int, stop_macros: set[str]):
+        """中文说明：执行 _collect_nodes_until 的 LaTeX 解析辅助逻辑。"""
         content = []
         idx = start_idx
         while idx < len(nodes):
@@ -376,6 +402,7 @@ class LatexPaperParser:
         return content, idx
 
     def _extract_preamble_macro_text(self, macro_name: str) -> str | None:
+        """中文说明：执行 _extract_preamble_macro_text 的 LaTeX 解析辅助逻辑。"""
         pattern = re.compile(
             rf"\\{macro_name}\s*(?:\[[^\]]*\])?\s*\{{(?P<body>(?:[^{{}}]|\{{[^{{}}]*\}})*)\}}",
             flags=re.DOTALL,
@@ -386,6 +413,7 @@ class LatexPaperParser:
         return self.converter.latex_to_text(match.group("body")).strip()
 
     def _node_latex(self, node) -> str:
+        """中文说明：执行 _node_latex 的 LaTeX 解析辅助逻辑。"""
         pos = getattr(node, "pos", None)
         length = getattr(node, "len", None)
         if pos is None or length is None:
@@ -393,6 +421,7 @@ class LatexPaperParser:
         return self.latex_content[pos:pos + length]
 
     def _macro_argument_latex(self, node) -> str:
+        """中文说明：执行 _macro_argument_latex 的 LaTeX 解析辅助逻辑。"""
         raw = self._node_latex(node)
         if raw:
             match = re.search(r"\{(?P<body>[^{}]*)\}\s*$", raw, flags=re.DOTALL)
@@ -410,9 +439,11 @@ class LatexPaperParser:
         return ""
 
     def _extract_citations_from_nodes(self, nodes) -> list[str]:
+        """中文说明：执行 _extract_citations_from_nodes 的 LaTeX 解析辅助逻辑。"""
         citations = []
 
         def walk(items):
+            """中文说明：执行 walk 的 LaTeX 解析辅助逻辑。"""
             for item in self._safe_nodes(items):
                 if isinstance(item, LatexMacroNode):
                     if item.macroname in CITATION_MACROS:
@@ -428,6 +459,7 @@ class LatexPaperParser:
         return list(dict.fromkeys(citations))
 
     def _paragraph_name_from_macro(self, node) -> ParagraphName:
+        """中文说明：执行 _paragraph_name_from_macro 的 LaTeX 解析辅助逻辑。"""
         title = self._extract_title(node)
         citations = []
         if node.nodeargd and node.nodeargd.argnlist:
@@ -440,10 +472,12 @@ class LatexPaperParser:
         return ParagraphName(text=title, citations=citations)
 
     def _is_limitation_title(self, title: str) -> bool:
+        """中文说明：执行 _is_limitation_title 的 LaTeX 解析辅助逻辑。"""
         normalized = re.sub(r"[^a-z]+", " ", title.lower()).strip()
         return normalized in {"limitation", "limitations"}
 
     def _split_special_sections(self, sections: list[Section]) -> tuple[list[Section], list[Section], list[Section]]:
+        """中文说明：执行 _split_special_sections 的 LaTeX 解析辅助逻辑。"""
         body, limitation, appendix = [], [], []
         in_appendix = False
         for section in sections:
@@ -460,6 +494,7 @@ class LatexPaperParser:
         return body, limitation, appendix
 
     def _get_latex_nodes_quiet(self, text: str | None = None):
+        """中文说明：执行 _get_latex_nodes_quiet 的 LaTeX 解析辅助逻辑。"""
         sink = io.StringIO()
         walker = self.walker if text is None else LatexWalker(text)
         loggers = [
@@ -540,9 +575,11 @@ class LatexPaperParser:
             key for key in paper.all_citation_keys if key not in self.bibliography_entries
         ]
         paper.unresolved_citation_keys = self.unresolved_citation_keys
+        paper.unresolved_ref_keys = self.unresolved_ref_keys
         return paper
     
     def _filter_bibliography_entries(self, citation_keys: list[str]) -> dict:
+        """中文说明：执行 _filter_bibliography_entries 的 LaTeX 解析辅助逻辑。"""
         cited_keys = set(citation_keys)
         return {
             key: value
@@ -717,6 +754,7 @@ class LatexPaperParser:
             stack.append(node)
 
         def assign_content(node):
+            """中文说明：执行 assign_content 的 LaTeX 解析辅助逻辑。"""
             content_end = min((child["content_start"] for child in node["children"]), default=node["end"])
             node["content"] = content[node["content_start"]:content_end]
             for child in node["children"]:
@@ -726,6 +764,7 @@ class LatexPaperParser:
             assign_content(root)
 
         def build(node):
+            """中文说明：执行 build 的 LaTeX 解析辅助逻辑。"""
             if node["level"] == "section":
                 section = Section(name=node["title"])
                 self._append_raw_content_paragraphs(node["content"], section)
@@ -747,6 +786,7 @@ class LatexPaperParser:
         return sections
 
     def _strip_latex_comments(self, content: str) -> str:
+        """中文说明：执行 _strip_latex_comments 的 LaTeX 解析辅助逻辑。"""
         lines = []
         for line in content.splitlines(keepends=True):
             line_end_match = re.search(r"(\r?\n)$", line)
@@ -766,6 +806,7 @@ class LatexPaperParser:
         return "".join(lines)
 
     def _read_balanced_brace_content(self, content: str, open_pos: int) -> tuple[str | None, int]:
+        """中文说明：执行 _read_balanced_brace_content 的 LaTeX 解析辅助逻辑。"""
         if open_pos >= len(content) or content[open_pos] != "{":
             return None, open_pos
         depth = 0
@@ -785,6 +826,7 @@ class LatexPaperParser:
         return None, open_pos
 
     def _append_raw_content_paragraphs(self, raw_content: str, parent) -> None:
+        """中文说明：执行 _append_raw_content_paragraphs 的 LaTeX 解析辅助逻辑。"""
         raw_content = self._remove_heading_commands(raw_content).strip()
         if not raw_content:
             return
@@ -795,6 +837,7 @@ class LatexPaperParser:
                 parent.add_paragraph(paragraph)
 
     def _remove_heading_commands(self, content: str) -> str:
+        """中文说明：执行 _remove_heading_commands 的 LaTeX 解析辅助逻辑。"""
         content = re.sub(
             r"\\(?:section|subsection|subsubsection)\s*\*?\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}",
             "",
@@ -804,19 +847,23 @@ class LatexPaperParser:
         return self._remove_reference_commands(content)
 
     def _remove_reference_commands(self, content: str) -> str:
+        """中文说明：执行 _remove_reference_commands 的 LaTeX 解析辅助逻辑。"""
         content = self._remove_reference_macros(content)
         content = re.sub(r"\\begin\s*\{\s*thebibliography\s*\}.*?\\end\s*\{\s*thebibliography\s*\}", " ", content, flags=re.DOTALL)
         return content
 
     def _remove_reference_macros(self, content: str) -> str:
+        """中文说明：执行 _remove_reference_macros 的 LaTeX 解析辅助逻辑。"""
         return re.sub(r"\\(?:bibstyle|bibliographystyle|bibliography|nocite)\s*\{[^{}]*\}", " ", content)
 
     def _build_fallback_paragraph(self, raw_content: str) -> Paragraph | None:
+        """中文说明：执行 _build_fallback_paragraph 的 LaTeX 解析辅助逻辑。"""
         raw_content = self._remove_reference_commands(raw_content)
         raw_content = re.sub(r"\\label\s*\{[^{}]*\}", "", raw_content)
         citation_markers = []
 
         def _replace_cite(match):
+            """中文说明：执行 _replace_cite 的 LaTeX 解析辅助逻辑。"""
             keys = [key.strip() for key in match.group(1).split(",") if key.strip()]
             marker = f"CITMARK{len(citation_markers)}"
             citation_markers.append({"marker": marker, "keys": keys})
@@ -824,7 +871,7 @@ class LatexPaperParser:
 
         cite_pattern = re.compile(r"\\(?:cite\w*|cite)\s*(?:\[[^\]]*\]\s*)*\{([^{}]+)\}")
         raw_content = re.sub(cite_pattern, _replace_cite, raw_content)
-        raw_content = re.sub(r"\\(?:auto)?ref\s*\{[^{}]*\}", " REFMARK ", raw_content)
+        raw_content = re.sub(r"\\(?:auto)?ref\s*\{[^{}]*\}", " ? ", raw_content)
         raw_content = re.sub(r"\\paragraph\s*\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}", r" PARAGRAPHMARK{\1} ", raw_content)
         raw_content = self._clean_fallback_latex_text(raw_content)
         text = self._rough_latex_to_text(raw_content)
@@ -839,7 +886,6 @@ class LatexPaperParser:
                 if marker_info["marker"] in sentence_text:
                     sentence_keys.extend(marker_info["keys"])
                     sentence_text = sentence_text.replace(marker_info["marker"], " ")
-            sentence_text = sentence_text.replace("REFMARK", "<ref>")
             sentence_text = re.sub(r"\s+", " ", sentence_text).strip()
             sentence_text = re.sub(r"\s+([,.;:!?])", r"\1", sentence_text)
             sentence_keys = list(dict.fromkeys(sentence_keys))
@@ -848,6 +894,7 @@ class LatexPaperParser:
         return paragraph if paragraph.sentences else None
 
     def _clean_fallback_latex_text(self, raw_content: str) -> str:
+        """中文说明：执行 _clean_fallback_latex_text 的 LaTeX 解析辅助逻辑。"""
         raw_content = re.sub(r"\{\s*\\color\s*\{[^{}]*\}", "", raw_content)
         raw_content = re.sub(r"\\color\s*\{[^{}]*\}", "", raw_content)
         raw_content = re.sub(r"\\(?:textit|emph|textbf|texttt|textsc)\s*\{", "{", raw_content)
@@ -856,6 +903,7 @@ class LatexPaperParser:
         return raw_content
 
     def _rough_latex_to_text(self, raw_content: str) -> str:
+        """中文说明：执行 _rough_latex_to_text 的 LaTeX 解析辅助逻辑。"""
         text = raw_content
         text = re.sub(r"\\begin\s*\{[^{}]*\}", " ", text)
         text = re.sub(r"\\end\s*\{[^{}]*\}", " ", text)
@@ -867,6 +915,7 @@ class LatexPaperParser:
         return text
 
     def _parse_raw_latex_nodes(self, content: str):
+        """中文说明：执行 _parse_raw_latex_nodes 的 LaTeX 解析辅助逻辑。"""
         wrapped = f"\\begin{{document}}\n{content}\n\\end{{document}}"
         try:
             nodes, _, _ = self._get_latex_nodes_quiet(wrapped)
@@ -1040,6 +1089,7 @@ class LatexPaperParser:
         citations = set()
         
         def find_citations_recursive(nodes):
+            """中文说明：执行 find_citations_recursive 的 LaTeX 解析辅助逻辑。"""
             if nodes is None:
                 return
             
@@ -1080,16 +1130,51 @@ class LatexPaperParser:
             str: Raw LaTeX string including \begin and \end
         """
         env_name = env_node.environmentname
-        
-        # Get the content
-        content = self.converter.nodelist_to_text(self._safe_nodes(env_node.nodelist))
-        
-        # Reconstruct the environment
+        if env_name in LIST_ENVIRONMENTS:
+            return self._extract_raw_list_environment(env_node)
+        segments = self._extract_text_segments_with_breaks(self._safe_nodes(env_node.nodelist))
+        parts = []
+        for segment in segments:
+            if isinstance(segment, dict) and segment.get('paragraph_break'):
+                parts.append("\n")
+            elif isinstance(segment, dict):
+                parts.append(segment.get('text', ''))
+            elif isinstance(segment, Sentence):
+                parts.append(segment.text)
+            else:
+                parts.append(str(segment))
+        content = re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()
         result = f"\\begin{{{env_name}}}\n{content}\n\\end{{{env_name}}}"
-        
         return result
 
+    def _extract_raw_list_environment(self, env_node: LatexEnvironmentNode) -> str:
+        """保留列表环境及其条目边界，避免贡献清单被压成不可分辨的文本。"""
+        items = []
+        current = []
+        for node in self._safe_nodes(env_node.nodelist):
+            if isinstance(node, LatexMacroNode) and node.macroname == "item":
+                if current:
+                    items.append(current)
+                current = []
+                if node.nodeargd and node.nodeargd.argnlist:
+                    for arg in node.nodeargd.argnlist:
+                        if hasattr(arg, "nodelist"):
+                            current.extend(arg.nodelist)
+            else:
+                current.append(node)
+        if current:
+            items.append(current)
+        rendered = []
+        for item_nodes in items:
+            segments = self._extract_text_segments_with_breaks(self._safe_nodes(item_nodes))
+            text = " ".join(segment.get("text", "") if isinstance(segment, dict) else str(segment) for segment in segments)
+            text = re.sub(r"\s+", " ", text).strip()
+            if text:
+                rendered.append(f"- {text}")
+        content = "\n".join(rendered)
+        return f"\\begin{{{env_node.environmentname}}}\n{content}\n\\end{{{env_node.environmentname}}}"
     def _extract_environment_caption(self, env_node: LatexEnvironmentNode) -> str:
+        """中文说明：执行 _extract_environment_caption 的 LaTeX 解析辅助逻辑。"""
         if env_node.environmentname not in GRAPH_ENVIRONMENTS:
             return ""
         raw = self._node_latex(env_node)
@@ -1192,7 +1277,7 @@ class LatexPaperParser:
 
     def _split_text_by_latex_paragraphs(self, text: str):
         """Split plain LaTeX chars by blank-line paragraph breaks after removing comments."""
-        text = self._strip_latex_comments(text)
+        text = self._strip_latex_comments(text).replace("~", " ")
         if not text:
             return []
 
@@ -1216,20 +1301,24 @@ class LatexPaperParser:
         return segments
 
     def _citation_number(self, citation_key: str) -> int:
+        """中文说明：执行 _citation_number 的 LaTeX 解析辅助逻辑。"""
         if citation_key not in self.citation_number_map:
             self.citation_number_map[citation_key] = len(self.citation_number_map) + 1
         return self.citation_number_map[citation_key]
 
     def _citation_number_dict(self, citation_keys: list[str]) -> dict[int, str]:
+        """中文说明：执行 _citation_number_dict 的 LaTeX 解析辅助逻辑。"""
         return {self._citation_number(key): key for key in citation_keys}
 
     def _format_citation_text(self, citation_keys: list[str], macro_name: str | None = None) -> str:
+        """中文说明：执行 _format_citation_text 的 LaTeX 解析辅助逻辑。"""
         if not citation_keys:
             return "?"
         numbers = [self._citation_number(key) for key in citation_keys]
         return f"[{', '.join(str(number) for number in numbers)}]"
 
     def _normalize_rendered_citation_punctuation(self, text: str) -> str:
+        """中文说明：执行 _normalize_rendered_citation_punctuation 的 LaTeX 解析辅助逻辑。"""
         text = re.sub(r"\.\.", ".", text)
         text = re.sub(r"\s+([,.;:!?])", r"\1", text)
         return text
@@ -1263,6 +1352,11 @@ class LatexPaperParser:
                         'citation_text': citation_text,
                         'paragraph_break': False,
                     })
+                elif node.macroname in REF_MACROS:
+                    ref_key = self._macro_argument_latex(node).strip()
+                    if ref_key and ref_key not in self.unresolved_ref_keys:
+                        self.unresolved_ref_keys.append(ref_key)
+                    segments.append({'text': '?', 'citations': [], 'paragraph_break': False})
                 elif node.macroname == 'par':
                     # Explicit paragraph break command
                     segments.append({'text': '\n', 'citations': [], 'paragraph_break': True})
@@ -1439,9 +1533,11 @@ class LatexPaperParser:
         return self._merge_short_sentences_forward(result)
 
     def _sentence_word_count(self, sentence: str) -> int:
+        """中文说明：执行 _sentence_word_count 的 LaTeX 解析辅助逻辑。"""
         return len(re.findall(r"[A-Za-z0-9]+", sentence or ""))
 
     def _merge_short_sentences_forward(self, sentences: list[str]) -> list[str]:
+        """中文说明：执行 _merge_short_sentences_forward 的 LaTeX 解析辅助逻辑。"""
         merged = []
         index = 0
         while index < len(sentences):
@@ -1455,6 +1551,7 @@ class LatexPaperParser:
         return merged
 
     def _scan_sentence_candidates(self, text: str) -> list[str]:
+        """中文说明：执行 _scan_sentence_candidates 的 LaTeX 解析辅助逻辑。"""
         abbreviations = {
             "Dr", "Mr", "Mrs", "Ms", "Prof", "Sr", "Jr", "vs",
             "Fig", "Figs", "Sec", "Secs", "Eq", "Eqs", "Ref", "Refs",
@@ -1492,6 +1589,7 @@ class LatexPaperParser:
         return sentences
 
     def _is_sentence_boundary(self, text: str, idx: int, abbreviations: set[str]) -> bool:
+        """中文说明：执行 _is_sentence_boundary 的 LaTeX 解析辅助逻辑。"""
         char = text[idx]
         if char in "!?":
             return True
@@ -1514,10 +1612,12 @@ class LatexPaperParser:
         return idx + 1 >= len(text) or text[idx + 1].isspace() or text[idx + 1] in "\"')]}"
 
     def _is_part_of_latin_abbreviation(self, text: str, idx: int) -> bool:
+        """中文说明：执行 _is_part_of_latin_abbreviation 的 LaTeX 解析辅助逻辑。"""
         window = text[max(0, idx - 3):idx + 3].lower()
         return "e.g." in window or "i.e." in window
 
     def _starts_with_lowercase_ascii(self, text: str) -> bool:
+        """中文说明：执行 _starts_with_lowercase_ascii 的 LaTeX 解析辅助逻辑。"""
         stripped = text.lstrip()
         return bool(stripped) and "a" <= stripped[0] <= "z"
     
@@ -1535,6 +1635,7 @@ class LatexPaperParser:
         nodelist, _, _ = self._get_latex_nodes_quiet()
         
         def find_citations(nodes):
+            """中文说明：执行 find_citations 的 LaTeX 解析辅助逻辑。"""
             if nodes is None:
                 return
             
@@ -1557,15 +1658,18 @@ class LatexPaperParser:
         return sorted(list(citations))
     
     def _clean_title(self, value: str) -> str:
+        """中文说明：执行 _clean_title 的 LaTeX 解析辅助逻辑。"""
         return re.sub(r"\s+", " ", value or "").strip()
 
     def _head_record(self, section_index: str, section_name: str) -> dict[str, str] | None:
+        """中文说明：执行 _head_record 的 LaTeX 解析辅助逻辑。"""
         section_index = self._clean_title(section_index)
         section_name = self._clean_title(section_name)
         if not section_name: return None
         return {"section_index": section_index, "section_name": section_name}
     
     def get_titles(self, source: str | os.PathLike | None = None, base_path: str | os.PathLike | None = None):
+        """中文说明：执行 get_titles 的 LaTeX 解析辅助逻辑。"""
         if source is not None:
             self._prepare_source(source, base_path=base_path)
         content = self.latex_content

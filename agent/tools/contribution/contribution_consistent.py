@@ -5,7 +5,7 @@ from typing import Any
 
 import jsonschema
 
-from ..preprocess.contribution_classify import GRAPH_ENVIRONMENT_TYPES
+# from ..preprocess.contribution_classify import GRAPH_ENVIRONMENT_TYPES
 from ..prompts import CONTRIBUTION_CONSISTENT, CONTRIBUTION_CONSISTENT_SCHEMA
 from ..utility.content_walk import iter_sections_with_context
 from ..utility.llmclient import AsyncChat, AsyncRerank
@@ -13,7 +13,7 @@ from ..utility.paper_elements import Paper, Section
 from ..utility.tool_config import ToolConfig
 from ..utility.utils import extract_json
 
-
+GRAPH_ENVIRONMENT_TYPES = {"figure", "figure*", "table", "table*", "tabular", "longtable"}
 SECTION_RANGE_RE = re.compile(r"^(?:Section\s+)?(?P<start>\d+(?:\.\d+)*)\s*-\s*(?P<end>\d+(?:\.\d+)*)$")
 
 
@@ -261,7 +261,7 @@ class ContributionConsistency:
                 continue
             if item.get("label") in labels:
                 candidates.append(f"[{item['section_location']}] {text}")
-            elif "CONTRAST" in labels and item.get("environment_type") in GRAPH_ENVIRONMENT_TYPES:
+            elif "COMPARISON" in labels and item.get("environment_type") in GRAPH_ENVIRONMENT_TYPES:
                 candidates.append(f"[{item['section_location']}] {text}")
         return candidates
 
@@ -366,8 +366,15 @@ class ContributionConsistency:
                 ))
         checks = await asyncio.gather(*tasks)
         error_count = sum(1 for check in checks if check.get("check_failed"))
+        measured_checks = [check for check in checks if not check.get("skipped") and not check.get("check_failed")]
+        fulfilled_count = sum(1 for check in measured_checks if check.get("consistent"))
+        contribution_consistency_rate = fulfilled_count / len(measured_checks) if measured_checks else 1.0
         return {
             "checks": checks,
             "consistent": error_count == 0 and all(check["consistent"] for check in checks),
             "error_count": error_count,
+            "measured_count": len(measured_checks),
+            "fulfilled_count": fulfilled_count,
+            "contribution_consistency_rate": contribution_consistency_rate,
         }
+

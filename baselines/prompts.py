@@ -2,20 +2,15 @@ SYSTEM = """You are an expert reviewer with broad knowledge of machine learning 
 
 CC_PROMPT = """You are an expert reviewer with broad knowledge of machine learning and natural language processing research. The survey paper to be evaluated is in {input_dir}, as a LaTeX source directory/file or parsed JSON file. Your task is to assess its overall quality.
 
-Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
-
 {requirements}
 
 Write your output as a JSON file in {output_file}."""
 
-USER_PLAIN = """Below is the full text of a survey paper. Read it carefully and evaluate its quality.
-
-<survey>
-{SURVEY_FULL_TEXT}
-</survey>
-
+USER_PLAIN = """{SURVEY_FULL_TEXT}
 <input_processing_note>
-Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
+Ignore formatting artifacts, missing rendered tables/figures, reference formatting issues, and placeholder metadata like "Author names". Do not report these as Findings; mention them in Comments only if they are materially relevant.
+
+The survey's written date is {publication_date}. Use this date as a hard temporal boundary: do not recommend any work published after this date as a "missing" reference, and do not flag as insufficient coverage any topic community whose publications postdate the survey.
 </input_processing_note>
 
 Provide your evaluation in the following JSON format. Do not include any text outside the JSON object.
@@ -37,19 +32,14 @@ Provide your evaluation in the following JSON format. Do not include any text ou
       "issue": "<concise description of a less critical observation>",
       "location": "<section/paragraph/sentence where this occurs>"
     }}
-  ],
-  "overall_score": <integer 0-100>,
-  "score_justification": "<1-3 sentences explaining the score>"
+  ]
 }}"""
 
-USER_ARISE = """Below is the full text of a survey paper, followed by a rubric you must use to guide your assessment.
-
-<survey>
-{SURVEY_FULL_TEXT}
-</survey>
-
+USER_ARISE = """{SURVEY_FULL_TEXT}
 <input_processing_note>
-Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
+Ignore formatting artifacts, missing rendered tables/figures, reference formatting issues, and placeholder metadata like "Author names". Do not report these as Findings; mention them in Comments only if they are materially relevant.
+
+The survey's written date is {publication_date}. Use this date as a hard temporal boundary: do not recommend any work published after this date as a "missing" reference, and do not flag as insufficient coverage any topic community whose publications postdate the survey.
 </input_processing_note>
 
 <evaluation_rubric>
@@ -85,7 +75,7 @@ Category: Scope
 
 Category: Literature
 4. Criterion: Comprehensiveness
-   Score 5: ≥ 30 citations, spanning multiple subfields, including up-to-date and foundational works.
+   Score 5: 闁?0 citations, spanning multiple subfields, including up-to-date and foundational works.
    Score 4: Mostly complete coverage with only minor omissions.
    Score 3: Some omissions or limited to a narrow domain.
    Score 2: Major omissions in key areas.
@@ -223,7 +213,7 @@ Category: References
 Final Score: Sum of all 20 criteria (max 100).  
 Please also provide a brief overall assessment of the paper's strengths and weaknesses.
 
-You may use your own judgment and knowledge of the field to apply these criteria. You are not restricted to a fixed order or fixed procedure — use whatever approach you find most effective to assess the survey against this rubric.
+You may use your own judgment and knowledge of the field to apply these criteria. You are not restricted to a fixed order or fixed procedure -- use whatever approach you find most effective to assess the survey against this rubric.
 </evaluation_rubric>
 
 Provide your evaluation in the following JSON format. Do not include any text outside the JSON object.
@@ -252,68 +242,54 @@ Provide your evaluation in the following JSON format. Do not include any text ou
   }}
 }}"""
 
-USER_TRUSTSURVEY = """Below is the full text of a survey paper, followed by the TrustSurvey evaluation framework you must use to guide your assessment.
-
-<survey>
+USER_TRUSTSURVEY = """Given a survey paper, produce evidence-linked Findings across 11 predefined quality categories. Do not output scores, holistic judgments, or accept/reject recommendations. Every Finding must be supported by verbatim evidence from the survey or its cited sources. Observations that lack sufficient evidence belong in Comments.
 {SURVEY_FULL_TEXT}
-</survey>
-
 <input_processing_note>
-Because input processing may be imperfect, do not report purely format-level or preprocessing artifacts as weaknesses. For example, placeholder author metadata such as "Author Names", reference formatting artifacts, missing rendered figures/tables, or empty-looking algorithm/table boxes caused by input conversion must not appear in the weakness report.
+Ignore formatting artifacts, missing rendered tables/figures, reference formatting issues, and placeholder metadata like "Author names". Do not report these as Findings; mention them in Comments only if they are materially relevant.
+
+The survey's written date is {publication_date}. Use this date as a hard temporal boundary: do not recommend any work published after this date as a "missing" reference, and do not flag as insufficient coverage any topic community whose publications postdate the survey.
 </input_processing_note>
 
-<evaluation_framework>
-TrustSurvey evaluates survey trustworthiness through evidence-linked sub-judgments. Do not collapse the assessment into a vague holistic impression. Each reported weakness should correspond to a concrete checkable issue, with a specific location or evidence pointer in the survey whenever possible.
+<categories>
+1. Internal inconsistency: contradictions within the survey, including scope-content mismatch, section conflicts, incompatible definitions or symbols, numerical mismatches, or contradictory claims.
+2. Hallucination: factually false statements, attribution errors, or claims contradicted by cited or retrieved sources. Unresolved citation markers count as hallucination.
+3. Taxonomy or framework problem: an undefined category node, or overlapping sibling categories with a verified shared witness.
+4. Argument-support failure: a strong commitment or synthesis claim whose reasoning chain is absent from its paragraph and section context.
+5. Gap/future-work discussion insufficient: a subtopic with no substantive discussion of unresolved problems, limitations, or future directions.
+6. Comparison insufficient: a research object or subtopic that is discussed but never explicitly compared or evaluated.
+7. Synthesis insufficient: a research object or subtopic that is described but never integrated into a higher-level trend or interpretation.
+8. Survey methodology insufficient: absence of operational boundary statements (time range, venue set, search strategy, inclusion/exclusion criteria).
+9. Contribution novelty insufficient: a contribution claim that does not distinguish itself from available prior surveys.
+10. Missing specific references: a structurally important uncited work identified by citation context or ranking.
+11. Domain coverage insufficient: a structurally important topic community or method family absent from the survey.
+</categories>
 
-TrustSurvey separates survey-quality concerns by verifiability level:
-
-A-Level: internally verifiable from the survey itself, its cited papers, and codifiable norms of survey writing. A-Level issues can be checked from the document's own structure, citations, claims, and stated promises.
-- Gap and future-work discussion insufficient: the survey lacks an explicit discussion of open problems, research gaps, limitations of current work, or future research directions, or includes only a perfunctory mention.
-- Comparison insufficient: the survey summarizes works individually but does not explicitly contrast named methods, systems, datasets, or findings along meaningful dimensions.
-- Method evaluation insufficient: the survey does not provide a dedicated or systematic evaluation-oriented discussion, such as benchmark-based comparison, metric discussion, performance analysis, or empirical comparison.
-- Synthesis / original viewpoint insufficient: the survey mainly lists prior work and lacks cross-paper synthesis, taxonomy, trend analysis, organizing abstractions, or an explicit authorial perspective.
-- Scope / inclusion-criteria declaration missing: the survey does not make its coverage boundary inspectable, e.g., by stating search strategy, inclusion or exclusion criteria, time span, venue scope, language scope, or topic exclusions.
-- Contribution statement missing: the survey does not explicitly state what it contributes as a survey, such as a taxonomy, synthesis, organizing framework, coverage boundary, or practical guidance.
-- Internal inconsistency: the survey makes a scope, contribution, section-title, or organizational promise that is contradicted or not substantively fulfilled by the body content.
-- Hallucination, internal/cited-source side: the survey contains non-existent citations, misattributes a cited paper, or makes a claim about a cited source that does not match that source.
-
-B-Level: externally verifiable given a suitable literature pool. B-Level issues require external evidence, but the obligation should still be determinate rather than a matter of taste.
-- Hallucination, external side: the survey makes an uncited factual claim that is contradicted by relevant literature.
-- Missing specific references: the survey omits a specific reference recoverable from external evidence, including reference surveys, uncited named research objects, or subtopic-relevant landmark papers.
-- Missing specific topics: the survey omits a content category or method family recoverable from the external literature pool and not explicitly scoped out.
-
-C-Level: disagreement-prone even with complete evidence. These issues are outside TrustSurvey's automated scope and should not be treated as primary detected weaknesses unless clearly grounded in A/B evidence.
-- Suggestions on adding references without a determinate omission.
-- Taxonomy or framework preference problems.
-- Evidence depth or argument support judgments that require graded expert taste.
-- Writing clarity, presentation, visualization quality, contribution novelty, or venue-fit judgments.
-
-Evaluate the survey using A-Level and B-Level checks. For each weakness, prefer evidence-linked, itemized findings over broad commentary. If you mention a C-Level concern, put it in comments rather than weaknesses unless it is tied to a concrete A/B-Level violation.
-</evaluation_framework>
+<rules>
+- A Finding is a supported claim about a defect or omission. It requires verbatim evidence. Paraphrase is not evidence.
+- If a proposition cannot be grounded in the supplied survey, its cited sources, or an explicitly retrieved source, place it in Comments.
+- Comments may contain useful observations, candidate concerns, stylistic suggestions, or unsupported claims. They are not scored and are not counted as Findings.
+- Multiple Findings are allowed per category when they concern distinct issues.
+- A retrieved candidate or an uncovered object is not automatically a defect; the Finding must state the evidence and clarify that importance judgment remains open.
+</rules>
 
 Provide your evaluation in the following JSON format. Do not include any text outside the JSON object.
 
-{
-  "summary": "<2-4 sentence overview of the survey's topic, scope, and overall impression>",
-  "strengths": [
-    "<strength 1>",
-    "<strength 2>"
-  ],
-  "weaknesses": [
-    {
-      "issue": "<concise description of the A-Level or B-Level problem>",
-      "issue_type": "<>"
-      "location": "<section/paragraph/sentence where this occurs, quoted or paraphrased>",
-      "evidence": "<specific internal or external evidence supporting the finding>",
-    }
+{{
+  "findings": [
+    {{
+      "finding": "<problem description>",
+      "issue_name": "<exact issue name from the eleven-category list>",
+      "evidence": [
+        {{"verbatim": "<exact evidence passage>", "location": "<section/paragraph/sentence>", "role": "<what this passage establishes>"}}
+      ],
+      "reason": "<step-by-step reasoning from the evidence to the finding>"
+      }}
   ],
   "comments": [
-    {
-      "issue": "<concise description of a less critical or C-Level observation>",
-      "level": "A" | "B" | "C",
-      "location": "<section/paragraph/sentence where this occurs>"
-    }
-  ],
-  "overall_score": <integer 0-100>,
-  "score_justification": "<1-3 sentences explaining the score>"
-}"""
+    {{
+      "issue": "<specific observation or candidate concern>",
+      "location": "<section/paragraph/sentence or retrieval context>",
+      "reason": "<why this remains a Comment rather than a Finding>"
+    }}
+  ]
+}}"""

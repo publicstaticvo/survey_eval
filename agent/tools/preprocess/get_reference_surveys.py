@@ -7,9 +7,7 @@ from typing import Any
 
 import jsonschema
 
-from .section_classify import SectionClassification
 from .sentences import SentenceClassification
-from .contribution_classify import ContributionClassification
 from ..prompts import REFERENCE_SURVEY_SCHEMA, REFERENCE_SURVEY_SELECT
 from ..utility.academic_engine import get_academic_engine
 from ..utility.llmclient import AsyncChat
@@ -64,9 +62,7 @@ class GetReferenceSurveys:
         self.openalex = get_openalex_client(config)
         self.semantic_scholar = get_semantic_scholar_client(config)
         self.academic_engine = get_academic_engine(config)
-        self.sections_llm = SectionClassification(config)
         self.sentence_llm = SentenceClassification(config)
-        self.contribution_llm = ContributionClassification(config)
         self.academic_engine_type = config.default_academic_search_engine
         self.limit = config.reference_survey_search_limit
 
@@ -107,116 +103,6 @@ class GetReferenceSurveys:
             if "review" in publication_types: return paper["cited_by_count"] > 10
         return False
 
-    def _is_openalex_record(self, paper: dict) -> bool:
-        paper_id = str(paper.get("id") or "").strip()
-        return paper_id.startswith("W")
-
-    def _is_semantic_scholar_record(self, paper: dict) -> bool:
-        return bool(
-            paper.get("paperId")
-            or paper.get("corpusId")
-            or (paper.get("externalIds") or {}).get("CorpusId")
-            or (paper.get("external_ids") or {}).get("CorpusId")
-        )
-
-    async def _resolve_openalex(self, survey: dict) -> dict:
-        if self._is_openalex_record(survey):
-            return survey
-        try:
-            return await self.openalex.find_work_by_title(survey["title"], select=self.SELECT) or {}
-        except Exception as exc:
-            print(f"referenceSurveyOpenAlex {survey['title']} {exc}")
-            return {}
-
-    async def _resolve_semantic_scholar(self, survey: dict) -> dict:
-        if self._is_semantic_scholar_record(survey):
-            return survey
-        try:
-            return await self.semantic_scholar.find_work_by_title(survey["title"]) or {}
-        except Exception as exc:
-            print(f"referenceSurveyS2 {survey['title']} {exc}")
-            return {}
-
-    async def _download_openalex_paper(self, metadata: dict) -> tuple[dict | None, set[str]]:
-        if not metadata:
-            return None, set()
-        attempted_urls = set(yield_location(metadata))
-        try:
-            result = await self.openalex_downloader.download_single_paper(
-                metadata,
-                openalex_id=metadata.get("id", ""),
-            )
-            return result, attempted_urls
-        except Exception as exc:
-            print(f"referenceSurveyOpenAlexDownload {metadata.get('title', '')} {exc}")
-            return None, attempted_urls
-
-    async def _download_semantic_scholar_paper(self, metadata: dict, excluded_urls: set[str]) -> dict | None:
-        if not metadata:
-            return None
-        try:
-            return await self.semantic_scholar_downloader.download_single_paper(
-                metadata,
-                excluded_urls=excluded_urls,
-            )
-        except Exception as exc:
-            print(f"referenceSurveyS2Download {metadata.get('title', '')} {exc}")
-            return None
-
-    def _downloaded_paper(self, downloaded: dict | None) -> Paper | None:
-        if not isinstance(downloaded, dict): return
-        content = downloaded.get("full_content")
-        return content if isinstance(content, Paper) else None
-
-    def _downloaded_payload(self, downloaded: dict | None, metadata: dict) -> dict[str, Any]:
-        paper = self._downloaded_paper(downloaded)
-        if paper is None:
-            return {
-                "full_content": None,
-                "abstract": metadata.get("abstract", ""),
-                "titles": [],
-            }
-        return {
-            "full_content": paper,
-            "abstract": (downloaded or {}).get("abstract", "") or metadata.get("abstract", ""),
-            "titles": iter_heading(paper, include_appendix=True),
-        }
-    async def _download_selected_surveys(self, surveys: list[dict]) -> list[dict]:
-
-        async def _single(survey: dict):
-            openalex_meta = await self._resolve_openalex(survey)
-            item = {"openalex": openalex_meta or {}, "semantic_scholar": {}}
-            full_content = None
-            if openalex_meta:
-                full_content, attempted_urls = await self._download_openalex_paper(openalex_meta)
-            else:
-                attempted_urls = set()
-            if not full_content:
-                semantic_meta = await self._resolve_semantic_scholar(survey)
-                item["semantic_scholar"] = semantic_meta or {}
-                full_content = await self._download_semantic_scholar_paper(item["semantic_scholar"], attempted_urls)
-            semantic_meta = item.get("semantic_scholar") or {}
-            metadata = openalex_meta or semantic_meta or survey
-            full_content = self._downloaded_payload(full_content, metadata)
-            paper = full_content["full_content"]
-            if isinstance(paper, Paper):
-                full_content["full_content"] = await self.contribution_llm(await self.sections_llm(await self.sentence_llm(paper)))
-                # full_content["titles"] = iter_heading(full_content["full_content"], include_appendix=True)
-            item["reference_survey_tier"] = survey.get("reference_survey_tier", "")
-            item["reference_survey_reason"] = survey.get("reference_survey_reason", "")
-            item["covered_subtopics"] = survey.get("covered_subtopics", [])
-            item["full_content"] = full_content
-            return item
-
-        tasks = [asyncio.create_task(_single(survey)) for survey in surveys]
-        resolved = []
-        for task in asyncio.as_completed(tasks):
-            item = await task
-            if item:
-                resolved.append(item)
-        print(f"referenceSurveyDownload: {len(resolved)} downloaded surveys")
-        return resolved
-
     async def __call__(self, query: str):
         try:
             surveys_raw = await self._search_surveys(query, self.limit)
@@ -240,7 +126,4 @@ class GetReferenceSurveys:
         print(f"Selected referenceSurvey = {prints}")
         if not selected_candidates:
             return {"reference_surveys": []}
-        # selected = await self._download_selected_surveys(selected_candidates)
-        # if not selected:
-        #     return {"reference_surveys": []}
         return {"reference_surveys": selected_candidates}

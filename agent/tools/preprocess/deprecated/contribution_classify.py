@@ -5,7 +5,7 @@ from typing import Any
 import jsonschema
 import logging
 
-from ..prompts import CONTRIBUTION_CLASSIFICATION, CONTRIBUTION_SCHEMA
+from ..prompts import CONTRIBUTION_CLASSIFICATION, CONTRIBUTION_SCHEMA, TEXTUAL_CLASSIFICATION, TEXTUAL_SCHEMA
 from ..utility.content_walk import iter_sections_with_context
 from ..utility.llmclient import AsyncChat
 from ..utility.paper_elements import Paper, Section, Sentence
@@ -24,6 +24,8 @@ def _walk_sections(paper: Paper):
 
 
 def _walk_paragraphs(paper: Paper):
+    for paragraph in paper.paragraphs:
+        yield "", paragraph.sentences
     if paper.abstract:
         for paragraph in paper.abstract.paragraphs:
             yield "", paragraph.sentences
@@ -172,6 +174,7 @@ class ContributionClassificationClient(AsyncChat):
 
 class ContributionClassification:
     def __init__(self, config: ToolConfig):
+        self.last_report = {"module": "contribution", "success_count": 0, "error_count": 0, "errors": []}
         self.llm = ContributionClassificationClient(config.llm_server_info, config.sampling_params)
 
     def _is_target(self, sentence: Sentence) -> bool:
@@ -190,18 +193,32 @@ class ContributionClassification:
         ]
         return " ".join(context_sentences)
 
-    def _collect_targets(self, paper: Paper) -> list[tuple[Sentence, str, str]]:
+    def _classification_field(self) -> str:
+        return getattr(self, "module_name", "contribution")
+
+    def _collect_targets(
+        self,
+        paper: Paper,
+        only_missing: bool = False,
+    ) -> list[tuple[Sentence, str, str]]:
         targets = []
         section_by_paragraph = {id(paragraph): section_id for section_id, paragraph in _walk_paragraphs(paper)}
         for paragraph in self._paragraphs(paper):
             current_section_id = section_by_paragraph.get(id(paragraph), "")
             for index, sentence in enumerate(paragraph):
-                if self._is_target(sentence):
+                if self._is_target(sentence) and (
+                    not only_missing
+                    or self._classification_field() not in sentence.classified_fields
+                ):
                     targets.append((sentence, self._context(paragraph, index), current_section_id))
         return targets
 
-    async def __call__(self, paper_content: Paper) -> tuple[Paper, dict[str, Any]]:
-        targets = self._collect_targets(paper_content)
+    async def __call__(
+        self,
+        paper_content: Paper,
+        only_missing: bool = False,
+    ) -> tuple[Paper, dict[str, Any]]:
+        targets = self._collect_targets(paper_content, only_missing=only_missing)
         tasks = [
             asyncio.create_task(
                 self.llm.call(inputs={
@@ -214,29 +231,68 @@ class ContributionClassification:
             for sentence, context, current_section_id in targets
         ]
         all_claims = {}
-        for (sentence, _, current_section_id), result in zip(targets, await asyncio.gather(*tasks)):
-            if result["excluded"]:
-                if result["reason"] == "PRIOR_WORK_FALSE_POSITIVE":
-                    sentence.label = "SUMMARY"
-                else:
-                    sentence.claims = []
+        errors = []
+        success_count = 0
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for index, ((sentence, _, current_section_id), result) in enumerate(zip(targets, results)):
+            if isinstance(result, Exception):
+                errors.append({"index": index, "sentence": sentence.text[:200], "error": repr(result)})
                 continue
-
-            sentence_claims = []
-            for claim in result["claims"]:
-                section_key = normalize_claim_section(claim["section"], current_section_id, paper_content)
-                original_sentence = sentence.text.strip()
-                normalized_claim = {
-                    "section": section_key,
-                    "type": claim["type"],
-                    "target": claim["target"],
-                    "original_contribution_sentence": original_sentence,
-                }
-                sentence_claims.append(normalized_claim)
-                all_claims.setdefault(section_key, []).append({
-                    "type": claim["type"],
-                    "target": claim["target"],
-                    "original_contribution_sentence": original_sentence,
-                })
-            sentence.claims = sentence_claims
+            try:
+                success_count += 1
+                if result["excluded"]:
+                    if result["reason"] == "PRIOR_WORK_FALSE_POSITIVE":
+                        sentence.label = "SUMMARY"
+                    elif result["reason"] == "TEXTUAL_CLAIM":
+                        sentence.label = "TEXTUAL"
+                    else:
+                        sentence.claims = []
+                    field = self._classification_field()
+                    if field not in sentence.classified_fields:
+                        sentence.classified_fields.append(field)
+                    continue
+                sentence_claims = []
+                for claim in result["claims"]:
+                    section_key = normalize_claim_section(claim["section"], current_section_id, paper_content)
+                    original_sentence = sentence.text.strip()
+                    normalized_claim = {
+                        "section": section_key,
+                        "type": claim["type"],
+                        "target": claim["target"],
+                        "original_contribution_sentence": original_sentence,
+                    }
+                    sentence_claims.append(normalized_claim)
+                    all_claims.setdefault(section_key, []).append({
+                        "type": claim["type"],
+                        "target": claim["target"],
+                        "original_contribution_sentence": original_sentence,
+                    })
+                sentence.claims = sentence_claims
+                field = self._classification_field()
+                if field not in sentence.classified_fields:
+                    sentence.classified_fields.append(field)
+            except Exception as exc:
+                errors.append({"index": index, "sentence": sentence.text[:200], "error": repr(exc)})
+        self.last_report = {"module": getattr(self, "module_name", "contribution"), "success_count": success_count, "error_count": len(errors), "errors": errors}
         return paper_content, all_claims
+
+class TextualClassificationClient(ContributionClassificationClient):
+    PROMPT = TEXTUAL_CLASSIFICATION
+
+    def _availability(self, response: str, context: dict):
+        result = extract_json(response)
+        jsonschema.validate(result, TEXTUAL_SCHEMA)
+        if not result["excluded"]:
+            for claim in result["claims"]:
+                normalize_claim_section(claim["section"], context["current_section_id"], context["paper"])
+        return result
+
+
+class TextualClassification(ContributionClassification):
+    def __init__(self, config: ToolConfig):
+        self.llm = TextualClassificationClient(config.llm_server_info, config.sampling_params)
+        self.module_name = "textual"
+        self.last_report = {"module": "textual", "success_count": 0, "error_count": 0, "errors": []}
+
+    def _is_target(self, sentence: Sentence) -> bool:
+        return sentence.label == "TEXTUAL" and bool(sentence.text.strip())

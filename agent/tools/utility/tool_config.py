@@ -49,12 +49,22 @@ class ToolConfig:
     topic_sim_threshold: float = 0.55
     topic_papers_search_limit: int = 10
     missing_topic_min_community_size: int = 3
-    missing_topic_min_community_size_ratio: float = 0.005
-    missing_topic_recursive_size_threshold: int = 150
-    missing_topic_recursive_size_ratio: float = 0.02
-    missing_topic_recursive_depth: int = 2
-    missing_topic_leiden_resolution: float = 2.0
+    missing_topic_min_community_size_ratio: float = 0.01
     topic_coverage_search_limit: int = 10
+    literature_pool_query_search_limit: int = 200
+    literature_pool_neighbor_batch_size: int = 200
+    literature_pool_neighbor_max_rounds: int = 2
+    literature_pool_max_papers: int = 1000
+    literature_pool_max_query_keywords: int = 6
+    literature_pool_relevance_batch_size: int = 50
+    literature_pool_relevance_concurrency: int = 8
+    literature_pool_relevance_oversample_factor: int = 3
+    missing_paper_top_k: int = 3
+    missing_paper_judge_batch_size: int = 8
+    missing_topic_top_k: int = 3
+    missing_topic_llm_concurrency: int = 8
+    missing_topic_resolutions: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0)
+    missing_topic_representative_papers: int = 10
     new_paper_topic_similarity_threshold: float = 0.55
     new_paper_reference_overlap_threshold: float = 0.6
     citation_velocity_keep_ratio: float = 0.4
@@ -67,10 +77,10 @@ class ToolConfig:
     confidence_threshold: float = 0.9
     contribution_similarity_threshold: float = 0.65
     internal_consistency_sentence_ratio_threshold: float = 0.4
-    # quality
-    sentence_similarity_threshold: float = 0.97
-    paragraph_similarity_threshold: float = 0.92
-    redundancy_ngram: int = 5
+    sentence_similarity_threshold: float = 0.6
+    paragraph_similarity_threshold: float = 0.6
+    redundancy_ngram: int = 10
+    adequacy_thresholds_path: str = ""
     # websearch
     websearch_url: str = "https://google.serper.dev/search"
     websearch_apikey: str = "6a58924ede5e53c3e3d72ef428236db7654b88ec"
@@ -130,13 +140,24 @@ class ToolConfig:
             rerank_n_documents=config['rerank']['num_documents'],
             topic_papers_search_limit=config.get('topic_papers', {}).get('search_limit', 10),
             missing_topic_min_community_size=config.get('topic_papers', {}).get('missing_topic_min_community_size', 3),
-            missing_topic_min_community_size_ratio=config.get('topic_papers', {}).get('missing_topic_min_community_size_ratio', 0.005),
-            missing_topic_recursive_size_threshold=config.get('topic_papers', {}).get('missing_topic_recursive_size_threshold', 100),
-            missing_topic_recursive_size_ratio=config.get('topic_papers', {}).get('missing_topic_recursive_size_ratio', 0.02),
-            missing_topic_recursive_depth=config.get('topic_papers', {}).get('missing_topic_recursive_depth', 2),
-            missing_topic_leiden_resolution=config.get('topic_papers', {}).get('missing_topic_leiden_resolution', 1.0),
+            missing_topic_min_community_size_ratio=config.get('topic_papers', {}).get('missing_topic_min_community_size_ratio', 0.01),
             topic_coverage_search_limit=config.get('topic_coverage', {}).get('search_limit', 10),
+            literature_pool_query_search_limit=config.get('literature_pool', {}).get('query_search_limit', 200),
+            literature_pool_neighbor_batch_size=config.get('literature_pool', {}).get('neighbor_batch_size', 200),
+            literature_pool_neighbor_max_rounds=config.get('literature_pool', {}).get('neighbor_max_rounds', 2),
+            literature_pool_max_papers=config.get('literature_pool', {}).get('max_papers', 1000),
+            literature_pool_max_query_keywords=config.get('literature_pool', {}).get('max_query_keywords', 6),
+            literature_pool_relevance_batch_size=config.get('literature_pool', {}).get('relevance_batch_size', 50),
+            literature_pool_relevance_concurrency=config.get('literature_pool', {}).get('relevance_concurrency', 8),
+            literature_pool_relevance_oversample_factor=config.get('literature_pool', {}).get('relevance_oversample_factor', 3),
+            missing_paper_top_k=config.get('missing_papers', {}).get('top_k', 3),
+            missing_paper_judge_batch_size=config.get('missing_papers', {}).get('judge_batch_size', 8),
+            missing_topic_top_k=config.get('topic_papers', {}).get('missing_topic_top_k', 3),
+            missing_topic_llm_concurrency=config.get('topic_papers', {}).get('missing_topic_llm_concurrency', 8),
+            missing_topic_resolutions=tuple(config.get('topic_papers', {}).get('missing_topic_resolutions', [0.5, 1.0, 2.0, 4.0, 8.0])),
+            missing_topic_representative_papers=config.get('topic_papers', {}).get('missing_topic_representative_papers', 10),
             new_paper_topic_similarity_threshold=config.get('topic_coverage', {}).get('new_paper_topic_similarity_threshold', 0.55),
+            adequacy_thresholds_path=config.get('adequacy_scoring', {}).get('thresholds_path', ''),
             background_reference_similarity_threshold=config.get('fact_check', {}).get(
                 'background_reference_similarity_threshold',
                 0.6,

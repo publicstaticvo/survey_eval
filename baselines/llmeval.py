@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import re
+import re, os
 import subprocess
 import sys
 from enum import Enum
@@ -17,6 +17,7 @@ if str(PROJECT_PARENT) not in sys.path:
 
 from survey_eval.agent.main import discover_batch_papers, load_paper
 from survey_eval.agent.tools.utility.latex_parser import LatexPaperParser
+from survey_eval.agent.tools.utility.latex_parser.tex_parser import process_input_commands
 from survey_eval.agent.tools.utility.paper_elements import Paper, Paragraph, Section, Sentence
 from survey_eval.agent.tools.utility.utils import extract_json
 from survey_eval.agent.tools.utility.llmclient import AsyncChat
@@ -28,6 +29,9 @@ from survey_eval.baselines.prompts import CC_PROMPT, SYSTEM, USER_ARISE, USER_PL
 INPUT_DIR = Path("data/latex_surveys")
 OUTPUT_ROOT = REPO_ROOT / "baselines" / "llm"
 GRAPH_ENVIRONMENTS = {"figure", "figure*", "table", "table*", "tabular", "longtable"}
+
+DEFAULT_PUBLICATION_DATE = "2026-06-30"
+PDF_DATE_MANIFEST = REPO_ROOT / "agent" / "test_inputs" / "pdf_content_publication_dates.json"
 
 
 class EvalMode(str, Enum):
@@ -55,17 +59,23 @@ class SurveyLLMEvalClient(AsyncChat):
         return result
 
     def _organize_inputs(self, inputs):
-        user_prompt = self._format_user_prompt(USER_PROMPTS[self.mode], inputs)
+        if isinstance(inputs, dict):
+            survey_full_text = inputs["survey_full_text"]
+            publication_date = inputs["publication_date"]
+        else:
+            survey_full_text = inputs
+            publication_date = DEFAULT_PUBLICATION_DATE
+        user_prompt = self._format_user_prompt(USER_PROMPTS[self.mode], survey_full_text, publication_date)
         return [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": user_prompt},
         ], {}
 
-    def _format_user_prompt(self, template: str, inputs: str) -> str:
+    def _format_user_prompt(self, template: str, inputs: str, publication_date: str) -> str:
         try:
-            return template.format(SURVEY_FULL_TEXT=inputs)
+            return template.format(SURVEY_FULL_TEXT=inputs, publication_date=publication_date)
         except (KeyError, ValueError):
-            return template.replace("{SURVEY_FULL_TEXT}", inputs)
+            return template.replace("{SURVEY_FULL_TEXT}", inputs).replace("{publication_date}", publication_date)
 
 
 def _clean_text(text: Any) -> str:
@@ -176,21 +186,105 @@ def _reference_field(entry: dict[str, Any], *names: str) -> str:
 def _format_authors(entry: dict[str, Any]) -> str:
     authors = entry.get("author") or entry.get("authors") or ""
     if isinstance(authors, list):
-        return ", ".join(_clean_text(author) for author in authors if _clean_text(author))
-    return _clean_text(authors)
+        raw_authors = []
+        for author in authors:
+            if isinstance(author, dict):
+                name = author.get("name") or " ".join([*author.get("forenames", []), author.get("surname", "")])
+                raw_authors.append(str(name))
+            elif _clean_text(author):
+                raw_authors.append(str(author))
+    else:
+        raw_authors = re.split(r"\s+and\s+", str(authors)) if str(authors).strip() else []
+    formatted = []
+    for author in raw_authors:
+        author = _clean_text(author)
+        if not author:
+            continue
+        if "," in author:
+            family, given = [part.strip() for part in author.split(",", 1)]
+            author = " ".join(part for part in (given, family) if part)
+        formatted.append(author)
+    return "; ".join(formatted)
 
 
 def _format_reference(key: str, entry: Any) -> str:
     if not isinstance(entry, dict):
         return f"[{key}] {_clean_text(entry)}"
+    info = _clean_text(entry.get("info"))
     authors = _format_authors(entry) or "Unknown authors"
-    title = _reference_field(entry, "title") or "Untitled"
+    title = _reference_field(entry, "title")
     venue = _reference_field(entry, "journal", "booktitle", "venue", "publisher", "school")
     year = _reference_field(entry, "year", "date")
-    tail = ", ".join(part for part in [venue, year] if part)
-    return f"[{key}] {authors}. {title}. {tail}.".rstrip()
+    if not title and info:
+        return f"[{key}] {info}"
+    parts = [authors]
+    if title:
+        parts.append(f'"{title}"')
+    if venue:
+        parts.append(venue)
+    if year:
+        parts.append(year)
+    return f"[{key}] " + ". ".join(parts) + "."
 
 
+def _iter_bibliography(bibliography: Any) -> Iterable[tuple[str, Any]]:
+    if isinstance(bibliography, dict):
+        return ((str(key), entry) for key, entry in bibliography.items())
+    if isinstance(bibliography, list):
+        return ((str(key), "") for key in bibliography)
+    return ()
+
+
+def _citation_number_map(paper: Paper | dict[str, Any]) -> dict[str, int]:
+    """Recover the numeric citation labels assigned while parsing the paper."""
+    mapping: dict[str, int] = {}
+
+    def add_citations(citations: Any) -> None:
+        if not isinstance(citations, dict):
+            return
+        for marker, key in citations.items():
+            try:
+                number = int(marker)
+            except (TypeError, ValueError):
+                continue
+            if key and str(key) not in mapping:
+                mapping[str(key)] = number
+
+    def visit_dict_section(section: Any) -> None:
+        if not isinstance(section, dict):
+            return
+        for paragraph in section.get("paragraphs", []) or []:
+            sentences = paragraph.get("sentences", []) if isinstance(paragraph, dict) else paragraph or []
+            for sentence in sentences:
+                if isinstance(sentence, dict):
+                    add_citations(sentence.get("citations"))
+        for child in section.get("sections", []) or []:
+            visit_dict_section(child)
+
+    if isinstance(paper, Paper):
+        for sentence in paper.get_sentences():
+            add_citations(sentence.citations)
+    else:
+        visit_dict_section(paper.get("abstract"))
+        for section in (*(paper.get("sections", []) or []), *(paper.get("limitation", []) or []), *(paper.get("appendix", []) or [])):
+            visit_dict_section(section)
+    return mapping
+
+
+def _reference_labels(paper: Paper | dict[str, Any], bibliography: Any) -> dict[str, int]:
+    """Return numeric labels for bibliography keys, with stable fallback numbering."""
+    labels = _citation_number_map(paper)
+    used = set(labels.values())
+    next_number = max(used, default=0) + 1
+    for key, _ in _iter_bibliography(bibliography):
+        key = str(key)
+        if key not in labels:
+            while next_number in used:
+                next_number += 1
+            labels[key] = next_number
+            used.add(next_number)
+            next_number += 1
+    return labels
 def render_paper_markdown(paper: Paper | dict[str, Any]) -> str:
     counters = {"figure": 0, "table": 0}
     lines = [f"# {_paper_title(paper)}"]
@@ -226,8 +320,14 @@ def render_paper_markdown(paper: Paper | dict[str, Any]) -> str:
 
     if bibliography:
         lines.append("## References")
-        for key, entry in bibliography.items():
-            lines.append(_format_reference(str(key), entry))
+        labels = _reference_labels(paper, bibliography)
+        references = sorted(
+            _iter_bibliography(bibliography),
+            key=lambda item: labels.get(str(item[0]), float("inf")),
+        )
+        for key, entry in references:
+            key = str(key)
+            lines.append(_format_reference(str(labels.get(key, key)), entry))
 
     return "\n\n".join(line for line in lines if _clean_text(line))
 
@@ -240,8 +340,10 @@ def iter_input_paths(input_dir: Path) -> list[Path]:
     tex_files = [path for path in children if path.is_file() and path.suffix.lower() == ".tex"]
     if tex_files:
         return [input_dir]
+    json_files = [path for path in children if path.is_file() and path.suffix.lower() == ".json"]
+    if json_files:
+        return json_files
     return [batch_paper.source_path for batch_paper in discover_batch_papers(input_dir)]
-
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
     if path.exists():
@@ -271,30 +373,101 @@ def resolve_output_path(
     return output_root / title_slug / f"{mode.value.lower()}.json"
 
 
-def load_llm_input(path: Path) -> tuple[str, Paper | dict[str, Any] | None]:
+def _load_native_latex(path: Path) -> str:
+    """Expand TeX inputs and append external bibliography sources for the native baseline."""
+    parser = LatexPaperParser()
+    source_path = path
+    if source_path.is_dir():
+        main_path = parser._find_main_tex(source_path)
+        if not main_path:
+            raise FileNotFoundError(f"No TeX file found in {source_path}")
+        main_path = Path(main_path)
+    else:
+        main_path = source_path
+    base_path = main_path.parent
+    raw_content = parser._read_text_file(main_path)
+    processed_content = process_input_commands(raw_content, str(base_path))
+    bibliography_blocks = []
+    for match in re.finditer(r"\\bibliography\s*\{([^{}]*)\}", raw_content):
+        for name in match.group(1).split(","):
+            stem = name.strip()
+            if not stem:
+                continue
+            stem = stem.removesuffix(".bib").removesuffix(".bbl")
+            for suffix in (".bbl", ".bib"):
+                bibliography_path = base_path / f"{stem}{suffix}"
+                if bibliography_path.is_file():
+                    bibliography_blocks.append(
+                        f"% Native baseline bibliography source: {bibliography_path.name}\n{parser._read_text_file(bibliography_path)}"
+                    )
+                    break
+    if bibliography_blocks:
+        processed_content = processed_content.rstrip() + "\n\n" + "\n\n".join(bibliography_blocks)
+    return processed_content
+
+
+def load_llm_input(path: Path, render_markdown: bool = False) -> tuple[str, Paper | dict[str, Any] | None]:
+    """Return native TeX/JSON by default, or a parsed Markdown view when requested."""
     if path.suffix.lower() == ".json":
         paper = load_paper(path)
-        return render_paper_markdown(paper), paper
+        if render_markdown:
+            return render_paper_markdown(paper), paper
+        return path.read_text(encoding="utf-8"), paper
+
+    if not render_markdown:
+        return _load_native_latex(path), None
 
     parser = LatexPaperParser()
-    parser._prepare_source(path)
-    return parser.latex_content, None
+    paper = parser.parse(path)
+    if paper is None:
+        raise ValueError(f"Could not parse TeX input for Markdown rendering: {path}")
+    return render_paper_markdown(paper), paper
+
+def _publication_date_for_path(path: Path) -> str:
+    """Resolve the date used as the literature cutoff for one survey input."""
+    resolved = path.resolve()
+    pdf_root = (REPO_ROOT / "agent" / "test_inputs" / "pdf_content").resolve()
+    crawled_root = (REPO_ROOT / "agent" / "test_inputs" / "crawled_surveys").resolve()
+    if pdf_root in resolved.parents or resolved == pdf_root:
+        if PDF_DATE_MANIFEST.is_file() and path.is_file():
+            manifest = json.loads(PDF_DATE_MANIFEST.read_text(encoding="utf-8"))
+            entry = manifest.get(path.name) or {}
+            if entry.get("publication_date"):
+                return entry["publication_date"]
+        return DEFAULT_PUBLICATION_DATE
+    if crawled_root in resolved.parents or resolved == crawled_root:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return str(data.get("publication_date") or DEFAULT_PUBLICATION_DATE)
+    return DEFAULT_PUBLICATION_DATE
 
 
-def _claude_code_requirements(mode: EvalMode) -> str:
+def _claude_code_requirements(mode: EvalMode, publication_date: str) -> str:
+    """Extract only evaluation instructions; Claude Code reads the survey from the path."""
     prompt = USER_PROMPTS[mode]
-    survey_end = prompt.index("</survey>") + len("</survey>")
-    return prompt[survey_end:].strip().replace("{{", "{").replace("}}", "}")
-
+    prompt = re.sub(r"<survey>.*?</survey>\s*", "", prompt, count=1, flags=re.DOTALL)
+    prompt = prompt.strip().format(publication_date=publication_date, SURVEY_FULL_TEXT="")
+    return prompt.replace("{{", "{").replace("}}", "}")
 
 def build_claude_code_prompt(args: argparse.Namespace) -> str:
     mode = EvalMode(args.mode.upper())
     return CC_PROMPT.format(
         input_dir=str(Path(args.input_dir).resolve()),
-        requirements=_claude_code_requirements(mode),
+        requirements=_claude_code_requirements(mode, _publication_date_for_path(Path(args.input_dir))),
         output_file=args.output_file,
     )
 
+
+def _top_level_baseline_files() -> set[Path]:
+    baselines_root = REPO_ROOT / "baselines"
+    if not baselines_root.is_dir():
+        return set()
+    return {path.resolve() for path in baselines_root.iterdir() if path.is_file()}
+
+
+def _remove_new_top_level_baseline_files(before: set[Path]) -> None:
+    for path in sorted(_top_level_baseline_files() - before):
+        path.unlink()
 
 def run_claude_code_eval(args: argparse.Namespace) -> None:
     if not args.output_file:
@@ -304,19 +477,24 @@ def run_claude_code_eval(args: argparse.Namespace) -> None:
         raise SystemExit(f"Output file already exists: {output_path}")
     args.output_file = str(output_path)
     prompt = build_claude_code_prompt(args)
-    print("Start!")
-    subprocess.run(["claude", "-p", prompt, "--dangerously-skip-permissions"], check=True)
-    print("Finish!")
+    baseline_files = _top_level_baseline_files()
+    try:
+        print(f"Start! evaluation with model {os.environ.get('ANTHROPIC_MODEL', None)}")
+        subprocess.run(["claude", "-p", prompt, "--dangerously-skip-permissions"], check=True)
+        print("Finish!")
+    finally:
+        _remove_new_top_level_baseline_files(baseline_files)
 
 
-async def evaluate_one(path: Path, client: SurveyLLMEvalClient, output_root: Path, output_file: str | None) -> Path:
-    survey_full_text, paper = load_llm_input(path)
+async def evaluate_one(path: Path, client: SurveyLLMEvalClient, output_root: Path, output_file: str | None, render_markdown: bool = False) -> Path:
+    survey_full_text, paper = load_llm_input(path, render_markdown=render_markdown)
+    survey_full_text = f"\n<survey>\n{survey_full_text}\n</survey>\n"
     output_path = resolve_output_path(output_root, client.mode, path, paper, output_file)
     if output_path.exists():
         raise FileExistsError(f"Output file already exists: {output_path}")
     print(f"Save to: {output_path}")
-    print("Start!")
-    result = await client.call(inputs=survey_full_text)
+    print(f"Start! evaluation with model {client.llm.model}")
+    result = await client.call(inputs={"survey_full_text": survey_full_text, "publication_date": _publication_date_for_path(path)})
     print("Finish!")
     write_json(output_path, result)
     return output_path
@@ -346,7 +524,7 @@ async def main_async(args: argparse.Namespace) -> list[Path]:
     async def evaluate_with_report(path: Path) -> Path | None:
         output_file = output_file_for_path(args.output_file, path, include_input_name)
         try:
-            output_path = await evaluate_one(path, client, output_root, output_file)
+            output_path = await evaluate_one(path, client, output_root, output_file, args.render_paper_markdown)
             print(f"Saved {mode.value} evaluation for {path}")
             return output_path
         except Exception as exc:
@@ -376,6 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=[mode.value for mode in EvalMode], default=EvalMode.PLAIN.value)
     parser.add_argument("--tool-config", default=None, help="Optional ToolConfig yaml path.")
     parser.add_argument("--max-concurrency", type=int, default=2, help="Maximum concurrent LLM evaluations for --backend llm.")
+    parser.add_argument("--render-paper-markdown", action="store_true", help="Parse the source and send a Markdown rendering, including parsed references, instead of native TeX/JSON.")
     return parser
 
 

@@ -1,4 +1,4 @@
-from importlib import import_module
+﻿from importlib import import_module
 
 
 _EXPORTS = {
@@ -15,12 +15,15 @@ _EXPORTS = {
     "FindAllEntities": ".preprocess.find_all_entities",
     "GetReferenceSurveys": ".preprocess.get_reference_surveys",
     "BuildLiteraturePool": ".preprocess.literature_pool",
+    "LiteraturePoolFilter": ".preprocess.literature_filter",
     "SentenceClassification": ".preprocess.sentences",
     "PaperContentClassification": ".preprocess.paper_content_classify",
     "minimum_completion": ".preprocess.minimum_completion",
     "MissingPaperCheck": ".scope.missing_papers",
     "TopicCoverage": ".scope.topic_coverage",
     "UncitedEntities": ".scope.uncited_entities",
+    "TaxonomyFrameworkProblemDetector": ".cclass.taxonomy_framework_problem",
+    "EvidenceSupportDetector": ".cclass.evidence_support_insufficient",
     "ToolConfig": ".utility.tool_config",
     "WebSearchFallback": ".preprocess.websearch",
     "XMLPaperParser": ".utility.xml_parser",

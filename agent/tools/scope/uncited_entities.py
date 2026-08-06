@@ -26,9 +26,8 @@ class JudgeUncitedBatchClient(AsyncChat):
     def _candidate_text(self, papers: list[dict[str, Any]]) -> str:
         blocks = []
         for idx, paper in enumerate(papers, start=1):
-            title = str(paper.get("title") or "").strip()
             abstract = str(paper.get("abstract") or "").strip()
-            blocks.append(f"[{idx}] Title: {title}\n    Abstract: {abstract}")
+            blocks.append(f"[{idx}] Abstract: {abstract}")
         return "\n".join(blocks)
 
     def _availability(self, response, context):
@@ -69,7 +68,7 @@ class JudgeUncitedBatchClient(AsyncChat):
                 assert evidence, "Yes decision with no evidence"
             if evidence:
                 paper = papers[item["paper_index"] - 1]
-                source_text = f"{paper.get('title', '')}\n{paper.get('abstract', '')}"
+                source_text = str(paper.get("abstract", ""))
                 verified, _ = self.check.verify([evidence], source_text)
                 assert verified, f"Evidence invalid: {evidence}"
         return result

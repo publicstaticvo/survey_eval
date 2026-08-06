@@ -78,6 +78,7 @@ class OpenAlexRateLimitExceeded(RuntimeError):
         if self.retry_after is not None:
             message = f"{message} (retryAfter={self.retry_after})"
         super().__init__(message)
+
 class OpenAlexBudgetExceeded(RuntimeError):
     def __init__(self, payload: dict | None = None, status: int | None = None, headers: dict | None = None):
         self.payload = payload or {}
@@ -129,10 +130,9 @@ def raise_openalex_error(payload: dict | None, status: int | None = None, header
 
 # =============== Global Semaphore ===============
 class RateLimit:
-    AGENT_SEMAPHORE = asyncio.Semaphore(50)                # LLM
+    AGENT_SEMAPHORE = asyncio.Semaphore(30)                # LLM
     DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     LATEX_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(20)
-    CITATION_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(4)
     SBERT_SEMAPHORE = asyncio.Semaphore(20)                 # LLM
     PARSE_SEMAPHORE = asyncio.Semaphore(4)                 # GROBID docker闂€婊冨剼閺堫剙婀寸憴锝嗙€?
     WEBSEARCH_SEMAPHORE = asyncio.Semaphore(50)

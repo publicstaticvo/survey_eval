@@ -4,7 +4,7 @@ from typing import Any, List, Tuple
 
 import jsonschema
 
-from ..prompts import SECTION_CLASSIFICATION, SECTION_SCHEMA, CONTENT_TAGS
+from ..prompts import SECTION_CLASSIFICATION, SECTION_SCHEMA
 from ..utility.llmclient import AsyncChat
 from ..utility.paper_elements import Paper, Paragraph, Section
 from ..utility.tool_config import ToolConfig
@@ -18,9 +18,6 @@ class SectionClassificationClient(AsyncChat):
     def _availability(self, response: str, context: dict):
         result = extract_json(response)
         jsonschema.validate(result, SECTION_SCHEMA)
-        result["content_tags"] = list(set(result["content_tags"]))
-        if "GENERAL" in result["content_tags"] and len(result["content_tags"]) > 1:
-            result["content_tags"].remove("GENERAL")
         return result
 
     def _text_sentences(self, paragraph: Paragraph) -> list:
@@ -53,22 +50,34 @@ class SectionClassificationClient(AsyncChat):
 
 class SectionClassification:
     def __init__(self, config: ToolConfig):
+        self.last_report = {"module": "section", "success_count": 0, "error_count": 0, "errors": []}
         self.llm = SectionClassificationClient(config.llm_server_info, config.sampling_params)
 
-    def _collect_targets(self, content: Section, parent_title: str = "") -> List[Tuple[Section | Paragraph, str, str]]:
+    def _collect_targets(
+        self,
+        content: Section,
+        parent_title: str = "",
+        only_missing: bool = False,
+    ) -> List[Tuple[Section | Paragraph, str, str]]:
         targets = []
         current_title = content.name
         for paragraph in content.paragraphs:
-            if paragraph.name:
+            if paragraph.name and (not only_missing or not paragraph.functional_type):
                 targets.append((paragraph, "paragraph", current_title))
         for section in content.children:
-            if section.name:
+            if section.name and (not only_missing or not section.functional_type):
                 targets.append((section, "section", parent_title))
-            targets.extend(self._collect_targets(section, section.name))
+            targets.extend(
+                self._collect_targets(
+                    section,
+                    section.name,
+                    only_missing=only_missing,
+                )
+            )
         return targets
 
-    async def __call__(self, paper_content: Paper) -> Paper:
-        targets = self._collect_targets(paper_content)
+    async def __call__(self, paper_content: Paper, only_missing: bool = False) -> Paper:
+        targets = self._collect_targets(paper_content, only_missing=only_missing)
         tasks = [
             asyncio.create_task(
                 self.llm.call(inputs={
@@ -80,9 +89,18 @@ class SectionClassification:
             )
             for item, kind, parent_title in targets
         ]
-        logging.info(f"section classify for paper {paper_content.title}")
-        for (item, _, _), result in zip(targets, await asyncio.gather(*tasks, return_exceptions=True)):
-            if not isinstance(result, dict): continue
-            item.functional_type = result["functional_type"]
-            item.content_tags = result["content_tags"]
+        logging.info(f"section classify for paper {paper_content.title} use {len(tasks)} sentences")
+        success_count = 0
+        errors = []
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for index, ((item, _, _), result) in enumerate(zip(targets, results)):
+            if isinstance(result, Exception):
+                errors.append({"index": index, "item": getattr(item, "name", ""), "error": repr(result)})
+                continue
+            try:
+                item.functional_type = result["functional_type"]
+                success_count += 1
+            except Exception as exc:
+                errors.append({"index": index, "item": getattr(item, "name", ""), "error": repr(exc)})
+        self.last_report = {"module": "section", "success_count": success_count, "error_count": len(errors), "errors": errors}
         return paper_content

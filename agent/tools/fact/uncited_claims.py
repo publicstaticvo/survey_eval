@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import re
@@ -195,6 +195,7 @@ class UncitedClaimVerifier:
         except Exception as exc:
             result = {"claim": claim_text, "judgment": "ERROR", "evidence": "", "reason": f"priority fact check error: {type(exc).__name__}: {exc}", "score": 0.0, "material": "title_abstract", "sources": []}
 
+        supported_by_external_search = False
         if result.get("judgment") == "NEUTRAL":
             try:
                 candidates = await self._search_academic_engine(claim_text)
@@ -212,6 +213,7 @@ class UncitedClaimVerifier:
                 float(search_result.get("score", 0.0)),
                 result,
             ):
+                supported_by_external_search = search_result.get("judgment") == "SUPPORTED"
                 result = search_result
 
         return {
@@ -220,6 +222,7 @@ class UncitedClaimVerifier:
             "claim_type": claim.get("claim_type", ""),
             "citation_keys": self._claim_citation_keys(claim),
             "kind": "uncited_fact_check",
+            "supported_by_external_search": supported_by_external_search,
             **result,
         }
 
@@ -243,7 +246,11 @@ class UncitedClaimVerifier:
                 "claim_type": claim.get("claim_type", ""),
                 "citation_keys": self._claim_citation_keys(claim),
                 "kind": "uncited_fact_check",
+                "supported_by_external_search": None,
                 "judgment": "ERROR",
                 "reason": f"{type(result).__name__}: {result}",
             })
         return checked
+
+
+

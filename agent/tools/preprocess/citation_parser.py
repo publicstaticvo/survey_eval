@@ -81,11 +81,10 @@ class CitationParser:
         downloaded = None
         attempted_urls = set(yield_location(matched_metadata))
         try:
-            async with RateLimit.CITATION_DOWNLOAD_SEMAPHORE:
-                downloaded = await self.paper_downloader.download_single_paper(
-                    matched_metadata,
-                    openalex_id=matched_metadata.get("id", ""),
-                )
+            downloaded = await self.paper_downloader.download_single_paper(
+                matched_metadata,
+                openalex_id=matched_metadata.get("id", ""),
+            )
         except Exception as exc:
             print(f"CitationParser openalex download failed: {matched_metadata.get('title', '')} {exc}")
         info["_attempted_openalex_urls"] = list(attempted_urls)
@@ -103,11 +102,10 @@ class CitationParser:
         downloaded = None
         excluded_urls = set(info.get("_attempted_openalex_urls", []) or [])
         try:
-            async with RateLimit.CITATION_DOWNLOAD_SEMAPHORE:
-                downloaded = await self.semantic_scholar_downloader.download_single_paper(
-                    matched_metadata,
-                    excluded_urls=excluded_urls,
-                )
+            downloaded = await self.semantic_scholar_downloader.download_single_paper(
+                matched_metadata,
+                excluded_urls=excluded_urls,
+            )
         except Exception as exc:
             print(f"CitationParser semantic scholar download failed: {matched_metadata.get('title', '')} {exc}")
         if downloaded:

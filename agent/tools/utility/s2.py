@@ -49,7 +49,8 @@ class SemanticScholar:
         timeout_retry_count = 0
         while True:
             try:
-               async with RateLimit.S2_SEMAPHORE:
+                retry_after = None
+                async with RateLimit.S2_SEMAPHORE:
                     async with session.request(
                         method.upper(),
                         url,
@@ -65,10 +66,13 @@ class SemanticScholar:
                                 resp.raise_for_status()
                             if retry_count == 1 or retry_count % 5 == 0:
                                 print(f"SemanticScholar 429 retrying {endpoint}, attempts={retry_count}")
-                            await asyncio.sleep(random.uniform(1.0, 2.0))
-                            continue
-                        resp.raise_for_status()
-                        return await resp.json()
+                            retry_after = random.uniform(1.0, 2.0)
+                        else:
+                            resp.raise_for_status()
+                            return await resp.json()
+                if retry_after is not None:
+                    await asyncio.sleep(retry_after)
+                    continue
             except asyncio.TimeoutError:
                 timeout_retry_count += 1
                 if self.retry_count >= 0 and timeout_retry_count > self.retry_count:

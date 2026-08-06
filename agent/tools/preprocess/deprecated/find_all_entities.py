@@ -63,6 +63,7 @@ class FindAllEntitiesClient(AsyncChat):
 
 class FindAllEntities:
     def __init__(self, config: ToolConfig):
+        self.last_report = {"module": "entities", "success_count": 0, "error_count": 0, "errors": []}
         self.find_entities = FindAllEntitiesClient(config.llm_server_info, config.sampling_params)
 
     def _normalize_entity_name(self, name: str) -> str:
@@ -111,15 +112,23 @@ class FindAllEntities:
                 return candidate_key
         return None
 
-    async def __call__(self, query: str, paper: Paper) -> Paper:
+    async def __call__(
+        self,
+        query: str,
+        paper: Paper,
+        only_missing: bool = False,
+    ) -> Paper:
         paragraphs = list(iter_paragraphs(paper, include_abstract=True, include_appendix=True))
         tasks = []
         task_paragraphs: list[tuple[Paragraph, str]] = []
         for paragraph in paragraphs:
+            if only_missing and paragraph.entities_classified:
+                continue
             text = paragraph_to_text(paragraph, False)
             if not text:
                 paragraph.entities = []
                 paragraph.alias_pairs = []
+                paragraph.entities_classified = True
                 continue
             task_paragraphs.append((paragraph, text))
             tasks.append(asyncio.create_task(self.find_entities.call(inputs={"paragraph": text, "query": query})))
@@ -128,15 +137,22 @@ class FindAllEntities:
         paragraph_entity_keys: dict[int, list[str]] = {}
         logging.info("Find all entities...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for (paragraph, _text), result in zip(task_paragraphs, results):
-            if not isinstance(result, dict):
-                print(f"FindAllEntities {result}")
+        errors = []
+        success_count = 0
+        for index, ((paragraph, _text), result) in enumerate(zip(task_paragraphs, results)):
+            if isinstance(result, Exception):
+                errors.append({"index": index, "paragraph": _text[:200], "error": repr(result)})
                 paragraph.entities = []
                 paragraph.alias_pairs = []
                 continue
-
+            if not isinstance(result, dict):
+                errors.append({"index": index, "paragraph": _text[:200], "error": f"unexpected result type: {type(result).__name__}"})
+                paragraph.entities = []
+                paragraph.alias_pairs = []
+                continue
+            success_count += 1
             paragraph.alias_pairs = result["alias_pairs"]
+            paragraph.entities_classified = True
             keys = []
             for entry in result["entities"]:
                 name = entry["name"]
@@ -144,12 +160,10 @@ class FindAllEntities:
                 self._add_alternative_name(info, name)
                 info["sentence_has_citation"] = info["sentence_has_citation"] or entry["locally_cited"]
                 keys.append(self._entity_key(info["original_name"]))
-
             for full_name, short_name in result["alias_pairs"]:
                 full_info = self._ensure_entity(entities_dict, full_name)
                 short_info = self._ensure_entity(entities_dict, short_name)
                 short_info["alias_pairs"] = full_info["original_name"]
-
             paragraph_entity_keys[id(paragraph)] = list(dict.fromkeys(keys))
 
         for key, info in entities_dict.items():
@@ -168,7 +182,7 @@ class FindAllEntities:
                     info["alias_pairs"] = matched_info["original_name"]
                 self._add_alternative_name(info, matched_info["original_name"])
 
-        for paragraph in paragraphs:
+        for paragraph, _text in task_paragraphs:
             paragraph.entities = []
             for key in paragraph_entity_keys.get(id(paragraph), []):
                 info = entities_dict[key]
@@ -180,4 +194,5 @@ class FindAllEntities:
                 })
             if paragraph.alias_pairs is None:
                 paragraph.alias_pairs = []
+        self.last_report = {"module": "entities", "success_count": success_count, "error_count": len(errors), "errors": errors}
         return paper

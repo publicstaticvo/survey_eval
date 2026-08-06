@@ -1,0 +1,170 @@
+graph_edges,keyword_filter_relaxed,local_citations,matched_citations,paper_id,pool_nodes,query,query_source,returned_results,status,title
+2666,False,98,26,1,1000,algorithmic recourse,title_rule,196,cached,Grounding and Validation of Algorithmic Recourse in Real-World Contexts: A Systematized Literature Review
+3246,False,190,10,2,1000,deep learning theorem proving,title_rule,195,cached,A Survey on Deep Learning for Theorem Proving
+4192,False,32,10,3,1000,large language models,title_rule,195,cached,"Systematic Review of Large Language Models: Applications, Limitations, Practical Usages and Future Directions"
+3181,False,167,24,4,1000,causal reinforcement learning,r5_history,192,cached,Causal Reinforcement Learning: A Survey
+5035,False,59,12,5,1000,verifiable cross-silo federated learning,r5_history,192,cached,A Survey on Verifiable Cross-Silo Federated Learning
+1971,False,73,6,6,1000,flow matching,title_rule,196,cached,A Survey of Flow Matching in Reinforcement Learning
+1791,False,136,12,7,1000,multimodal automated fact checking,title_rule,194,cached,Multimodal Automated Fact-Checking: A Survey
+1470,False,44,2,8,1000,neurips dataset management practices,title_rule,197,cached,A Systematic Review of NeurIPS Dataset Management Practices
+2263,False,113,4,9,1000,retrieval augmented multimodal generation,r5_history,189,cached,Retrieving Multimodal Information for Augmented Generation: A Survey
+2724,False,54,7,10,1000,AI retrosynthetic planning,r5_history,184,cached,On AI-centered Retrosynthetic Planning: a Survey
+3482,False,139,9,11,1000,permutation invariant neural networks,title_rule,186,cached,On permutation-invariant neural networks: A survey
+3628,False,177,17,12,1000,missing modality multimodal learning,r5_history,194,cached,Deep Multimodal Learning with Missing Modality: A Survey
+2876,False,103,8,13,1000,transformers in reinforcement learning,r5_history,195,cached,A Survey on Transformers in Reinforcement Learning
+3001,False,74,8,14,1000,multi dimensional bin packing problem,title_rule,197,cached,Machine Learning for the Multi-Dimensional Bin Packing Problem: Literature Review and Empirical Evaluation
+4475,False,55,7,15,1000,adaptive physics informed neural networks,title_rule,194,cached,Adaptive Physics-informed Neural Networks: A Survey
+1258,False,84,0,16,1000,scientific rigor studied,title_rule,194,cached,Survey of Scientific Rigor Studied in Machine Learning
+3794,False,107,40,17,1000,safe reinforcement learning,r5_history,194,cached,"Provably Safe Reinforcement Learning: Conceptual Analysis, Survey, and Benchmarking"
+4262,False,123,6,18,1000,explainable visual forgery detection,title_rule,198,cached,Explainable Visual Forgery Detection: A Survey
+2356,False,336,19,19,1000,information retrieval model architectures,r5_history,187,cached,A Survey of Model Architectures in Information Retrieval
+1792,False,105,19,20,1000,abstraction reasoning corpus,title_rule,192,cached,A Survey on the Abstraction and Reasoning Corpus
+1120,False,39,6,21,1000,LLM GUI agents benchmark,r5_history,185,cached,A Survey on Benchmarks of LLM-based GUI Agents
+1169,False,136,8,22,1000,large language model brained gui agents,title_rule,194,cached,Large Language Model-Brained GUI Agents: A Survey
+2209,False,147,8,23,1000,augmented language models,title_rule,182,cached,Augmented Language Models: a Survey
+0,False,250,0,24,1,unifying vxai,title_rule,16,cached,Unifying VXAI: A Systematic Review and Framework for the Evaluation of Explainable AI
+1752,False,161,19,25,1000,discrete audio tokens,title_rule,186,cached,Discrete Audio Tokens: More Than a Survey!
+5473,False,390,44,26,1000,knowledge distillation,r5_history,196,cached,A Comprehensive Survey on Knowledge Distillation
+2623,False,185,4,27,1000,augmented vision language models,title_rule,197,cached,Augmented Vision-Language Models: A Systematic Review
+2868,False,295,27,28,1000,reinforcement learning from human feedback,r5_history,195,cached,A Survey of Reinforcement Learning from Human Feedback
+3892,False,68,14,29,1000,neural networks,title_rule,194,cached,Hardware Acceleration for Neural Networks: A Comprehensive Survey
+4192,False,248,21,30,1000,large language models,title_rule,195,cached,Personalization of Large Language Models: A Survey
+1407,False,141,2,31,1000,memorisation in machine learning,r5_history,197,cached,Memorisation in Machine Learning: A Survey of Results
+4034,False,111,12,32,1000,video diffusion models,title_rule,179,cached,Video Diffusion Models: A Survey
+2146,False,63,6,33,1000,gans class conditioning methods,title_rule,196,cached,GANs Class-Conditioning Methods: A Survey
+4438,False,83,9,34,1000,out distribution detection,title_rule,200,cached,A Survey on Out-of-Distribution Detection in NLP
+4046,False,148,7,35,1000,conditional image synthesis diffusion models,r5_history,195,cached,Conditional Image Synthesis with Diffusion Models: A Survey
+3169,False,143,19,36,1000,fairness without demographics,title_rule,194,cached,A Survey on Fairness Without Demographics
+5706,False,144,9,38,1000,metaheuristic algorithm design,r5_history,200,cached,Automated Design of Metaheuristic Algorithms: A Survey
+2521,False,27,0,39,1000,large language model data science agent,title_rule,197,cached,Large Language Model-based Data Science Agent: A Survey
+2943,False,191,19,40,1000,coresets deep learning,title_rule,187,cached,Survey on Coresets for Deep Learning: Methods and Applications
+2306,False,108,9,41,1000,efficient diffusion models,r5_history,194,cached,Efficient Diffusion Models: A Survey
+1601,False,108,5,42,1000,efficient reasoning models,r5_history,196,cached,Efficient Reasoning Models: A Survey
+2539,False,185,16,43,1000,efficient large language models,r5_history,195,cached,Efficient Large Language Models: A Survey
+2482,False,91,41,44,1000,lottery ticket hypothesis,title_rule,187,cached,A Survey of Lottery Ticket Hypothesis
+2855,False,78,11,45,1000,uncertainty in graph neural networks,r5_history,197,cached,Uncertainty in Graph Neural Networks: A Survey
+3218,False,72,13,46,1000,efficient protein language models,title_rule,196,cached,A Survey on Efficient Protein Language Models
+1889,False,224,3,47,1000,data selection language models,title_rule,200,cached,A Survey on Data Selection for Language Models
+3638,False,86,1,48,1000,data distillation,title_rule,194,cached,Data Distillation: A Survey
+3068,False,191,7,49,1000,privacy risks preservation methods explainable artificial,title_rule,197,cached,Privacy Risks and Preservation Methods in Explainable Artificial Intelligence: A Scoping Review
+5068,False,60,8,50,1000,self supervised representation learning,title_rule,189,cached,A Survey on Self-Supervised Representation Learning
+2078,False,51,3,51,1000,vision-language-action robotics,r5_history,193,cached,"Vision-Language-Action in Robotics: A Survey of Datasets, Benchmarks, and Data Engines"
+2049,False,149,0,52,1000,landscape spoken language models,title_rule,199,cached,On The Landscape of Spoken Language Models: A Comprehensive Survey
+3942,False,124,9,53,1000,deep learning optimization convergence generalization,r5_history,196,cached,A Survey of Optimization Methods for Training DL Models: Theoretical Perspective on Convergence and Generalization
+1678,False,148,15,54,1000,LLM scientific idea generation,r5_history,194,cached,Large Language Models for Scientific Idea Generation: A Creativity-Centered Survey
+1650,False,104,1,55,1000,reasoning agentic systems,title_rule,196,cached,A Survey of Reasoning and Agentic Systems in Time Series with Large Language Models
+5358,False,34,2,56,1000,backdoor attacks image recognition,r5_history,194,cached,Countering Backdoor Attacks in Image Recognition: A Survey and Evaluation of Mitigation Strategies
+1057,False,202,0,57,1000,models systems,title_rule,197,cached,From Models to Systems: A Comprehensive Survey of Efficient Multimodal Learning
+2344,False,92,6,58,1000,over-smoothing over-squashing graph neural networks,r5_history,191,cached,A Survey on Over-smoothing and Over-squashing: Unified Propagation Perspectives on Graph Neural Networks and Transformers
+5098,False,142,15,59,1000,image self-supervised learning,r5_history,199,cached,Know Your Self-supervised Learning: A Survey on Image-based Generative and Discriminative Training
+4135,False,255,22,60,1000,machine learning with physics knowledge,r5_history,196,cached,Machine Learning with Physics Knowledge for Prediction: A Survey
+2827,False,294,11,61,1000,large language models societal domains,r5_history,195,cached,"A Survey on Large Language Models for Critical Societal Domains: Finance, Healthcare, and Law"
+1906,False,189,0,62,1000,security foundation model era,title_rule,200,cached,AI Security in the Foundation Model Era: A Comprehensive Survey from a Unified Perspective
+2443,False,129,6,63,1000,implicit reasoning large language models,title_rule,199,cached,Implicit Reasoning in Large Language Models: A Comprehensive Survey
+3114,False,74,8,64,1000,adversarial attacks multimodal large language models,r5_history,194,cached,Adversarial Attacks on Multimodal Large Language Models: A Comprehensive Survey
+2214,False,58,0,65,1000,software engineering tasks,title_rule,193,cached,Code Reasoning for Software Engineering Tasks: A Survey and A Call to Action
+1222,False,200,15,66,1000,agentic reinforcement learning llms,title_rule,193,cached,The Landscape of Agentic Reinforcement Learning for LLMs: A Survey
+3198,False,193,8,67,1000,brain encoding decoding neural networks,r5_history,199,cached,Deep Neural Networks and Brain Alignment: Brain Encoding and Decoding (Survey)
+3741,False,214,4,68,1000,collaborative learning,r5_history,195,cached,From Euclidean to Graph-Structured Data: A Survey of Collaborative Learning
+4368,False,85,18,69,1000,graph neural networks graph types,r5_history,198,cached,Graph Neural Networks Designed for Different Graph Types: A Survey
+3330,False,143,15,70,1000,multi agent communication,title_rule,196,cached,"The Five Ws of Multi-Agent Communication: Who Talks to Whom, When, What, and Why - A Survey from MARL to Emergent Language and LLMs"
+3915,False,310,24,71,1000,multi agent reinforcement learning,title_rule,195,cached,A Survey of Multi-agent Reinforcement Learning from Game Theoretical Perspective
+2757,False,174,4,72,1000,trustworthiness reasoning large language models,title_rule,197,cached,A Comprehensive Survey on Trustworthiness in Reasoning with Large Language Models
+6622,False,179,37,73,1000,quantum machine learning,title_rule,194,cached,"A Survey on Quantum Machine Learning: Basics, Current Trends, Challenges, Opportunities, and the Road Ahead"
+2332,False,75,13,74,1000,tabular data generation,r5_history,193,cached,"A Survey on Deep Learning Approaches for Tabular Data Generation: Utility, Alignment, Fidelity, Privacy, Diversity, and Beyond"
+4835,False,121,34,75,1000,neural graph reasoning,title_rule,193,cached,Neural Graph Reasoning: A Survey on Complex Logical Query Answering
+2230,False,187,6,76,1000,weather prediction foundation models,r5_history,199,cached,Deep Learning and Foundation Models for Weather Prediction: A Survey
+3558,False,125,14,77,1000,self-play reinforcement learning,r5_history,194,cached,A Survey on Self-Play Methods in Reinforcement Learning
+2161,False,193,4,78,1000,nlp software engineering,title_rule,198,cached,Unifying the Perspectives of NLP and Software Engineering: A Survey on Language Models for Code
+2519,False,108,14,79,1000,reasoning autonomous driving systems,title_rule,197,cached,A‌ Survey of Reasoning in Autonomous Driving Systems: Open Challenges and Emerging Paradigms
+1232,False,184,4,80,1000,self evolving agents,title_rule,193,ok,"A Survey of Self-Evolving Agents: What, When, How, and Where to Evolve on the Path to Artificial Super Intelligence"
+2829,False,139,10,81,1000,large language model robustness,r5_history,196,ok,Robustness in Large Language Models: A Survey of Mitigation Strategies and Evaluation Metrics
+3986,False,34,4,82,1000,imbalanced learning SMOTE,r5_history,198,ok,The SMOTE Paradox: Why a 92% Baseline Collapsed to 6%—A Systematic Review of 821 Papers in Imbalanced Learning (2020–2025)
+1245,False,124,35,83,1000,unveiling topological structures language,title_rule,198,ok,Unveiling Topological Structures from Language: A Survey of Topological Data Analysis Applications in NLP
+2099,False,65,38,84,1000,time series,title_rule,183,ok,Early Classification of Time Series: A Survey and Benchmark
+1964,False,123,4,85,1000,medical image data drift bias assessment,r5_history,199,ok,Bias Assessment and Data Drift Detection in Medical Image Analysis: A Survey
+5425,False,108,26,86,1000,transferability adversarial examples,title_rule,187,ok,A Survey on Transferability of Adversarial Examples Across Deep Neural Networks
+2666,False,193,15,87,1000,combinatorial optimization,title_rule,179,ok,Graph Reinforcement Learning for Combinatorial Optimization: A Survey and Unifying Perspective
+1885,False,120,6,88,1000,large language model honesty,r5_history,194,ok,A Survey on the Honesty of Large Language Models
+3022,False,25,4,89,1000,implicit neural representations,r5_history,183,ok,Where Do We Stand with Implicit Neural Representations? A Technical and Performance Survey
+1599,False,131,10,90,1000,multimodal token compression,r5_history,195,ok,A Survey of Token Compression for Efficient Multimodal Large Language Models
+3623,False,107,13,91,1000,inverse constrained reinforcement learning,r5_history,195,ok,"A Comprehensive Survey on Inverse Constrained Reinforcement Learning: Definitions, Progress and Challenges"
+995,False,158,21,92,1000,KV cache management LLM acceleration,r5_history,192,ok,A Survey on Large Language Model Acceleration based on KV Cache Management
+1319,False,151,41,93,1000,concept bottleneck models,r5_history,190,ok,What’s in the Bottle? A Survey and Roadmap of Concept Bottleneck Models
+3555,False,147,16,94,1000,video generation models,title_rule,184,ok,Video Generation Models: A Survey of Post-Training and Alignment
+2158,False,41,0,95,1000,measuring data science automation,title_rule,197,ok,Measuring Data Science Automation: A Survey of Evaluation Tools for AI Assistants and Agents
+2868,False,217,5,96,1000,formal methods robot policy learning,r5_history,198,ok,Formal Methods in Robot Policy Learning and Verification: A Survey on Current Techniques and Future Directions
+2132,False,147,7,97,1000,in-context learning retrieved demonstrations,r5_history,197,ok,In-context Learning with Retrieved Demonstrations for Language Models: A Survey
+2375,False,125,4,98,1000,prior posterior networks,title_rule,196,ok,Prior and Posterior Networks: A Survey on Evidential Deep Learning Methods For Uncertainty Estimation
+1780,False,227,5,99,1000,manifold hypothesis,title_rule,195,ok,Deep Generative Models through the Lens of the Manifold Hypothesis: A Survey and New Connections
+5385,False,83,3,100,1000,deep learning,title_rule,193,ok,Gradient-based Bi-level Optimization for Deep Learning: A Survey
+1334,False,224,0,101,1000,beyond single turn,title_rule,198,ok,Beyond Single-Turn: A Survey on Multi-Turn Interactions with Large Language Models
+3150,False,43,9,102,1000,computational pathology foundation models,r5_history,194,ok,Multi-Modal Foundation Models for Computational Pathology: A Survey
+1964,False,46,2,103,1000,large language models interfaces structured data,title_rule,199,ok,Large Language Models as Interfaces to Structured Data: A Survey
+2288,False,87,2,104,1000,large language model social agents,title_rule,195,ok,A Survey on Large Language Model-Based Social Agents in Game-Theoretic Scenarios
+2075,False,124,44,105,1000,large language models tabular data,r5_history,194,ok,"Large Language Models (LLMs) on Tabular Data: Prediction, Generation, and Understanding - A Survey"
+4629,False,56,13,106,1000,real-time object detection networks,r5_history,195,ok,A Comprehensive Study of Real-Time Object Detection Networks Across Multiple Domains: A Survey
+3204,False,229,25,107,1000,generative modeling,title_rule,194,ok,"A Survey on Generative Modeling with Limited Data, Few Shots, and Zero Shot"
+2980,False,101,13,108,1000,causal discovery time series,r5_history,196,ok,A Survey on Causal Discovery Methods for I.I.D. and Time Series Data
+1220,False,106,2,109,1000,long term fairness inquiries pursuits machine,title_rule,199,ok,"Long-Term Fairness Inquiries and Pursuits in Machine Learning: A Survey of Notions, Methods, and Challenges"
+113,False,30,0,110,164,stop overthinking,title_rule,191,ok,Stop Overthinking: A Survey on Efficient Reasoning for Large Language Models
+1967,False,162,18,111,1000,temporal credit assignment,title_rule,187,ok,A Survey of Temporal Credit Assignment in Deep Reinforcement Learning
+1978,False,112,8,112,1000,data contamination detection large language models,r5_history,195,ok,A Comprehensive Survey of Contamination Detection Methods in Large Language Models
+2880,False,165,10,113,1000,vision language navigation foundation models,r5_history,198,ok,Vision-and-Language Navigation Today and Tomorrow: A Survey in the Era of Foundation Models
+2702,False,182,14,114,1000,preserving privacy large language models,title_rule,196,ok,Preserving Privacy in Large Language Models: A Survey on Current Threats and Solutions
+1042,False,200,0,115,1000,llm data auditor,title_rule,185,ok,The LLM Data Auditor: A Metric-oriented Survey on Quality and Trustworthiness in Evaluating Synthetic Data
+1813,False,73,5,116,1000,possibilities impossibilities generated text detection,title_rule,199,ok,A Survey on the Possibilities & Impossibilities of AI-generated Text Detection
+2469,False,179,5,117,1000,importance weighting machine learning,title_rule,199,ok,A Short Survey on Importance Weighting for Machine Learning
+1429,False,86,2,118,1000,limited long tailed data,title_rule,197,ok,Training Conditional GANs on Limited and Long-Tailed Data: a Survey and Comparative Analysis
+4642,False,73,25,122,1000,end end task oriented dialogue,title_rule,185,ok,"End-to-end Task-oriented Dialogue: A Survey of Tasks, Methods, and Future Directions"
+2622,False,93,20,123,1000,factual knowledge probing,title_rule,192,ok,Give Me the Facts! A Survey on Factual Knowledge Probing in Pre-trained Language Models
+1372,False,46,1,124,1000,how determine most powerful pre trained,title_rule,199,ok,How to Determine the Most Powerful Pre-trained Language Model without Brute Force Fine-tuning? An Empirical Survey
+2794,False,62,1,126,1000,mental health conversational agents bridge computer,title_rule,196,ok,An Integrative Survey on Mental Health Conversational Agents to Bridge Computer Science and Medical Perspectives
+2560,False,35,2,130,1000,culture artificial intelligence,r5_history,200,ok,Culture in Artificial Intelligence: A Literature Review & Proposal
+2356,False,62,0,132,1000,combinatorial Bayesian optimization,r5_history,195,ok,What Are Tools Anyway? A Survey from the Language Model Perspective
+3807,False,46,3,133,1000,self-training representation learning,r5_history,196,ok,LLM as a Mastermind: A Survey of Strategic Reasoning with Large Language Models
+2406,False,87,3,134,1000,LLM reasoning evaluation,r5_history,190,ok,Beyond Accuracy: Evaluating the Reasoning Behavior of Large Language Models - A Survey
+2992,False,62,0,135,1000,world models autonomous driving,r5_history,198,ok,(Mis)Fitting Scaling Laws: A Survey of Scaling Law Fitting Techniques in Deep Learning
+5039,False,54,22,136,1000,sentiment problem,title_rule,196,ok,The Sentiment Problem: A Critical Survey towards Deconstructing Sentiment Analysis
+4680,False,40,3,137,1000,optimizing icu sepsis treatment techniques,title_rule,198,ok,A Survey of Optimizing ICU Sepsis Treatment Techniques in Reinforcement Learning
+1150,False,41,1,138,1000,scientific survey generation,r5_history,197,ok,SurGE: A Benchmark and Evaluation Framework for Scientific Survey Generation
+1503,False,32,3,139,1000,llm multi agent systems,title_rule,190,ok,A Survey of LLM-based Multi-agent Systems in Medicine
+2491,False,107,6,140,1000,high dimensional bayesian optimization discrete sequences,title_rule,198,ok,A survey and benchmark of high-dimensional Bayesian optimization of discrete sequences
+3249,False,99,18,142,1000,self training,title_rule,195,ok,Self-Training: A Survey
+3334,False,136,9,143,1000,automatic hallucination evaluation natural language generation,title_rule,194,ok,A Survey of Automatic Hallucination Evaluation on Natural Language Generation
+2773,False,153,9,144,1000,autoregressive vision models,r5_history,194,ok,Autoregressive Models in Vision: A Survey
+2593,False,54,0,145,1000,trustworthy ai safety bias and privacy a survey,r5_history,198,ok,"Trustworthy AI: Safety, Bias, and Privacy - A Survey"
+1479,False,25,0,146,1000,methods patents,title_rule,189,ok,A Comprehensive Survey on AI-based Methods for Patents
+4034,False,255,29,147,1000,video diffusion models,title_rule,179,ok,"Survey of Video Diffusion Models: Foundations, Implementations, and Applications"
+2320,False,99,5,148,1000,discrete diffusion language models,r5_history,199,ok,Discrete Diffusion in Large Language and Multimodal Models: A Survey
+2396,False,133,8,149,1000,prompt-based adaptation vision models,r5_history,199,ok,Prompt-based Adaptation in Large-scale Vision Models: A Survey
+4140,False,114,64,150,1000,state representation learning reinforcement learning,r5_history,197,ok,A Survey of State Representation Learning for Deep Reinforcement Learning
+3556,False,184,8,151,1000,federated fine tuning large language models,title_rule,191,ok,A Survey on Federated Fine-Tuning of Large Language Models
+3405,False,241,0,152,1000,data tsunami,title_rule,198,ok,Unleashing the Power of Data Tsunami: A Comprehensive Survey on Data Assessment and Selection for Instruction Tuning of Language Models
+2477,False,137,8,153,1000,parameter-efficient fine-tuning,r5_history,177,ok,Parameter-Efficient Fine-Tuning for Large Models: A Comprehensive Survey
+1783,False,137,1,154,1000,future frame synthesis,r5_history,198,ok,A Survey on Future Frame Synthesis: Bridging Deterministic and Generative Approaches
+2118,False,153,8,155,1000,role-playing language agents,r5_history,196,ok,From Persona to Personalization: A Survey on Role-Playing Language Agents
+1234,False,267,4,156,1000,foundation agents,title_rule,194,ok,Rethinking Memory Mechanisms of Foundation Agents in the Second Half: A Survey
+5230,False,103,7,157,1000,recent backdoor attacks defenses,title_rule,192,ok,A Survey of Recent Backdoor Attacks and Defenses in Large Language Models
+3102,False,105,5,158,1000,compositional learning AI models,r5_history,199,ok,A Survey on Compositional Learning of AI Models: Theoretical and Experimental Practices
+4091,False,345,8,159,1000,medical image analysis,title_rule,190,ok,Self-Supervised Visual Representation Learning for Medical Image Analysis: A Comprehensive Survey
+130,False,148,2,160,137,clever hans mirage,title_rule,197,ok,The Clever Hans Mirage: A Comprehensive Survey on Spurious Correlations in Machine Learning
+1839,False,79,1,161,1000,advances challenges future directions,title_rule,199,ok,"Semantic Mapping in Indoor Embodied AI - A Survey on Advances, Challenges, and Future Directions"
+2868,False,147,6,162,1000,generalized out distribution detection beyond vision,title_rule,200,ok,Generalized Out-of-Distribution Detection and Beyond in Vision Language Model Era: A Survey
+1531,False,85,1,164,1000,model merging,r5_history,190,ok,A Survey on Model MoErging: Recycling and Routing Among Specialized Experts for Collaborative Learning
+1893,False,130,10,165,1000,identifiable causal representations controllable counterfactual generation,title_rule,192,ok,From Identifiable Causal Representations to Controllable Counterfactual Generation: A Survey on Causal Generative Modeling
+3341,False,212,14,166,1000,offline policy learning,title_rule,194,ok,"Deep Generative Models for Offline Policy Learning: Tutorial, Survey, and Perspectives on Future Directions"
+4155,False,124,7,167,1000,graph construction geometric deep learning,title_rule,200,ok,A Survey on Graph Construction for Geometric Deep Learning in Medicine: Methods and Recommendations
+1529,False,222,5,168,1000,frontiers llm reasoning,title_rule,195,ok,"A Survey of Frontiers in LLM Reasoning: Inference Scaling, Learning to Reason, and Agentic Systems"
+4593,False,99,2,169,1000,graph theory deep graph similarity learning,title_rule,200,ok,"Graph Theory-Based Deep Graph Similarity Learning: A Unified Survey of Pipeline, Techniques, and Challenges"
+1312,False,149,0,170,1000,right mediator,title_rule,200,ok,"The Quest for the Right Mediator: A History, Survey, and Theoretical Grounding of Causal Interpretability"
+1963,False,83,0,171,1000,reasoning learning,title_rule,193,ok,From Reasoning to Learning: A Survey on Hypothesis Discovery and Rule Learning with Large Language Models
+1703,False,63,3,172,1000,llm test time compute via search,title_rule,198,ok,"A Survey on LLM Test-Time Compute via Search: Tasks, LLM Profiling, Search Algorithms, and Relevant Frameworks"
+3721,False,76,8,173,1000,anomaly novelty open set out distribution,title_rule,199,ok,"A Unified Survey on Anomaly, Novelty, Open-Set, and Out- of-Distribution Detection: Solutions and Future Challenges"
+1091,False,216,0,174,1000,lifetime tasks,title_rule,195,ok,How to Reuse and Compose Knowledge for a Lifetime of Tasks: A Survey on Continual Learning and Functional Composition
+108,False,92,2,175,156,llm wizard then code wand,title_rule,125,ok,"If LLM Is the Wizard, Then Code Is the Wand: A Survey on How Code Empowers Large Language Models to Serve as Intelligent Agents"
+1960,False,161,7,176,1000,offline model optimization,title_rule,195,ok,Offline Model-Based Optimization: Comprehensive Review
+6762,False,72,4,177,1000,vision transformers,title_rule,198,ok,Explainability of Vision Transformers: A Comprehensive Review and New Perspectives
+2713,False,156,7,178,1000,tiny machine learning,title_rule,196,ok,Efficient Neural Networks for Tiny Machine Learning: A Comprehensive Review
+1263,False,119,0,179,1000,relation energy models,title_rule,199,ok,"Hitchhiker's guide on the relation of Energy-Based Models with other generative models, sampling and statistical physics: a comprehensive review"
+3179,False,28,0,180,1000,farm scale autonomous welfare monitoring precision,title_rule,199,ok,Farm-Scale Autonomous Welfare Monitoring in Precision Livestock: A Systematic Review of Robotics and Multimodal AI with an Emphasis on the Lab-to-Farm Deployment Gap

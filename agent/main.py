@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,9 @@ except ImportError:
     from tools.utility.tool_config import ToolConfig
 
 DEFAULT_OUTPUT_DIR = "test_output"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PUBLICATION_DATE = "2026-06-30"
+PDF_DATE_MANIFEST = REPO_ROOT / "agent" / "test_inputs" / "pdf_content_publication_dates.json"
 
 
 @dataclass(frozen=True)
@@ -78,8 +82,21 @@ def write_agent_yaml(path: str | Path):
             "search_limit": config.topic_coverage_search_limit,
         },
         "topic_papers": {
-            "search_limit": config.topic_papers_search_limit,
             "missing_topic_min_community_size": config.missing_topic_min_community_size,
+            "missing_topic_min_community_size_ratio": config.missing_topic_min_community_size_ratio,
+            "missing_topic_resolutions": list(config.missing_topic_resolutions),
+            "missing_topic_top_k": config.missing_topic_top_k,
+            "missing_topic_llm_concurrency": config.missing_topic_llm_concurrency,
+            "missing_topic_representative_papers": config.missing_topic_representative_papers,
+        },
+        "literature_pool": {
+            "query_search_limit": config.literature_pool_query_search_limit,
+            "neighbor_batch_size": config.literature_pool_neighbor_batch_size,
+            "neighbor_max_rounds": config.literature_pool_neighbor_max_rounds,
+            "max_papers": config.literature_pool_max_papers,
+            "max_query_keywords": config.literature_pool_max_query_keywords,
+            "relevance_batch_size": config.literature_pool_relevance_batch_size,
+            "relevance_concurrency": config.literature_pool_relevance_concurrency,
         },
         "fact_check": {"background_reference_similarity_threshold": config.background_reference_similarity_threshold},
         "quality": {
@@ -140,24 +157,99 @@ def _query_text(queries: list[str]) -> str:
     return " ".join(queries)
 
 
+_QUERY_SURVEY_STOP_PHRASES = (
+    "systematized literature review",
+    "systematic literature review",
+    "systematic review",
+    "scoping review",
+    "literature review",
+    "comprehensive survey",
+    "technical survey",
+    "critical survey",
+    "integrative survey",
+    "short survey",
+    "unified survey",
+    "survey and benchmark",
+    "survey and roadmap",
+    "survey and evaluation",
+    "tutorial survey",
+    "survey",
+    "review",
+    "benchmarking",
+    "benchmark",
+    "roadmap",
+    "overview",
+)
+_QUERY_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "based", "by", "for", "from", "how", "in", "into", "is", "of", "on", "or", "the", "their", "to", "toward", "towards", "via", "with",
+    "current", "future", "directions", "challenges", "opportunities", "perspectives", "methods", "method", "techniques", "approaches", "applications", "application", "basics", "definitions", "progress", "recommendations", "recent", "study", "studies", "framework", "frameworks", "comprehensive", "tutorial", "empirical", "comparative", "more", "than", "new", "proposal", "guide", "history", "hitchhiker", "other", "surve", "analysi", "th", "s",
+}
+_QUERY_BAD_TITLE_PREFIXES = (
+    "transactions on machine learning research",
+)
+
+
+def _query_from_title(title: str, fallback_stem: str = "") -> str:
+    source = str(title or "").strip()
+    if not source or source.lower().startswith(_QUERY_BAD_TITLE_PREFIXES):
+        source = fallback_stem.replace("_", " ")
+    text = source.lower().replace("mod-els", "models").replace("us-ages", "usages").replace("em-phasis", "emphasis")
+    text = text.replace("outof", "out of")
+    for phrase in _QUERY_SURVEY_STOP_PHRASES:
+        text = re.sub(rf"\b{re.escape(phrase)}\b", " ", text)
+    text = re.sub(r"[^\w\s-]", " ", text)
+    text = re.sub(r"\b\d+[a-z0-9]{8,}\b", " ", text)
+    text = re.sub(r"\b(?=[a-z0-9]*\d)[a-z0-9]{8,}\b", " ", text)
+    words = [word for word in text.split() if word not in _QUERY_STOPWORDS and not word.isdigit()]
+    return " ".join(words).strip()
+
+
 def _query_from_json(path: str | Path) -> list[str]:
-    query = load_json_record(path)["query"]
-    if not isinstance(query, (str, list)):
-        raise ValueError(f"JSON paper has an invalid query field: {path}")
-    try:
-        return _split_queries(query)
-    except ValueError as exc:
-        raise ValueError(f"JSON paper has an invalid query field: {path}") from exc
+    record = load_json_record(path)
+    query = record.get("query")
+    if isinstance(query, (str, list)):
+        try:
+            return _split_queries(query)
+        except ValueError as exc:
+            raise ValueError(f"JSON paper has an invalid query field: {path}") from exc
+    paper_data = record.get("paper") or record.get("full_content") or record.get("full_text") or {}
+    title = paper_data.get("title", "") if isinstance(paper_data, dict) else ""
+    derived_query = _query_from_title(title, Path(path).stem)
+    if not derived_query:
+        raise ValueError(f"JSON paper has no query field and title-derived query is empty: {path}")
+    return _split_queries(derived_query)
 
 
 def _config_for_json_publication_date(config: ToolConfig, path: str | Path) -> ToolConfig:
     path = Path(path)
     if path.suffix.lower() != ".json":
         return config
-    publication_date = load_json_record(path)["publication_date"]
+    record = load_json_record(path)
+    publication_date = record.get("publication_date")
+    if not publication_date:
+        publication_date = _publication_date_for_path(path)
     if not isinstance(publication_date, str) or len(publication_date.strip()) < 10:
         raise ValueError(f"JSON paper has an invalid publication_date field: {path}")
     return replace(config, evaluation_date=datetime.strptime(publication_date.strip()[:10], "%Y-%m-%d"))
+
+
+def _publication_date_for_path(path: Path) -> str:
+    """Resolve the date used as the literature cutoff for one survey input."""
+    resolved = path.resolve()
+    pdf_root = (REPO_ROOT / "agent" / "test_inputs" / "pdf_content").resolve()
+    crawled_root = (REPO_ROOT / "agent" / "test_inputs" / "crawled_surveys").resolve()
+    if pdf_root in resolved.parents or resolved == pdf_root:
+        if PDF_DATE_MANIFEST.is_file() and path.is_file():
+            manifest = json.loads(PDF_DATE_MANIFEST.read_text(encoding="utf-8"))
+            entry = manifest.get(path.name) or {}
+            if entry.get("publication_date"):
+                return entry["publication_date"]
+        return DEFAULT_PUBLICATION_DATE
+    if crawled_root in resolved.parents or resolved == crawled_root:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return str(data.get("publication_date") or DEFAULT_PUBLICATION_DATE)
+    return DEFAULT_PUBLICATION_DATE
 
 
 def _has_direct_tex(path: Path) -> bool:
@@ -227,7 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tool-config", default="agent.yaml", help="Path to ToolConfig yaml.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory for module outputs and final result. Batch mode treats this as the output root.")
     parser.add_argument("--write-default-config", action="store_true", help="Write a default ToolConfig yaml and exit.")
-    parser.add_argument("--run-modules", default="", help="Comma-separated module numbers to run, e.g. '0,1,3,5,8,12'. Use 2.1-2.5 for 02 substeps. Empty means all modules.")
+    parser.add_argument("--run-modules", default="", help="Comma-separated module numbers to run, e.g. '0,1,3,5,8,12'. Use 2.5 for gap, 2.6 for textual, 2.7 for comparison, 4.1 to collect the full literature graph, and 4.2 to filter it. Empty means all modules.")
     parser.add_argument("--force", action="store_true", help="Re-run selected modules even if cached outputs exist.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser

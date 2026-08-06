@@ -20,6 +20,9 @@ class Sentence:
     label: str = ""
     confidence: Optional[float] = None
     claims: List[Dict[str, Any]] = field(default_factory=list)
+    classified_fields: List[str] = field(default_factory=list)
+    rhetorical_structure: Dict[str, Any] = field(default_factory=dict)
+    label_extractions: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
     def __str__(self):
         citations = self.citation_keys()
@@ -51,6 +54,12 @@ class Sentence:
             result["confidence"] = self.confidence
         if self.claims:
             result["claims"] = self.claims
+        if self.classified_fields:
+            result["classified_fields"] = self.classified_fields
+        if self.rhetorical_structure:
+            result["rhetorical_structure"] = self.rhetorical_structure
+        if self.label_extractions:
+            result["label_extractions"] = self.label_extractions
         return result
     
     @classmethod
@@ -67,6 +76,9 @@ class Sentence:
         sentence.label = data.get("label", "")
         sentence.confidence = data.get("confidence")
         sentence.claims = data.get("claims", []) or []
+        sentence.classified_fields = data.get("classified_fields", []) or []
+        sentence.rhetorical_structure = data.get("rhetorical_structure", {}) or {}
+        sentence.label_extractions = data.get("label_extractions", {}) or {}
         return sentence
 
 
@@ -88,13 +100,29 @@ class Paragraph:
     name: Optional[str] = None
     entities: List[Dict[str, Any]] = field(default_factory=list)
     alias_pairs: List[List[str]] = field(default_factory=list)
+    functional_type: str = ""
+    entities_classified: bool = False
 
     def add_sentence(self, sentence: Sentence):
         sentence.father = self
         self.sentences.append(sentence)
 
-    def get_skeleton(self) -> List[Dict[str, Any]]:
-        return [sentence.get_skeleton() for sentence in self.sentences]
+    def get_skeleton(self) -> List[Dict[str, Any]] | Dict[str, Any]:
+        sentences = [sentence.get_skeleton() for sentence in self.sentences]
+        if not any((self.name, self.entities, self.alias_pairs, self.functional_type, self.entities_classified)):
+            return sentences
+        result: Dict[str, Any] = {"sentences": sentences}
+        if self.name:
+            result["name"] = self.name
+        if self.entities:
+            result["entities"] = self.entities
+        if self.alias_pairs:
+            result["alias_pairs"] = self.alias_pairs
+        if self.functional_type:
+            result["functional_type"] = self.functional_type
+        if self.entities_classified:
+            result["entities_classified"] = True
+        return result
 
     def has_text_content(self) -> bool:
         return bool(self.sentences)
@@ -139,6 +167,8 @@ class Paragraph:
             paragraph = cls(name=data.get("name"))
             paragraph.entities = data.get("entities", []) or []
             paragraph.alias_pairs = data.get("alias_pairs", []) or []
+            paragraph.functional_type = data.get("functional_type", "")
+            paragraph.entities_classified = bool(data.get("entities_classified", False))
         else:
             sentence_data = data or []
             paragraph = cls()
@@ -225,8 +255,11 @@ class Paper(Section):
     references: dict = field(default_factory=dict)
     all_citation_keys: List[str] = field(default_factory=list)
     unresolved_citation_keys: List[str] = field(default_factory=list)
+    unresolved_ref_keys: List[str] = field(default_factory=list)
     has_section_index: bool = True
     contribution_claims: Dict[str, Any] = field(default_factory=dict)
+    gap_claims: List[Dict[str, Any]] = field(default_factory=list)
+    comparison_claims: List[Dict[str, Any]] = field(default_factory=list)
 
     def add_section(self, section: Section):
         self.add_child(section)
@@ -258,8 +291,15 @@ class Paper(Section):
         if self.unresolved_citation_keys:
             result["missing_citations"] = self.unresolved_citation_keys
             result["missing_citation_count"] = len(self.unresolved_citation_keys)
+        if self.unresolved_ref_keys:
+            result["missing_refs"] = self.unresolved_ref_keys
+            result["missing_ref_count"] = len(self.unresolved_ref_keys)
         if self.contribution_claims:
             result["contribution_claims"] = self.contribution_claims
+        if self.gap_claims:
+            result["gap_claims"] = self.gap_claims
+        if self.comparison_claims:
+            result["comparison_claims"] = self.comparison_claims
         return result
 
     def to_dict(self) -> Dict[str, Any]:
@@ -294,8 +334,11 @@ class Paper(Section):
                 paper.appendix.append(Section.from_skeleton(section_data))
         paper.references = data.get("citations", {}) or data.get("references", {}) or {}
         paper.unresolved_citation_keys = data.get("missing_citations", []) or []
+        paper.unresolved_ref_keys = data.get("missing_refs", []) or []
         paper.all_citation_keys = list(paper.references.keys())
         paper.contribution_claims = data.get("contribution_claims", {}) or {}
+        paper.gap_claims = data.get("gap_claims", []) or []
+        paper.comparison_claims = data.get("comparison_claims", []) or []
         return paper
 
     def __str__(self):

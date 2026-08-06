@@ -46,23 +46,44 @@ class SentenceClassificationParagraph(AsyncChat):
 class SentenceClassification:
     def __init__(self, config: ToolConfig):
         self.paragraph_llm = SentenceClassificationParagraph(config.llm_server_info, config.sampling_params)
+        self.last_report = {"module": "sentence", "success_count": 0, "error_count": 0, "errors": []}
 
     def _is_classifiable(self, sentence: Sentence) -> bool:
         return sentence.environment_type == "text" and bool(sentence.text.strip())
 
-    async def _classify_paragraph(self, paragraph: list[Sentence]):
-        sentences = [sentence for sentence in paragraph if self._is_classifiable(sentence)]
+    async def _classify_paragraph(
+        self,
+        paragraph: list[Sentence],
+        only_missing: bool = False,
+    ):
+        sentences = [
+            sentence
+            for sentence in paragraph
+            if self._is_classifiable(sentence) and (not only_missing or not sentence.label)
+        ]
         if not sentences: return []
         labels = await self.paragraph_llm.call(inputs={"sentences": sentences})
         return [(sentence, label, confidence) for sentence, (label, confidence) in zip(sentences, labels)]
 
-    async def __call__(self, paper: Paper) -> Paper:
+    async def __call__(self, paper: Paper, only_missing: bool = False) -> Paper:
         paragraphs = split_content_to_paragraph(paper, include_abstract=True)
-        tasks = [asyncio.create_task(self._classify_paragraph(paragraph)) for paragraph in paragraphs]
-        logging.info(f"sentence classify for paper {paper.title}")
-        for paragraph_result in await asyncio.gather(*tasks, return_exceptions=True):
-            if not isinstance(paragraph_result, list): continue
+        tasks = [
+            asyncio.create_task(self._classify_paragraph(paragraph, only_missing=only_missing))
+            for paragraph in paragraphs
+        ]
+        logging.info(f"sentence classify for paper {paper.title} use {len(tasks)} sentences")
+        success_count = 0
+        errors = []
+        for index, paragraph_result in enumerate(await asyncio.gather(*tasks, return_exceptions=True)):
+            if isinstance(paragraph_result, Exception):
+                errors.append({"index": index, "error": repr(paragraph_result)})
+                continue
+            if not isinstance(paragraph_result, list):
+                errors.append({"index": index, "error": f"unexpected result type: {type(paragraph_result).__name__}"})
+                continue
             for sentence, label, confidence in paragraph_result:
                 sentence.label = label
                 sentence.confidence = confidence
+                success_count += 1
+        self.last_report = {"module": "sentence", "success_count": success_count, "error_count": len(errors), "errors": errors}
         return paper
